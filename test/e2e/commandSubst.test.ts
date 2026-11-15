@@ -101,6 +101,12 @@ describe("e2e: command substitution", () => {
     expect(result.stdout).to.equal("OUT");
   });
 
+  it("runs pipelines joined by '&&', their outputs taken in order", () => {
+    const result = generated("echoarg `ver && noisy`");
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("1.2.3 out");
+  });
+
   it("substitutes variables inside the command itself", () => {
     /* A command's own words are ordinary names, substituted before it runs — so
      * a tool named by a global is how you would actually write this. */

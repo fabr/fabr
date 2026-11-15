@@ -35,6 +35,12 @@ const TOOL_FILES = {
 const WRITER = "plugin @fabr-build/js;\njs_script writer { entry = src:writer.js; }\n";
 const WRITER_FILES = { "src/writer.js": "require('fs').writeFileSync('made.txt','content\\n');\n" };
 
+/* A tool that reads the file its argument names and writes it uppercased. */
+const SHOUT = "js_script shout { entry = src:shout.js; }\n";
+const SHOUT_FILES = {
+  "src/shout.js": "process.stdout.write(require('fs').readFileSync(process.argv[2], 'utf8').toUpperCase());\n",
+};
+
 describe("e2e: generate command pipelines", () => {
   it("captures a command's stdout as content ('> name')", () => {
     const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit > out.txt; }\n", ...TOOL_FILES }, ["cat", "g:out.txt"]);
@@ -59,6 +65,75 @@ describe("e2e: generate command pipelines", () => {
     ]);
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("HELLO\n");
+  });
+
+  it("runs pipelines joined by '&&' in order, a later one reading what an earlier one kept", () => {
+    const files = {
+      "PROJECT.fabr": TOOLS + SHOUT + "generate g { run = emit > a.txt && shout a.txt > b.txt; }\n",
+      ...TOOL_FILES,
+      ...SHOUT_FILES,
+    };
+    const listed = runFabr(files, ["ls", "-q", "g"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout.split("\n").filter(line => line !== "")).to.deep.equal(["a.txt", "b.txt"]);
+    expect(runFabr(files, ["cat", "g:b.txt"]).stdout).to.equal("HELLO\n");
+  });
+
+  it("reads words joined by '&&' as a command list", () => {
+    const files = {
+      "PROJECT.fabr": WRITER + SHOUT + "generate g { run = writer && shout made.txt > b.txt; }\n",
+      ...WRITER_FILES,
+      ...SHOUT_FILES,
+    };
+    const listed = runFabr(files, ["ls", "-q", "g"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    /* What `writer` wrote is no capture, so it is no part of the result. */
+    expect(listed.stdout.split("\n").filter(line => line !== "")).to.deep.equal(["b.txt"]);
+    expect(runFabr(files, ["cat", "g:b.txt"]).stdout).to.equal("CONTENT\n");
+  });
+
+  it("stops at the first command that fails", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr": TOOLS + "js_script boom { entry = src:boom.js; }\ngenerate g { run = boom && emit > out.txt; }\n",
+        ...TOOL_FILES,
+        "src/boom.js": "process.exit(3);\n",
+      },
+      ["build", "g"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.match(/error code 3/);
+    /* `emit` writes `noise` to stderr wherever it runs. */
+    expect(result.stderr).to.not.contain("noise");
+  });
+
+  it("keeps command operators words in a property that is no command", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\njs_script args { entry = src:args.js; args = x && y | z > w 2>&1; }\ngenerate g { run = args > out.txt; }\n",
+        "src/args.js": "process.stdout.write(process.argv.slice(2).join('|'));\n",
+      },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("x|&&|y|||z|>|w|2>&1");
+  });
+
+  it("rejects a '&&' with no command beside it, at the '&&'", () => {
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit &&; }\n", ...TOOL_FILES }, ["build", "g"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("empty command (nothing beside '&&')");
+    expect(result.stderr).to.contain("PROJECT.fabr:4:");
+  });
+
+  it("refuses two redirections keeping one name", () => {
+    const result = runFabr({ "PROJECT.fabr": TOOLS + "generate g { run = emit > a.txt && emit > a.txt; }\n", ...TOOL_FILES }, [
+      "build",
+      "g",
+    ]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'a.txt' is kept by two redirections of the command");
   });
 
   it("merges stdout and stderr with '&>'", () => {
@@ -272,19 +347,18 @@ describe("e2e: generate command pipelines", () => {
     expect(quiet.stderr).to.not.contain("MARK-QUIET-c3d4");
   });
 
-  it("rejects a pipeline operator in a non-COMMAND target property (Validate)", () => {
-    const result = runFabr({ "PROJECT.fabr": "flag f { provides = a | b; }\n" }, ["build", "f"]);
-    expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.match(/only valid in a COMMAND property/);
-  });
-
-  it("rejects a pipeline operator reached through a standalone property (resolution backstop)", () => {
-    /* A top-level property is not run through Validate; the guard at the name-
-     * resolution choke point catches the operator when it is actually read,
-     * rather than silently dropping the marker's empty Name to "". */
-    const result = runFabr({ "PROJECT.fabr": "myprop = a | b;\nflag f { provides = ${myprop}; }\n" }, ["build", "f"]);
-    expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.match(/only valid in a COMMAND property/);
+  it("reads command operators in a standalone property as words where it is substituted", () => {
+    const result = runFabr(
+      {
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\nLINE = a | b > c;\njs_script args { entry = src:args.js; }\ngenerate g { run = args ${LINE} > out.txt; }\n",
+        "src/args.js": "process.stdout.write(process.argv.slice(2).join('|'));\n",
+      },
+      ["cat", "g:out.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    /* `${LINE}` substitutes one word, its text. */
+    expect(result.stdout).to.equal("a | b > c");
   });
 
   it("hands a command what it kept from its last successful run, and what changed since", () => {
@@ -414,5 +488,18 @@ describe("e2e: patched with a command", () => {
     expect(runFabr(FILES, ["cat", "changed:a.txt"]).stdout).to.equal("HELLO\n");
     /* The directory it ran in held the files alone, not its own install. */
     expect(runFabr(FILES, ["cat", "changed:seen.txt"]).stdout).to.equal("a.txt c.txt");
+  });
+
+  it("collects what an earlier command of a list kept as one of the files", () => {
+    const files = {
+      ...FILES,
+      "PROJECT.fabr":
+        FILES["PROJECT.fabr"].replace("run = edit > seen.txt;", "run = edit > seen.txt && shout seen.txt > loud.txt;") + SHOUT,
+      ...SHOUT_FILES,
+    };
+    const listed = runFabr(files, ["ls", "-q", "changed"]);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout.split("\n").filter(line => line !== "")).to.deep.equal(["a.txt", "c.txt", "loud.txt", "seen.txt"]);
+    expect(runFabr(files, ["cat", "changed:loud.txt"]).stdout).to.equal("A.TXT C.TXT");
   });
 });

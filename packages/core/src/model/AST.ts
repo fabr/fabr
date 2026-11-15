@@ -27,7 +27,6 @@ import { FabrError } from "../core/Errors";
 export enum DeclKind {
   NameValue,
   MapValue,
-  CommandValue,
   Property,
   Target,
   TargetDef,
@@ -114,6 +113,10 @@ interface IBaseValue extends IBaseDecl {
 export interface INameValue extends IBaseValue {
   kind: DeclKind.NameValue;
   value: Name;
+  /** True for a command operator written unquoted (`&&`, `|`, `<`, `>`, `2>`,
+   * `&>`, `2>&1`): part of the command in a COMMAND property
+   * ({@link IPropertyDecl.command}), elsewhere a word of the value. */
+  operator?: true;
 }
 
 /**
@@ -129,7 +132,7 @@ export interface IMapValue extends IBaseValue {
   entries: IMapItemDecl[];
 }
 
-export type IValue = INameValue | IMapValue | ICommandValue;
+export type IValue = INameValue | IMapValue;
 
 export function isMapValue(value: IValue): value is IMapValue {
   return value.kind === DeclKind.MapValue;
@@ -139,12 +142,8 @@ export function isNameValue(value: IValue): value is INameValue {
   return value.kind === DeclKind.NameValue;
 }
 
-export function isCommandValue(value: IValue): value is ICommandValue {
-  return value.kind === DeclKind.CommandValue;
-}
-
 /**
- * One stage of a command pipeline ({@link ICommandValue}), its redirections
+ * One stage of a command pipeline ({@link ParsedCommand}), its redirections
  * applied left to right. `command`, `args` and `stdin` are references: the
  * command a runnable, each arg a literal or glob, `< stdin` a single file.
  * `stdout` and `stderr` are the output names their captured streams (`>`,
@@ -168,20 +167,25 @@ export type StreamName = "out" | "err";
  * stages of `a | b | c`), names still as written. */
 export type CommandPipeline = ICommandStage[];
 
+/** A parsed command list: the pipelines of `a && b | c`, in order, each run
+ * once the one before it has succeeded. */
+export type CommandList = CommandPipeline[];
+
 /**
- * A command pipeline as a value (`run = a --x | b > out`), its stages made by
- * the parser from the operators (`|`, `<`, `>`, `2>`, `&>`), a malformed one
- * being a parse error. A command is always the sole value of its property.
+ * A property's values read as a command (`run = a --x | b > out && c`): its
+ * pipelines and their stages made by the parser from the operators (`&&`,
+ * `|`, `<`, `>`, `2>`, `&>`), or, where they make no command, what is wrong
+ * and where, an error only where the property is read as a COMMAND.
  */
-export interface ICommandValue extends IBaseValue {
-  kind: DeclKind.CommandValue;
-  pipeline: CommandPipeline;
-}
+export type ParsedCommand = { pipelines: CommandList } | { error: string; offset: number };
 
 export interface IPropertyDecl extends IBaseDecl {
   kind: DeclKind.Property;
   name: Name;
   values: IValue[];
+  /** Its values read as a command, where a command operator is among them. A
+   * COMMAND property is read from this; any other reads `values`. */
+  command?: ParsedCommand;
   /** Whether it is written `private`: seen only by references written in its
    *  file, where it takes precedence over a public declaration of its name. */
   private?: boolean;
@@ -428,8 +432,6 @@ export function getDeclKindName(kind: DeclKind): string {
       return "name";
     case DeclKind.MapValue:
       return "map";
-    case DeclKind.CommandValue:
-      return "command";
     case DeclKind.Plugin:
       return "plugin";
     case DeclKind.Splice:

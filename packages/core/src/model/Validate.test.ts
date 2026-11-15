@@ -153,10 +153,8 @@ describe("validateTarget (MAP properties)", () => {
     expect(validationErrors(def + "COMMON = { srcs = a; };\nm t { COMMON; }\n")).to.deep.equal([]);
   });
 
-  it("rejects a command (pipeline) inside a map block", () => {
-    const errors = validationErrors(def + "m t { defines = { A = a | b; }; }\n");
-    expect(errors).to.have.lengthOf(1);
-    expect(errors[0]).to.match(/a command .*is not valid in a map block/);
+  it("accepts command operators in a map block as words", () => {
+    expect(validationErrors(def + "m t { defines = { A = a | b > c; }; }\n")).to.deep.equal([]);
   });
 });
 
@@ -201,10 +199,22 @@ describe("validateProperty (global / schema-less properties)", () => {
     expect(errors[0]).to.match(/duplicate map key 'A'/);
   });
 
-  it("does not statically reject a command in a standalone property (the chase)", () => {
-    /* A pipeline defined in a standalone property is legit until it lands in a
-     * non-COMMAND slot — a resolution-time backstop, not a static error. */
-    expect(validationErrors("shared = a | b;")).to.deep.equal([]);
+  it("does not statically reject a malformed command in a standalone property", () => {
+    /* A standalone property has no type: it is a command only where a COMMAND property names it. */
+    expect(validationErrors("shared = a | ;")).to.deep.equal([]);
+  });
+
+  it("rejects a malformed command in a COMMAND property, at what is wrong", () => {
+    const errors = validationErrors("targetdef c { run = COMMAND; }\nc t { run = a | ; }\n");
+    expect(errors).to.have.lengthOf(1);
+    expect(errors[0]).to.contain("Invalid command: empty command (nothing beside '|')");
+    expect(errors[0]).to.match(/:2:15/);
+  });
+
+  it("accepts command operators in a STRING property as words", () => {
+    expect(
+      validationErrors("targetdef s { build = STRING; }\ns t { build = apt-get update && make > /dev/null 2>&1; }\n")
+    ).to.deep.equal([]);
   });
 });
 

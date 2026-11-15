@@ -35,7 +35,7 @@ import type { Constraints } from "../model/Constraints";
 import type { ExecutionContext } from "../model/ExecutionContext";
 import type { Property } from "../model/Property";
 import type { SubTargetInputs } from "../rules/Types";
-import type { ICommandStageLookup } from "./Commands";
+import type { CommandListLookup } from "./Commands";
 import type { PropertyMap } from "./PropertyMap";
 import type { IDependencyStack } from "./Stack";
 import type { TargetContext } from "./TargetContext";
@@ -280,7 +280,7 @@ export interface InternalBuildContext extends BuildContext {
    * and none yet materialized as a runnable or matched against sources. A value
    * that is the bare name of another COMMAND property yields that property's stages.
    */
-  lookupCommand(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<ICommandStageLookup[]>;
+  lookupCommand(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<CommandListLookup>;
 
   /**
    * Look up the sources a FILES property's values name. Each records the

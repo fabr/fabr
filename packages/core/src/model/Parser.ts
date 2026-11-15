@@ -34,9 +34,9 @@ import {
   IRuleDecl,
   IPropertyDecl,
   ICommandStage,
-  CommandPipeline,
+  CommandList,
+  ParsedCommand,
   StreamName,
-  ICommandValue,
   INameValue,
   IPropertySchema,
   isMapValue,
@@ -93,6 +93,8 @@ enum TokenType {
   REDIR_STDERR,
   REDIR_BOTH,
   REDIR_DUP,
+  /** A `&&` written unquoted on its own, joining two pipelines of a command list. */
+  AND,
   /** The `` ` `` closing a command substitution. */
   BACKTICK,
   ERROR = -1,
@@ -151,7 +153,8 @@ interface IdentToken extends TokenBase {
 interface DupToken extends TokenBase {
   type: TokenType.REDIR_DUP;
   from: number;
-  to: number;
+  /** The digits written after `&`, which name a stream only as `1` or `2`. */
+  to: string;
 }
 
 interface NonNameToken extends TokenBase {
@@ -178,6 +181,7 @@ const TOKEN_NAME_MAP = {
   [TokenType.REDIR_STDERR]: "'2>'",
   [TokenType.REDIR_BOTH]: "'&>'",
   [TokenType.REDIR_DUP]: "'2>&1'",
+  [TokenType.AND]: "'&&'",
   [TokenType.BACKTICK]: "'`'",
   [TokenType.ERROR]: "ERROR",
 };
@@ -189,9 +193,11 @@ const REDIR_FD_TOKEN: Record<string, TokenType.REDIR_STDOUT | TokenType.REDIR_ST
   "&": TokenType.REDIR_BOTH,
 };
 
-/** A command-pipeline operator: `Pipe` the `|` between stages, `Stdin` `<`,
- * `Stdout` `>` or `1>`, `Stderr` `2>`, `Both` `&>`, `Dup` `N>&M`. */
+/** A command operator: `And` the `&&` between pipelines, `Pipe` the `|`
+ * between stages, `Stdin` `<`, `Stdout` `>` or `1>`, `Stderr` `2>`, `Both`
+ * `&>`, `Dup` `N>&M`. */
 const enum CommandOpKind {
+  And,
   Pipe,
   Stdin,
   Stdout,
@@ -203,7 +209,7 @@ const enum CommandOpKind {
 /** @return true if an operator is followed by a target name (every redirect
  * but a dup, `2>&1`), otherwise false. */
 function takesTarget(op: CommandOpKind): boolean {
-  return op !== CommandOpKind.Pipe && op !== CommandOpKind.Dup;
+  return op !== CommandOpKind.And && op !== CommandOpKind.Pipe && op !== CommandOpKind.Dup;
 }
 
 /** A pipeline operator, its source offset, and for a dup the fds it names
@@ -211,6 +217,7 @@ function takesTarget(op: CommandOpKind): boolean {
 type CommandOp = { op: CommandOpKind; at: number; from?: number; to?: number };
 
 const OP_SYMBOL: Record<CommandOpKind, string> = {
+  [CommandOpKind.And]: "&&",
   [CommandOpKind.Pipe]: "|",
   [CommandOpKind.Stdin]: "<",
   [CommandOpKind.Stdout]: ">",
@@ -594,6 +601,28 @@ class ParseAbort extends FabrError {
   constructor() {
     super("Parse Error");
   }
+}
+
+/** A malformed command, thrown by the command parser to whatever is reading
+ * the command: `detail` says what is wrong, at `offset`. */
+class CommandSyntaxError extends Error {
+  constructor(
+    public readonly detail: string,
+    public readonly offset: number
+  ) {
+    super(detail);
+  }
+}
+
+/** A log that drops everything, for reading again what has been read once. */
+const DISCARDING_LOG: Log = { log: () => undefined };
+
+/** Where the parser is: the reader's offset and the token read there. */
+interface ParserMark {
+  offset: number;
+  token: Token;
+  prevTokenEnd: number;
+  abuts: boolean;
 }
 
 /** The lexer and parser of one build file. It resolves nothing. */
@@ -1163,6 +1192,17 @@ export class BuildParser {
         this.reader.next();
         this.token = { type: TokenType.PIPE, start: tokenStart };
         break;
+      case CHAR_AMP:
+        /* A `&&` on its own is the AND token; any other `&` starts a name
+         * (`a&&b`, `&&x`, and the `&` of `&>`). */
+        if (this.reader.peekAt(1) === CHAR_AMP && this.endsAnd(this.reader.peekAt(2))) {
+          this.reader.next(); /* the first '&' */
+          this.reader.next(); /* the second '&' */
+          this.token = { type: TokenType.AND, start: tokenStart };
+          break;
+        }
+        this.token = this.readNameOrIdentifier();
+        break;
       case CHAR_BACKTICK:
         /* Inside a substitution a backtick closes it and is a token of its own.
          * Outside one it opens a substitution, which is part of a name
@@ -1192,8 +1232,7 @@ export class BuildParser {
         this.token = this.readNameOrIdentifier();
     }
     /* A bare `1`/`2`/`&` word with a `>` abutting it is one redirect token
-     * (`2>`, `&>`); a spaced `2 >` is the word `2` and a `>`. Validate refuses a
-     * redirect outside a command value. */
+     * (`2>`, `&>`); a spaced `2 >` is the word `2` and a `>`. */
     const fd = this.redirectFdText();
     if (!this.suppressRedirect && fd !== undefined && this.reader.current() === CHAR_RANGLE) {
       this.reader.next(); /* the '>' */
@@ -1202,7 +1241,7 @@ export class BuildParser {
        * token with no target; `readDupFd` checks that M is 1 or 2. */
       const from = fd === "1" ? 1 : fd === "2" ? 2 : undefined;
       if (from !== undefined && this.reader.current() === CHAR_AMP) {
-        this.token = { type: TokenType.REDIR_DUP, start: this.token.start, from, to: this.readDupFd(this.token.start) };
+        this.token = { type: TokenType.REDIR_DUP, start: this.token.start, from, to: this.readDupFd() };
       }
     }
     /* Attach the doc comment from the gap just skipped. */
@@ -1215,21 +1254,26 @@ export class BuildParser {
     return this.token;
   }
 
-  /**
-   * Read the `&M` of a dup redirect (`2>&1`), the reader at the `&`.
-   *
-   * @return M, which must be 1 or 2 (stdout or stderr); anything else (`2>&3`,
-   * `2>&`, `2>&x`) is reported, positioned at `opStart`.
-   */
-  private readDupFd(opStart: number): number {
+  /** @return true if `ch`, the character after a `&&`, ends it as an AND token
+   * (whitespace, the end of the source, `;`, `}`, or the backtick closing a
+   * substitution), otherwise false. */
+  private endsAnd(ch: number | undefined): boolean {
+    return (
+      ch === undefined ||
+      isWhitespace(ch) ||
+      ch === CHAR_SEMI ||
+      ch === CHAR_RBRACE ||
+      (ch === CHAR_BACKTICK && this.commandSubstDepth > 0)
+    );
+  }
+
+  /** Read the `&M` of a dup redirect (`2>&1`), the reader at the `&`.
+   * @return the digits written after the `&`, perhaps none. */
+  private readDupFd(): string {
     this.reader.next(); /* the '&' */
     const start = this.reader.currentOffset();
     this.reader.skipUntil(ch => !isDigit(ch));
-    const digits = this.reader.substring(start);
-    if (digits !== "1" && digits !== "2") {
-      this.commandError(`'${digits === "" ? "&" : "&" + digits}' is not a stream: fabr has stdout (1) and stderr (2)`, opStart);
-    }
-    return Number(digits);
+    return this.reader.substring(start);
   }
 
   private consumeToken(type: TokenType): Token {
@@ -1344,13 +1388,15 @@ export class BuildParser {
    * Consume the command-pipeline operator at the current token.
    *
    * @return the operator and its offset, or undefined where the token is none.
-   * A `>` right after a `-` is reported as a mis-spaced rename arrow. An
-   * operator makes the property a command, which Validate allows only on a
-   * COMMAND property.
+   * A `>` right after a `-` is reported as a mis-spaced rename arrow, and a dup
+   * naming no stream (`2>&3`) as a malformed command.
    */
   private tryCommandOp(): CommandOp | undefined {
     let op: CommandOpKind;
     switch (this.token.type) {
+      case TokenType.AND:
+        op = CommandOpKind.And;
+        break;
       case TokenType.PIPE:
         op = CommandOpKind.Pipe;
         break;
@@ -1374,8 +1420,11 @@ export class BuildParser {
         break;
       case TokenType.REDIR_DUP: {
         const { start, from, to } = this.token;
+        if (to !== "1" && to !== "2") {
+          this.commandError(`'&${to}' is not a stream: fabr has stdout (1) and stderr (2)`, start);
+        }
         this.nextToken();
-        return { op: CommandOpKind.Dup, at: start, from, to };
+        return { op: CommandOpKind.Dup, at: start, from, to: Number(to) };
       }
       default:
         return undefined;
@@ -1389,6 +1438,7 @@ export class BuildParser {
    * Consumes nothing and reports nothing. */
   private atCommandOp(): boolean {
     switch (this.token.type) {
+      case TokenType.AND:
       case TokenType.PIPE:
       case TokenType.LANGLE:
       case TokenType.RANGLE:
@@ -1402,33 +1452,42 @@ export class BuildParser {
     }
   }
 
+  /** Report a malformed command, at `offset`, to whatever is reading the command
+   * ({@link parseCommandValue}, {@link readCommandSubst}). */
   private commandError(detail: string, offset: number): never {
-    this.log.log(DIAG_INVALID_COMMAND, { detail, loc: { ...this.source, offset } });
-    throw new ParseAbort();
+    throw new CommandSyntaxError(detail, offset);
   }
 
   /**
-   * Command  ::= Stage ('|' Stage)*
+   * Command  ::= Pipeline ('&&' Pipeline)*
+   * Pipeline ::= Stage ('|' Stage)*
    * Stage    ::= Word (Word | Redirect)*
    * Redirect ::= ('<' | '>' | '1>' | '2>' | '&>') Word | N '>&' M     (N, M: 1 or 2)
    *
-   * Parse a command pipeline from its first operator. `stage0` is the words
+   * Parse a command list from its first operator. `stage0` is the words
    * already read before it (the first stage's command and arguments), `firstOp`
-   * the operator, already consumed, and `firstTarget` that operator's target
-   * where the caller has read it too. Reported as errors: a stage other than the
-   * last capturing stdout, a stage other than the first taking stdin, a stream
-   * redirected twice ({@link applyRedirect}), a missing command or target, and a
-   * `{ ... }` block as a word.
+   * the operator, already consumed,
+   * and `firstTarget` that operator's target where the caller has read it too.
+   * Reported as errors: a stage other than the last of its pipeline capturing
+   * stdout, a stage other than the first of its pipeline taking stdin, a stream
+   * redirected twice ({@link applyRedirect}), a missing command or target, and
+   * a `{ ... }` block as a word.
    *
-   * @return the stages, each with its redirects applied.
+   * @return the pipelines, each stage with its redirects applied.
    */
-  private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): ICommandStage[] {
-    const stages: ICommandStage[] = [];
+  private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): CommandList {
+    const list: CommandList = [];
+    let stages: ICommandStage[] = [];
     let pending = this.firstStage(stage0, firstOp);
     let op: CommandOp | undefined = firstOp;
     /* `firstTarget` is used by the first operator only. */
     while (op !== undefined) {
-      if (op.op === CommandOpKind.Pipe) {
+      if (op.op === CommandOpKind.And) {
+        stages.push(flattenStage(pending));
+        list.push(stages);
+        stages = [];
+        pending = { stage: { command: this.parseRequiredWord(op), args: [] }, fds: newStageFds() };
+      } else if (op.op === CommandOpKind.Pipe) {
         /* Only a capture of stdout is refused before a `|`; `2>&1` there sends
          * stderr into the pipe. */
         if (pending.fds.out.file !== undefined) {
@@ -1451,7 +1510,8 @@ export class BuildParser {
       op = this.tryCommandOp();
     }
     stages.push(flattenStage(pending));
-    return stages;
+    list.push(stages);
+    return list;
   }
 
   /** Make the first stage from the words read before the first operator: the
@@ -1459,12 +1519,14 @@ export class BuildParser {
   private firstStage(words: IValue[], firstOp: CommandOp): PendingStage {
     if (words.length === 0) {
       this.commandError(
-        firstOp.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : "a redirect must follow a command",
+        firstOp.op === CommandOpKind.Pipe || firstOp.op === CommandOpKind.And
+          ? `empty command (nothing beside '${OP_SYMBOL[firstOp.op]}')`
+          : "a redirect must follow a command",
         firstOp.at
       );
     }
-    const [command, ...args] = words;
-    return { stage: { command: this.asWord(command), args: args.map(word => this.asWord(word)) }, fds: newStageFds() };
+    const [command, ...args] = words.map(word => this.asWord(word));
+    return { stage: { command, args }, fds: newStageFds() };
   }
 
   /**
@@ -1483,31 +1545,40 @@ export class BuildParser {
     this.commandSubstDepth++;
     try {
       this.nextToken(); /* the command's first word */
-      const pipeline = this.parseCommandSubstPipeline(open);
+      let command: CommandList;
+      try {
+        command = this.parseCommandSubstList(open);
+      } catch (e) {
+        if (e instanceof CommandSyntaxError) {
+          this.log.log(DIAG_INVALID_COMMAND, { detail: e.detail, loc: { ...this.source, offset: e.offset } });
+          throw new ParseAbort();
+        }
+        throw e;
+      }
       /* The text between the backticks, as written: what the part renders as,
        * and the key its result is looked up under. */
-      builder?.appendCommandSubst(this.reader.substring(open + 1, this.token.start), pipeline);
+      builder?.appendCommandSubst(this.reader.substring(open + 1, this.token.start), command);
     } finally {
       this.commandSubstDepth--;
     }
   }
 
-  /** Parse the pipeline inside a substitution: the first stage's words, then
+  /** Parse the command inside a substitution: the first stage's words, then
    * {@link parseCommand} where an operator follows. Ending on anything but the
    * closing backtick (a `;`, a `}`, EOF) is reported as unterminated, and no
    * words as empty. */
-  private parseCommandSubstPipeline(open: number): CommandPipeline {
+  private parseCommandSubstList(open: number): CommandList {
     const words: IValue[] = [];
     while (!this.atCommandOp() && !this.atCommandEnd()) {
       words.push(this.parseValue());
     }
     const op = this.tryCommandOp();
     if (op !== undefined) {
-      const pipeline = this.parseCommand(words, op);
+      const command = this.parseCommand(words, op);
       if (this.token.type !== TokenType.BACKTICK) {
         this.commandError("unterminated command substitution (no closing '`')", open);
       }
-      return pipeline;
+      return command;
     }
     if (this.token.type !== TokenType.BACKTICK) {
       this.commandError("unterminated command substitution (no closing '`')", open);
@@ -1516,7 +1587,7 @@ export class BuildParser {
       this.commandError("empty command substitution", open);
     }
     const [command, ...args] = words;
-    return [{ command: this.asWord(command), args: args.map(word => this.asWord(word)) }];
+    return [[{ command: this.asWord(command), args: args.map(word => this.asWord(word)) }]];
   }
 
   /** @return true if the current token ends a command (`;`, `}`, EOF, or inside a
@@ -1535,11 +1606,16 @@ export class BuildParser {
     return this.asWord(this.parseValue());
   }
 
-  /** Parse the word an operator needs, a `|`'s next command or a redirect's
-   * target, reporting at the operator where none follows. */
+  /** Parse the word an operator needs, a `&&`'s or `|`'s next command or a
+   * redirect's target, reporting at the operator where none follows. */
   private parseRequiredWord(op: CommandOp): INameValue {
     if (this.atCommandOp() || this.atCommandEnd()) {
-      this.commandError(op.op === CommandOpKind.Pipe ? "empty command (nothing beside '|')" : missingTarget(op.op), op.at);
+      this.commandError(
+        op.op === CommandOpKind.Pipe || op.op === CommandOpKind.And
+          ? `empty command (nothing beside '${OP_SYMBOL[op.op]}')`
+          : missingTarget(op.op),
+        op.at
+      );
     }
     return this.parseWord();
   }
@@ -1975,54 +2051,55 @@ export class BuildParser {
   /**
    * Parse a property's values through the terminating ';', for a `name = …;`
    * declaration and a targetdef's `default …;` clause alike. The current token
-   * starts the first value. Where an operator appears, the values are a command
-   * (one {@link ICommandValue}).
+   * starts the first value. The values are the words written, a command
+   * operator among them a word too ({@link INameValue.operator}). Where there is
+   * one, the values are read again from their start as a command, which is the
+   * property's {@link IPropertyDecl.command}.
    */
   private parsePropertyValues(base: Omit<IPropertyDecl, "values">): IPropertyDecl {
-    const values: IValue[] = [];
-    /* Values are names and `{...}` blocks (`maintainers = { ... } { ... };`); a
-     * block consumes its own `}`, so the RBRACE test sees only the enclosing
-     * body's. A block ends the property, with no ';', unless another block
-     * follows. On the first pipeline operator (`|`, `<`, `>`, …) the words read
-     * so far are the command's first stage. Words with no operator stay a value
-     * list. */
-    while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
-      /* A spaced `<` after a reference is either a `<k=v>` on that reference or
-       * a stdin redirect. Read the `<` and, if it follows, an identifier: an `=`
-       * after that makes it a `<k=v>`, anything else a redirect. */
-      if (this.token.type === TokenType.LANGLE && values.length > 0 && isNameValue(values[values.length - 1])) {
-        const langleAt = this.token.start;
-        const afterLangle = this.nextToken(); /* consume '<' */
-        if (afterLangle.type === TokenType.IDENTIFIER) {
-          const keyToken = { text: afterLangle.text, start: afterLangle.start };
-          const afterKey = this.nextToken(); /* consume the shared identifier prefix */
-          if (afterKey.type === TokenType.EQUALS) {
-            /* A `<k=v>` on the preceding reference, as if it abutted. */
-            const last = values[values.length - 1] as INameValue;
-            const refined = this.applyConstraintsAndRename(last.value, this.parseConstraintList(keyToken));
-            values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
-            continue;
-          }
-          /* A stdin redirect whose target starts with the identifier. */
-          const target: INameValue = {
-            kind: DeclKind.NameValue,
-            source: this.source,
-            offset: keyToken.start,
-            value: this.parseRefSuffix(Name.fromLiteral(keyToken.text)),
-            endOffset: this.prevTokenEnd,
-          };
-          return this.finishCommandProperty(
-            base,
-            values,
-            this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }, target)
-          );
-        }
-        /* A stdin redirect whose target is not an identifier. */
-        return this.finishCommandProperty(base, values, this.parseCommand(values, { op: CommandOpKind.Stdin, at: langleAt }));
+    const start = this.mark();
+    const values = this.parseValueWords();
+    let command: ParsedCommand | undefined;
+    if (values.some(value => isNameValue(value) && value.operator === true)) {
+      const end = this.mark();
+      this.restore(start);
+      /* Reading the words reported anything wrong with them. */
+      const log = this.log;
+      this.log = DISCARDING_LOG;
+      try {
+        command = this.parseCommandValue();
+      } finally {
+        this.log = log;
       }
-      const op = this.tryCommandOp();
-      if (op !== undefined) {
-        return this.finishCommandProperty(base, values, this.parseCommand(values, op));
+      this.restore(end);
+    }
+    this.consumeIfToken(TokenType.SEMI);
+    return { ...base, values, ...(command === undefined ? {} : { command }) };
+  }
+
+  /**
+   * Parse a property's values up to its terminating ';' or `}` as words: names,
+   * `{...}` blocks (`maintainers = { ... } { ... };`) and command operators. A
+   * block consumes its own `}`, so the RBRACE test sees only the enclosing
+   * body's, and ends the property, with no ';', unless another block follows.
+   */
+  private parseValueWords(): IValue[] {
+    const values: IValue[] = [];
+    while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
+      if (this.token.type === TokenType.LANGLE) {
+        const after = this.readAfterSpacedLangle(values);
+        if (after.redirect === undefined) {
+          continue;
+        }
+        values.push(this.operatorWord("<", after.redirect), ...(after.target === undefined ? [] : [after.target]));
+        continue;
+      }
+      if (this.atCommandOp()) {
+        const at = this.token.start;
+        /* Reports a mis-spaced rename arrow. */
+        this.tryCommandOpToken();
+        values.push(this.operatorWord(this.reader.substring(at, this.prevTokenEnd), at));
+        continue;
       }
       const value = this.parseValue();
       values.push(value);
@@ -2030,23 +2107,109 @@ export class BuildParser {
         break;
       }
     }
-    this.consumeIfToken(TokenType.SEMI);
-    return { ...base, values };
+    return values;
   }
 
-  /** Make the property's one command value from a parsed pipeline, positioned at
-   * the first of `values` (the words before the first operator), else at
-   * `prevTokenEnd`. */
-  private finishCommandProperty(base: Omit<IPropertyDecl, "values">, values: IValue[], pipeline: ICommandStage[]): IPropertyDecl {
-    this.consumeIfToken(TokenType.SEMI);
-    const command: ICommandValue = {
-      kind: DeclKind.CommandValue,
+  /**
+   * Parse a property's values, from the first, as a command, through to its
+   * terminating ';' or `}`: the first stage's words, then {@link parseCommand}
+   * from the first operator.
+   *
+   * @return the command's pipelines, or why it is malformed.
+   */
+  private parseCommandValue(): ParsedCommand {
+    const values: IValue[] = [];
+    try {
+      while (this.token.type !== TokenType.SEMI && this.token.type !== TokenType.RBRACE) {
+        if (this.token.type === TokenType.LANGLE) {
+          const after = this.readAfterSpacedLangle(values);
+          if (after.redirect === undefined) {
+            continue;
+          }
+          return { pipelines: this.parseCommand(values, { op: CommandOpKind.Stdin, at: after.redirect }, after.target) };
+        }
+        const op = this.tryCommandOp();
+        if (op !== undefined) {
+          return { pipelines: this.parseCommand(values, op) };
+        }
+        values.push(this.parseValue());
+      }
+      return { pipelines: [[this.firstStage(values, { op: CommandOpKind.Pipe, at: this.token.start }).stage]] };
+    } catch (e) {
+      if (e instanceof CommandSyntaxError) {
+        return { error: e.detail, offset: e.offset };
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Read a `<` with whitespace before it, the current token. After a reference
+   * (the last of `values`) it is a `<k=v>` on that reference where an
+   * identifier and an `=` follow it, applied to the reference in `values`;
+   * anything else makes it a stdin redirect.
+   *
+   * @return for a redirect, the `<`'s offset, and its target where the
+   * identifier that begins it has been read; nothing for a `<k=v>`.
+   */
+  private readAfterSpacedLangle(values: IValue[]): { redirect?: number; target?: INameValue } {
+    const langleAt = this.token.start;
+    const last = values[values.length - 1];
+    const afterLangle = this.nextToken(); /* consume '<' */
+    if (last === undefined || !isNameValue(last) || last.operator === true || afterLangle.type !== TokenType.IDENTIFIER) {
+      return { redirect: langleAt };
+    }
+    const keyToken = { text: afterLangle.text, start: afterLangle.start };
+    const afterKey = this.nextToken(); /* consume the shared identifier prefix */
+    if (afterKey.type === TokenType.EQUALS) {
+      /* A `<k=v>` on the preceding reference, as if it abutted. */
+      const refined = this.applyConstraintsAndRename(last.value, this.parseConstraintList(keyToken));
+      values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
+      return {};
+    }
+    /* A stdin redirect whose target starts with the identifier. */
+    const target: INameValue = {
+      kind: DeclKind.NameValue,
       source: this.source,
-      offset: values.length > 0 ? values[0].offset : this.prevTokenEnd,
+      offset: keyToken.start,
+      value: this.parseRefSuffix(Name.fromLiteral(keyToken.text)),
       endOffset: this.prevTokenEnd,
-      pipeline,
     };
-    return { ...base, values: [command] };
+    return { redirect: langleAt, target };
+  }
+
+  /** Consume the command operator at the current token, reporting a mis-spaced
+   * rename arrow (`sel-> x`) but nothing about a malformed command. */
+  private tryCommandOpToken(): void {
+    if (this.token.type === TokenType.RANGLE && this.reader.substring(this.token.start - 1, this.token.start) === "-") {
+      this.renameTemplateError("the '->' arrow must be surrounded by spaces (`sel -> tmpl`)");
+    }
+    this.nextToken();
+  }
+
+  /** @return the command operator written `text` at `offset`, as a word. */
+  private operatorWord(text: string, offset: number): INameValue {
+    return {
+      kind: DeclKind.NameValue,
+      source: this.source,
+      offset,
+      endOffset: offset + text.length,
+      value: Name.fromLiteral(text),
+      operator: true,
+    };
+  }
+
+  /** @return where the parser is, for {@link restore} to return to. */
+  private mark(): ParserMark {
+    return { offset: this.reader.currentOffset(), token: this.token, prevTokenEnd: this.prevTokenEnd, abuts: this.tokenAbutsPrev };
+  }
+
+  /** Return the parser to where {@link mark} was made. */
+  private restore(mark: ParserMark): void {
+    this.reader.seek(mark.offset);
+    this.token = mark.token;
+    this.prevTokenEnd = mark.prevTokenEnd;
+    this.tokenAbutsPrev = mark.abuts;
   }
 
   /**

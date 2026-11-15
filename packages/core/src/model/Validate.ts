@@ -25,7 +25,6 @@ import {
   IMapItemDecl,
   INameValue,
   IPropertyDecl,
-  isCommandValue,
   isMapValue,
   isNameValue,
   isPropertyDecl,
@@ -160,8 +159,8 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
 }
 
 /**
- * Check one property's values against its type `type`: a pipeline only in a
- * COMMAND property, a COMMAND property not empty, a `{ ... }` block only in a
+ * Check one property's values against its type `type`: a COMMAND property not
+ * empty and a well-formed command, a `{ ... }` block only in a
  * MAP property, a MAP property's own rules ({@link validateMapProperty}), and
  * the REWRITE rules ({@link validateRenameValue}).
  *
@@ -169,20 +168,14 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
  */
 export function validatePropertyShape(prop: IPropertyDecl, type: PropertyType, log: Log): boolean {
   let isValid = true;
-  if (prop.values.some(value => isCommandValue(value))) {
-    /* A pipeline (`a | b > c`) is valid only in a COMMAND property. */
-    if (type !== PropertyType.Command) {
-      log.log(DIAG_INVALID_COMMAND, {
-        detail: "pipeline operators ('|', '<', '>', '2>', '&>') are only valid in a COMMAND property",
-        loc: declPosn(prop),
-      });
-      isValid = false;
-    }
-  } else if (type === PropertyType.Command) {
+  if (type === PropertyType.Command) {
     /* A COMMAND property with no operators is a single-stage command
      * (`run = astro build`), which needs only a value. */
     if (prop.values.length === 0) {
       log.log(DIAG_INVALID_COMMAND, { detail: "a command is required", loc: declPosn(prop) });
+      isValid = false;
+    } else if (prop.command !== undefined && "error" in prop.command) {
+      log.log(DIAG_INVALID_COMMAND, { detail: prop.command.error, loc: { ...prop.source, offset: prop.command.offset } });
       isValid = false;
     }
   } else if (type === PropertyType.Map) {
@@ -294,10 +287,7 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
       isValid = fail(`a map value is either strings or maps, not a mix (key '${key}')`, entry);
     }
     entry.values.forEach(value => {
-      if (isCommandValue(value)) {
-        /* A map holds only strings and maps. */
-        isValid = fail(`a command (pipeline operators) is not valid in a map block (key '${entry.name}')`, entry);
-      } else if (isMapValue(value)) {
+      if (isMapValue(value)) {
         if (!validateBlock(value.entries, log)) {
           isValid = false;
         }
@@ -420,15 +410,7 @@ export function validateRuleBlock(
   return isValid;
 }
 
-/** @return the names written as `prop`'s values: its plain values, and each command stage's command and arguments. */
+/** @return the names written as `prop`'s values, its command operators left out. */
 function writtenNames(prop: IPropertyDecl): INameValue[] {
-  return prop.values.flatMap((value): INameValue[] => {
-    if (isNameValue(value)) {
-      return [value];
-    }
-    if (isCommandValue(value)) {
-      return value.pipeline.flatMap(stage => [stage.command, ...stage.args]);
-    }
-    return [];
-  });
+  return prop.values.filter((value): value is INameValue => isNameValue(value) && value.operator !== true);
 }

@@ -38,7 +38,7 @@
  * commands' whole environment.
  */
 
-import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
+import { MaterializedCommandList, TargetContext, toEnvironment } from "../context/index";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
@@ -67,24 +67,25 @@ function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleRe
     ],
     (output: Name | undefined, env, incremental: Name | undefined, changes: string | undefined) => {
       const srcs = FileSet.unionAll(...srcSets);
-      return context.getCommandProperty("run", srcs).then(stages => {
-        if (stages.length === 0) {
+      return context.getCommandProperty("run", srcs).then(pipelines => {
+        if (pipelines.length === 0) {
           return Computable.reject<RuleResult>(new FabrError("a 'generate' target requires a 'run' command"));
         }
-        return assemblePipeline(srcs, stages, output, env, { incremental, changes });
+        return assemblePipeline(srcs, pipelines, output, env, { incremental, changes });
       });
     }
   );
 }
 
-/** Lay out `stages` beside `srcs` ({@link stagePipeline}) and make the pipeline action that runs them. */
+/** Lay out `pipelines` beside `srcs` ({@link stagePipeline}) and make the pipeline action that runs them. */
 function assemblePipeline(
   srcs: FileSet,
-  stages: MaterializedCommandPipeline,
+  pipelines: MaterializedCommandList,
   output: Name | undefined,
   env: ReadonlyMap<string, string>,
   kept: IKeptState
 ): RuleResult {
-  const { files, specs } = stagePipeline(stages, srcs);
-  return createPipelineAction(files, specs, stages[0].stdin, output, "generate", env, kept);
+  const { files, specs } = stagePipeline(pipelines, srcs);
+  const stdins = pipelines.map(stages => stages[0].stdin);
+  return createPipelineAction(files, specs, stdins, output, "generate", env, kept);
 }

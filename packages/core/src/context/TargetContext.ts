@@ -65,10 +65,11 @@ import { IDependencyStack, requestingTargets, useSiteOf } from "./Stack";
 import { ReferenceLabel } from "../model/Errors";
 import {
   collectRunnable,
+  CommandListLookup,
   CommandValue,
   ICommandStageLookup,
   IPositionedName,
-  MaterializedCommandPipeline,
+  MaterializedCommandList,
   MaterializedCommandStage,
 } from "./Commands";
 import { ContainedSources, PackageSources } from "./Collection";
@@ -272,19 +273,20 @@ export abstract class TargetContext {
    * none. `${...}` in a key substitutes under `overrides`. */
   public abstract getWildcardProperties(overrides?: Constraints): Computable<{ key: Name; decl: IPropertyDecl }[]>;
 
-  /** Look up a COMMAND property's stages, substituted, each name carrying its
-   * written span (see {@link InternalBuildContext.lookupCommand}). The rule-facing
-   * form is {@link getCommandProperty}. Empty where the property is unwritten. */
-  protected abstract getCommandStages(name: string): Computable<ICommandStageLookup[]>;
+  /** Look up a COMMAND property's pipelines, substituted, each name carrying
+   * its written span (see {@link InternalBuildContext.lookupCommand}). The
+   * rule-facing form is {@link getCommandProperty}. Empty where the property is
+   * unwritten. */
+  protected abstract getCommandStages(name: string): Computable<CommandListLookup>;
 
   /** Get a COMMAND property's value, to pass on to a sub-target. A rule that
    * runs the command itself reads {@link getCommandProperty} instead. */
   public getCommand(name: string): Computable<CommandValue> {
-    return this.getCommandStages(name).then(stages => new CommandValue(stages));
+    return this.getCommandStages(name).then(pipelines => new CommandValue(pipelines));
   }
 
   /**
-   * Materialize a COMMAND property's pipeline for a rule that runs it (as
+   * Materialize a COMMAND property's command list for a rule that runs it (as
    * `generate` does): each stage's command as a runnable resolved under
    * {@link runOverrides}, its arguments with globs expanded over the names in
    * `srcs`, its `< source` as a single-file set and its redirections as the
@@ -292,11 +294,16 @@ export abstract class TargetContext {
    * Rejects where a glob argument matches nothing, a `< source` is not exactly
    * one file, or a command names no runnable.
    */
-  public getCommandProperty(name: string, srcs: FileSet): Computable<MaterializedCommandPipeline> {
-    return this.getCommandStages(name).then(stages =>
+  public getCommandProperty(name: string, srcs: FileSet): Computable<MaterializedCommandList> {
+    return this.getCommandStages(name).then(pipelines =>
       Computable.forAll(
-        stages.map(stage => this.materializeStage(stage, srcs)),
-        (...resolved: MaterializedCommandStage[]) => resolved
+        pipelines.map(stages =>
+          Computable.forAll(
+            stages.map(stage => this.materializeStage(stage, srcs)),
+            (...resolved: MaterializedCommandStage[]) => resolved
+          )
+        ),
+        (...resolved: MaterializedCommandList) => resolved
       )
     );
   }
@@ -957,7 +964,7 @@ export class DeclaredTargetContext extends TargetContext {
     );
   }
 
-  protected getCommandStages(name: string): Computable<ICommandStageLookup[]> {
+  protected getCommandStages(name: string): Computable<CommandListLookup> {
     return this.availableFor(name).then(({ decls, context }) => {
       const prop = soleDecl(decls);
       return prop ? context.lookupCommand(prop, this.target, this.stack) : [];
@@ -1043,13 +1050,13 @@ export class AnonymousTargetContext extends TargetContext {
 
   /** Get a sub-target's command input: the {@link CommandValue} the caller
    * supplies, else the type's declared default. */
-  protected getCommandStages(name: string): Computable<ICommandStageLookup[]> {
+  protected getCommandStages(name: string): Computable<CommandListLookup> {
     const value = this.inputs[name];
     if (value === undefined) {
       const decl = this.declaredDefault(name);
       return decl ? this.context.lookupCommand(decl, undefined, this.stack) : Computable.resolve([]);
     }
-    return Computable.resolve(value instanceof CommandValue ? [...value.stages] : []);
+    return Computable.resolve(value instanceof CommandValue ? value.pipelines.map(stages => [...stages]) : []);
   }
 
   public getProperty(name: string, overrides?: Constraints): Computable<Property | undefined> {

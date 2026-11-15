@@ -20,7 +20,7 @@
 import * as path from "path";
 import { GLOB_METACHAR, globCaptureRegex, globMatcher, globPrefixRegex, isGlob } from "../support/Glob";
 import { PatternEdit, renderPatternEdit } from "../support/PatternEdit";
-import type { CommandPipeline } from "../model/AST";
+import type { CommandList } from "../model/AST";
 import { FabrError } from "./Errors";
 
 /** The kind of a {@link NamePart}. */
@@ -55,10 +55,10 @@ export interface NamePart {
    * digits — and, for a command substitution, its source text */
   value: string;
   /**
-   * A command substitution's parsed pipeline — attached by the parser and read
-   * back by the model to resolve the part.
+   * A command substitution's parsed command list — attached by the parser and
+   * read back by the model to resolve the part.
    */
-  command?: CommandPipeline;
+  command?: CommandList;
   /**
    * A variable substitution's `<k=v>` requirement (`${FOO<K=V>}`): the
    * configuration the variable is read under. Its values may substitute in
@@ -875,7 +875,7 @@ export class NameBuilder {
    * Add a command substitution: `text` as written (without the backticks) plus
    * the parsed command, which core carries but never inspects.
    */
-  public appendCommandSubst(text: string, command: CommandPipeline): this {
+  public appendCommandSubst(text: string, command: CommandList): this {
     this.parts.push({ kind: NamePartKind.CommandSubst, value: text, command });
     /* Merge nothing into a command substitution, nor it into a neighbour: two
      * adjacent ones are two commands. Clear `last` rather than point it here. */

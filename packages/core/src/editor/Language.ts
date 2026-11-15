@@ -172,7 +172,8 @@ export function writtenAt(contents: IBuildFileContents, offset: number): Written
       return { kind: "property-name", property, ...where };
     }
     for (const value of valuesOf(property.values)) {
-      if (value.kind === DeclKind.NameValue && within(value.offset, value.endOffset)) {
+      /* A command operator names nothing. */
+      if (value.kind === DeclKind.NameValue && value.operator !== true && within(value.offset, value.endOffset)) {
         return { kind: "value", value, property, ...where };
       }
     }

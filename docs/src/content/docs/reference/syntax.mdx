@@ -643,7 +643,7 @@ metadata = { COMMON; description = This particular package; };
 
 ### Command property
 
-A command is a pipeline, written much as in a shell. The `run` of a
+A command is one or more pipelines joined by `&&`, written much as in a shell. The `run` of a
 [`generate`](/reference/standard-rules/#generate) or a
 [`patched`](/reference/standard-rules/#patched) target is one, and so is the inside of a
 [command substitution](#command-substitution).
@@ -660,21 +660,48 @@ expanded against the target's input files. A command can't be written in a
 
 | Form | Meaning |
 | --- | --- |
+| `a && b` | Run `b` once `a` has succeeded. |
 | `a \| b` | Send `a`'s stdout to `b`'s stdin. |
-| `< name` | Read the first command's stdin from a reference that names one file. |
-| `> name` | Keep stdout as a file called `name`. Only on the last command, since an earlier one's stdout goes to the pipe. |
+| `< name` | Read the first command of a pipeline's stdin from a reference that names one file. |
+| `> name` | Keep stdout as a file called `name`. Only on the last command of a pipeline, since an earlier one's stdout goes to the pipe. |
 | `2> name` | Keep stderr as a file called `name`. |
 | `2>&1` | Send stderr wherever stdout is going at that point. `1>&2` is the reverse. |
 | `&> name` | Keep both in one file: the same as `> name 2>&1`. |
 
 Redirections apply in the order written, as in a shell: `> f 2>&1` sends both streams to `f`,
 while `2>&1 > f` sends stderr to where stdout was going before, and then stdout to `f`. Unlike a
-shell, redirecting the same stream twice is an error.
+shell, redirecting the same stream twice is an error, and so is keeping two files with the same
+name.
+
+The pipelines of a command run one after another in the same directory, and the command stops at
+the first one that fails. A file an earlier pipeline keeps is in that directory for the ones after
+it, as in a shell:
+
+```
+run = gen_routes *.txt > routes.ts && count_lines routes.ts > count.txt;
+```
+
+`< name` reads a file from your project, not from the command's directory, so to read a file an
+earlier pipeline kept, give it as an argument, as `count_lines routes.ts` does. `&&` is an operator
+only when written on its own with a space after it: `a&&b` is one word.
+
+The operators mean something only in a COMMAND property. In any other property they are words of
+the value like any other, so a shell line written as a value, such as a container image's
+[`build`](/reference/container/images/#build-commands), keeps them:
+
+```
+build = apt-get update && apt-get install -y curl > /dev/null;
+```
+
+Each operator is a word of its own there, so `a>b` reads as the three words `a > b`; quote the
+value to keep its text exactly. A `<k=v>` after a word is a [constraint](#constraints)
+on it in every property, commands included.
 
 A stream that isn't redirected is shown as the step's output, and included in the error if the
 command fails.
 
-In a `generate` target, the files that redirections keep are the target's result. If the target
+In a `generate` target, the files that redirections keep are the target's result, a file an
+earlier pipeline kept as the directory holds it when the command ends. If the target
 sets `output`, that chooses the result instead, from those files and from any files the commands
 wrote, and a kept file it doesn't match is left out. A kept file and a written file with the same
 name is an error. Files that `incremental` selects are kept for the command's next run rather

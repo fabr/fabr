@@ -265,6 +265,8 @@ copy it out with `fabr cp routes ./out`, or name it in another target.
 - **Pipes and redirections**: `|`, `< file`, `> name`, `2> name`, `&> name` and `2>&1` work as in a
   shell, except that only the last command of a pipeline can redirect its standard output, and a
   stream can't be redirected twice.
+- **Several commands**: `&&` runs the next command once the one before it has succeeded, as in a
+  shell.
 
 ```
 generate sorted {
@@ -277,8 +279,24 @@ file does, not as it is named in the command's directory. A stream that isn't re
 the step's output, prefixed with the target's name (`sorted err| …`), and repeated in the error if
 the command fails. [Command property](/reference/syntax/#command-property) has the full syntax.
 
-To run several shell commands in one step, as a Makefile recipe does, run them through the shell:
-`run = @host:sh -c "mkdir -p out && cp *.txt out/";`.
+### Running several commands
+
+To run several commands in one step, as a Makefile recipe does, join them with `&&`. They run one
+after another in the same directory, and the step stops at the first one that fails. A file an
+earlier command keeps with a redirection is there for the commands after it:
+
+```
+script count_lines { entry = tools/count-lines.sh; }
+
+generate routes_counted {
+  srcs = api:*.txt;
+  run = gen_routes *.txt > routes.ts && count_lines routes.ts > count.txt;
+}
+```
+
+The result is both files, `routes.ts` and `count.txt`. Each command is a program fabr can run, as
+in a pipeline; for anything else a shell does (`||`, `;`, `cd`, a loop), run the shell itself
+through [`@host`](#programs-on-your-machine): `run = @host:sh -c 'for f in *.txt; do wc -l "$f"; done' > counts.txt;`.
 
 ### Choosing the result with `output`
 

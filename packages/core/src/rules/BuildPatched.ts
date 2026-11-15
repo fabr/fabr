@@ -50,18 +50,20 @@ import { EMPTY_FILESET, FileSet } from "../core/FileSet";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
-import { MaterializedCommandPipeline, TargetContext, toEnvironment } from "../context/index";
+import { MaterializedCommandList, TargetContext, toEnvironment } from "../context/index";
 import { Property } from "../model/Property";
-import { executePipeline, findExecutable, ITaskReport } from "../support/Execute";
+import { findExecutable, ITaskReport } from "../support/Execute";
 import { FilePatch, parsePatchFile } from "../support/Patch";
 import {
   envConfig,
   envEntries,
   pipelineConfig,
   pipelineSpecs,
+  runCommandList,
   selectedCaptures,
+  stagedStdins,
   stagePipeline,
-  stdinBytes,
+  stdinInputs,
 } from "../core/PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 
@@ -95,8 +97,8 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
   const files = FileSet.unionAll(...srcs);
   return Computable.forAll(
     [context.getCommandProperty("run", files), context.getMap("env").then(toEnvironment), context.getProperty("fixes")],
-    (stages: MaterializedCommandPipeline, env: ReadonlyMap<string, string>, fixes: Property | undefined) => {
-      if (patches.length === 0 && stages.length === 0) {
+    (pipelines: MaterializedCommandList, env: ReadonlyMap<string, string>, fixes: Property | undefined) => {
+      if (patches.length === 0 && pipelines.length === 0) {
         throw new FabrError("a 'patched' target requires 'patches' or 'run'");
       }
       if (fixes !== undefined && fixes.getValues().length > 0 && !(srcs.length === 1 && srcs[0] instanceof PackageFileSet)) {
@@ -108,15 +110,14 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
       const order = patches.flatMap(set => [...set].map(([name]) => name).sort());
       /* The command's tools are mounted beside the directory holding the files
        * it changes, so it sees none of them there. */
-      const command = stages.length === 0 ? undefined : stagePipeline(stages, EMPTY_FILESET, { apart: true, cwd: FILES_DIR });
-      const stdin = stages[0]?.stdin;
+      const command = pipelines.length === 0 ? undefined : stagePipeline(pipelines, EMPTY_FILESET, { apart: true, cwd: FILES_DIR });
       const action = new BuildAction(
         PATCH_ACTION,
         {
           files,
           patches: FileSet.unionAll(...patches),
           ...(command === undefined ? {} : { tools: command.files }),
-          ...(stdin === undefined ? {} : { stdin }),
+          ...stdinInputs(pipelines.map(stages => stages[0].stdin)),
         },
         {
           order,
@@ -226,26 +227,20 @@ function stagePatchStep(
 ): Computable<IStagedStep> {
   const specs = typeof action.config.spec === "string" ? pipelineSpecs(action) : [];
   const cwd = path.join(dir, FILES_DIR);
-  const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
-  const stdin =
-    input === undefined
-      ? Computable.resolve(undefined)
-      : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join("..", TREE_MOUNT, path.basename(tree), input[0]));
   const tools =
     typeof action.config.spec === "string" ? writeFileSet(dir, fileSetInput(action, "tools")) : Computable.resolve(undefined);
   return Computable.forAll(
-    [stdin, applyPatches(action, cwd, staging => staging()), tools],
-    (stdinPath: string | undefined): IStagedStep => ({
+    [
+      stagedStdins(action, specs.length, path.posix.join("..", TREE_MOUNT), ensureTree),
+      applyPatches(action, cwd, staging => staging()),
+      tools,
+    ],
+    (stdins: (string | undefined)[]): IStagedStep => ({
       cwd: FILES_DIR,
-      commands:
-        specs.length === 0
-          ? []
-          : [
-              {
-                stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)] })),
-                ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
-              },
-            ],
+      commands: specs.map((stages, index) => ({
+        stages: stages.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)] })),
+        ...(stdins[index] === undefined ? {} : { stdin: stdins[index] }),
+      })),
       env: envConfig(action),
     })
   );
@@ -253,19 +248,18 @@ function stagePatchStep(
 
 /**
  * Run the action's command, if it has one, in `dir`, which holds the files, its
- * tools staged beside it under `.fabr-cmd-<n>/`.
- * @return what its redirections captured.
+ * tools staged beside it under `.fabr-cmd-<n>/` ({@link runCommandList}).
+ * @return what its last pipeline's redirections captured: what the ones
+ * before it captured is among the files in `dir`.
  */
 function runCommand(action: BuildAction, ctx: ActionContext, dir: string, report: ITaskReport): Computable<FileSet> {
   if (typeof action.config.spec !== "string") {
     return Computable.resolve(EMPTY_FILESET);
   }
-  const specs = pipelineSpecs(action);
-  const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, fileSetInput(action, "tools")))
-    .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(ctx.processLimit, specs, dir, () => ctx.createOutput(), bytes, report, envConfig(action)));
+    .then(() => runCommandList(action, ctx, pipelineSpecs(action), dir, report))
+    .then(({ captured }) => captured);
 }
 
 /** Apply one file's change to the tree staged at `root`. */
@@ -310,4 +304,4 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
   }
 }
 
-export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 3, run: runPatch, stage: stagePatchStep };
+export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 4, run: runPatch, stage: stagePatchStep };

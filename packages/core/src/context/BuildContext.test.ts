@@ -221,6 +221,20 @@ testRules.push(
         .then(descriptionFile),
   })
 );
+/* A program, which has a rule under `run` alone, and describes its `deps`, read under build, as its sources. */
+testRules.push(
+  defineRule({
+    type: "test_program",
+    properties: { [BUILD_OPERATION]: "run" },
+    requirements: context => Computable.resolve({ build: { deps: context.getPackageProperty("deps", BUILD_OVERRIDE) } }),
+    evaluateResolved: () => Computable.resolve(EMPTY_FILESET),
+    describe: (context, requirements) =>
+      requirements
+        .describeAll()
+        .then(({ deps }) => describeTarget(context, requirements.resolved, { sources: deps, tags: ["application"] }))
+        .then(descriptionFile),
+  })
+);
 /* Holds what its `deps` were materialized as, entry by entry. */
 let heldDeps: FileSet[] = [];
 testRules.push(
@@ -933,7 +947,7 @@ registerRule("test_map_composer", {}, context =>
 
 /* A sub-target that resolves its COMMAND against sources of its own, and a
  * composer that hands it the command as it read it. */
-let lastCommand: Array<{ args: string[]; stdout?: string }> | undefined;
+let lastCommand: Array<Array<{ args: string[]; stdout?: string }>> | undefined;
 registerRule("test_cmd", {}, context =>
   context
     .getCommandProperty(
@@ -946,8 +960,8 @@ registerRule("test_cmd", {}, context =>
         ])
       )
     )
-    .then(stages => {
-      lastCommand = stages.map(stage => ({ args: stage.args, stdout: stage.stdout }));
+    .then(pipelines => {
+      lastCommand = pipelines.map(stages => stages.map(stage => ({ args: stage.args, stdout: stage.stdout })));
       return EMPTY_FILESET;
     })
 );
@@ -1128,10 +1142,12 @@ describe("BuildContext", () => {
     expect(() => toDescription({ ...description, sources: [{ uri: "./a.ts" }] })).to.throw(/BSP source items/);
   });
 
-  it("describes every target of the project, each settling on its own, its description in the tree pool", async () => {
+  it("describes every target of the project under each of its operations, each settling on its own, its description in the tree pool", async () => {
     const errors: string[] = [];
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
-    const input = "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntest_carrier lib { }\ntest_carrier app { deps = lib; }\n";
+    const input =
+      "MODE = m;\ntargetdef test_carrier { deps = PACKAGES; }\ntargetdef test_program { deps = PACKAGES; }\n" +
+      "test_carrier lib { }\ntest_carrier app { deps = lib; }\ntest_program tool { deps = lib; }\n";
     /* The project's files are read through the run's source tree. */
     const tree = new FileSet(new Map());
     const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, tree, new FileSet(new Map()));
@@ -1146,11 +1162,15 @@ describe("BuildContext", () => {
     expect(describing.targets.map(({ name, operation }) => ({ name, operation }))).to.deep.equal([
       { name: "lib", operation: "build" },
       { name: "app", operation: "build" },
+      { name: "tool", operation: "run" },
     ]);
     await describing.settled;
     const app = await describing.targets[1].described;
     expect(app?.description.target.dependencies).to.deep.equal([{ uri: "fabr:lib" }]);
     expect(fs.existsSync(path.join(app!.directory, DESCRIPTION_FILE))).to.equal(true);
+    const tool = await describing.targets[2].described;
+    expect(tool?.description.target.tags).to.deep.equal(["application"]);
+    expect(tool?.description.target.capabilities).to.deep.equal({ canCompile: false, canTest: false, canRun: true, canDebug: false });
   });
 
   it("describes a target whose versions conflict as the resolution selected them, where its build refuses them", async () => {
@@ -2446,8 +2466,26 @@ describe("BuildContext", () => {
           "test_cmd_composer t { run = tools:fmt --check *.txt | tools:count > report; }\n"
       );
       expect(lastCommand).to.deep.equal([
-        { args: ["--check", "a.txt", "b.txt"], stdout: undefined },
-        { args: [], stdout: "report" },
+        [
+          { args: ["--check", "a.txt", "b.txt"], stdout: undefined },
+          { args: [], stdout: "report" },
+        ],
+      ]);
+    });
+
+    it("Reads a command's words joined by '&&' as a command list", async () => {
+      lastCommand = undefined;
+      await build(
+        "targetdef test_tool_repo { }\n" +
+          "targetdef test_cmd { run = COMMAND; }\n" +
+          "targetdef test_cmd_composer { run = COMMAND; }\n" +
+          "test_tool_repo tools { }\n" +
+          "test_cmd_composer t { run = tools:fmt *.md && tools:count a.txt && tools:sum *.txt > report; }\n"
+      );
+      expect(lastCommand).to.deep.equal([
+        [{ args: ["c.md"], stdout: undefined }],
+        [{ args: ["a.txt"], stdout: undefined }],
+        [{ args: ["a.txt", "b.txt"], stdout: "report" }],
       ]);
     });
 

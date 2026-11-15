@@ -14,8 +14,9 @@
  * details.
  */
 
+import * as fs from "fs";
 import * as path from "path";
-import { getResultFileSets, writeFileSet } from "./Staging";
+import { getResultFileSets, OutputSelection, writeFileSet } from "./Staging";
 import { Computable } from "./Computable";
 import { ConflictError, FabrError } from "./Errors";
 import { EMPTY_FILESET, FileSet } from "./FileSet";
@@ -38,14 +39,14 @@ import { ActionContext, IChangedFiles, toChangesDocument, TREE_MOUNT } from "./B
 
 /**
  * Run the `command-pipeline` build step: stage the action's `files` and config
- * files into the work dir (laid out by {@link stagePipeline}), run the stages
- * as one pipeline, each stage's standard output feeding the next stage's
- * input and the first stage reading the `stdin` input where there is one, and
- * return what it produced.
+ * files into the work dir (laid out by {@link stagePipeline}), run its command
+ * list there ({@link runCommandList}), and return what it produced.
  *
  * The result is the redirect captures, each under the name it was redirected
- * to, where the action has no `output`; with `output`, it is what `output`
- * selects from the captures and the files the commands wrote, together
+ * to, where the action has no `output`: the last pipeline's as they were
+ * captured, and those of the pipelines before it as the work dir holds them
+ * once the commands end. With `output`, it is what `output` selects from the
+ * last pipeline's captures and the files in the work dir, together
  * ({@link outputOf}). Where the action keeps state ({@link IKeptState}) and
  * its target has a successful run before this one, the files that run kept are
  * staged back (writable) and the changes document written at `changes` before
@@ -61,8 +62,6 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
   /* A projection (a selector, optionally with a `-> tmpl` rename), or absent
    * to collect only the redirect captures. */
   const output = action.config.output instanceof Name ? action.config.output : undefined;
-  const stdin = action.inputs.stdin instanceof FileSet ? action.inputs.stdin : undefined;
-  const env = envConfig(action);
 
   const incremental = action.config.incremental instanceof Name ? action.config.incremental : undefined;
   const changes = typeof action.config.changes === "string" ? action.config.changes : undefined;
@@ -77,26 +76,83 @@ function runPipeline(action: BuildAction, ctx: ActionContext, report: ITaskRepor
         writeFileSet(ctx.workDir, files).then(() => (base === undefined ? undefined : writeFileSet(ctx.workDir, base, { copy: true })))
       )
     )
-    .then(() => stdinBytes(stdin))
-    .then(bytes => executePipeline(ctx.processLimit, specs, ctx.workDir, () => ctx.createOutput(), bytes, report, env))
-    .then(captured => {
-      if (output === undefined && incremental === undefined) {
+    .then(() => runCommandList(action, ctx, specs, ctx.workDir, report))
+    .then(({ captured, written }) => {
+      /* The captures of the pipelines before the last, collected as files where there is no `output`. */
+      const earlier = output === undefined && written.length > 0 ? written.map(name => Name.fromLiteral(name)) : undefined;
+      const selections: OutputSelection[] = [];
+      const indexOf = (selection: OutputSelection | undefined): number =>
+        selection === undefined ? -1 : selections.push(selection) - 1;
+      const outputAt = indexOf(output);
+      const stateAt = indexOf(incremental);
+      const earlierAt = indexOf(earlier);
+      if (selections.length === 0) {
         return Computable.resolve<BuildResult>({ result: captured });
       }
-      /* One walk of the work dir collects both: each selection's files under the
-       * names it gives them, a file both select in both. */
-      const selections = [output, incremental].filter((selection): selection is Name => selection !== undefined);
+      /* One walk of the work dir collects them all: each selection's files
+       * under the names it gives them, a file two select in both. */
       return ctx
         .admit(report, () => getResultFileSets(ctx.workDir, selections))
         .then(collected => {
-          const written = output === undefined ? undefined : collected[0];
-          const state = incremental === undefined ? undefined : collected[collected.length - 1];
+          const state = stateAt === -1 ? undefined : collected[stateAt];
           return {
-            result: output === undefined || written === undefined ? captured : outputOf(captured, written, output),
+            result:
+              output !== undefined
+                ? outputOf(captured, collected[outputAt], output)
+                : earlierAt === -1
+                  ? captured
+                  : FileSet.unionAll(captured, collected[earlierAt]),
             ...(state === undefined || state.size === 0 ? {} : { incrementalState: state }),
           };
         });
     });
+}
+
+/**
+ * Run `pipelines`, an action's command list ({@link pipelineSpecs}), in `dir`,
+ * one after another, each once the one before it has succeeded, with the
+ * action's environment. The first stage of each reads the action's stdin input
+ * for it ({@link stdinInput}). What a pipeline before the last captures is
+ * written into `dir` as it ends, a writable copy replacing whatever is at its
+ * name, so that the commands after it read it as a file.
+ *
+ * @return what the last pipeline captured, and the names of what the ones
+ * before it captured, now files in `dir`. Rejects as soon as a pipeline fails
+ * (see executePipeline).
+ */
+export function runCommandList(
+  action: BuildAction,
+  ctx: ActionContext,
+  pipelines: StageSpec[][],
+  dir: string,
+  report: ITaskReport
+): Computable<{ captured: FileSet; written: string[] }> {
+  const env = envConfig(action);
+  const run = (index: number, written: string[]): Computable<{ captured: FileSet; written: string[] }> => {
+    if (index === pipelines.length) {
+      return Computable.resolve({ captured: EMPTY_FILESET, written });
+    }
+    return stdinBytes(stdinInput(action, index))
+      .then(bytes => executePipeline(ctx.processLimit, pipelines[index], dir, () => ctx.createOutput(), bytes, report, env))
+      .then(captured =>
+        index === pipelines.length - 1
+          ? { captured, written }
+          : ctx
+              .admit(report, () => replaceFiles(dir, captured))
+              .then(() => run(index + 1, [...written, ...[...captured].map(([name]) => name)]))
+      );
+  };
+  return run(0, []);
+}
+
+/** Write `files` into `dir` as writable copies, each first removing what is at
+ * its name, so that a file staged there from the cache is replaced rather than
+ * written through. */
+function replaceFiles(dir: string, files: FileSet): Computable<void> {
+  for (const [name] of files) {
+    fs.rmSync(path.join(dir, name), { force: true });
+  }
+  return writeFileSet(dir, files, { copy: true });
 }
 
 /**
@@ -166,7 +222,7 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
  * spec means, changes. */
 export const PIPELINE_ACTION: IBuildActionDefinition = {
   id: "core:command-pipeline",
-  version: 6,
+  version: 7,
   run: runPipeline,
   stage: stagePipelineStep,
 };
@@ -178,19 +234,56 @@ export interface IPipelineStage extends StageStreams {
   env?: string[];
 }
 
-/** @return the config members holding `stages`: `spec`, each stage but its
- * command line, and each command line as `argv.<n>`. */
-export function pipelineConfig(stages: readonly IPipelineStage[]): ActionConfig {
+/** @return the config members holding the command list `pipelines`: `spec`,
+ * each pipeline's stages but their command lines, and each command line as
+ * `argv.<n>`, numbered across the list. */
+export function pipelineConfig(pipelines: readonly (readonly IPipelineStage[])[]): ActionConfig {
+  const argvs = pipelines.flat().map(stage => stage.argv);
   return {
-    spec: JSON.stringify(stages.map(stage => ({ ...stage, argv: undefined }))),
-    ...Object.fromEntries(stages.map((stage, index) => [`argv.${index}`, stage.argv])),
+    spec: JSON.stringify(pipelines.map(stages => stages.map(stage => ({ ...stage, argv: undefined })))),
+    ...Object.fromEntries(argvs.map((argv, index) => [`argv.${index}`, argv])),
   };
 }
 
-/** Read the stages {@link pipelineConfig} wrote, each command line as the text it is run as. */
-export function pipelineSpecs(action: BuildAction): StageSpec[] {
-  const stages: Omit<IPipelineStage, "argv">[] = JSON.parse(stringConfig(action, "spec"));
-  return stages.map((stage, index) => ({ ...stage, argv: toArgv(commandLineConfig(action, `argv.${index}`)) }));
+/** Read the command list {@link pipelineConfig} wrote, each command line as the text it is run as. */
+export function pipelineSpecs(action: BuildAction): StageSpec[][] {
+  const pipelines: Omit<IPipelineStage, "argv">[][] = JSON.parse(stringConfig(action, "spec"));
+  let index = 0;
+  return pipelines.map(stages => stages.map(stage => ({ ...stage, argv: toArgv(commandLineConfig(action, `argv.${index++}`)) })));
+}
+
+/** @return the inputs holding each pipeline's standard input, `stdin.<n>` for
+ * pipeline `n`, where it has one. */
+export function stdinInputs(stdins: ReadonlyArray<FileSet | undefined>): Record<string, FileSet> {
+  return Object.fromEntries(
+    stdins.flatMap((stdin, index): [string, FileSet][] => (stdin === undefined ? [] : [[`stdin.${index}`, stdin]]))
+  );
+}
+
+/** @return the standard input of pipeline `index` that {@link stdinInputs} wrote, or undefined where it has none. */
+export function stdinInput(action: BuildAction, index: number): FileSet | undefined {
+  const stdin = action.inputs[`stdin.${index}`];
+  return stdin instanceof FileSet ? stdin : undefined;
+}
+
+/** Stage each pipeline's standard input into the tree pool, as a path from
+ * `dir` through the pool's link beside it: `pool` is that link as a path
+ * from `dir`. */
+export function stagedStdins(
+  action: BuildAction,
+  count: number,
+  pool: string,
+  ensureTree: (files: FileSet) => Computable<string>
+): Computable<(string | undefined)[]> {
+  return Computable.forAll(
+    Array.from({ length: count }, (_, index) => {
+      const [input] = [...(stdinInput(action, index) ?? EMPTY_FILESET)];
+      return input === undefined
+        ? Computable.resolve(undefined)
+        : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(pool, path.basename(tree), input[0]));
+    }),
+    (...paths: (string | undefined)[]) => paths
+  );
 }
 
 /** @return the variables a command runs with, as the `env` config member holds them. */
@@ -212,21 +305,17 @@ function stagePipelineStep(
   ensureTree: (files: FileSet) => Computable<string>
 ): Computable<IStagedStep> {
   const specs = pipelineSpecs(action);
-  const [input] = action.inputs.stdin instanceof FileSet ? [...action.inputs.stdin] : [];
-  const stdin =
-    input === undefined
-      ? Computable.resolve(undefined)
-      : ensureTree(new FileSet(new Map([input]))).then(tree => path.posix.join(TREE_MOUNT, path.basename(tree), input[0]));
   return Computable.forAll(
-    [stdin, writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action)))],
-    stdinPath => ({
+    [
+      stagedStdins(action, specs.length, TREE_MOUNT, ensureTree),
+      writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))),
+    ],
+    (stdins: (string | undefined)[]) => ({
       cwd: ".",
-      commands: [
-        {
-          stages: specs.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
-          ...(stdinPath === undefined ? {} : { stdin: stdinPath }),
-        },
-      ],
+      commands: specs.map((stages, index) => ({
+        stages: stages.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
+        ...(stdins[index] === undefined ? {} : { stdin: stdins[index] }),
+      })),
       env: envConfig(action),
     })
   );
@@ -242,13 +331,14 @@ export interface RunnableStage extends StageStreams {
 }
 
 /**
- * Lay out a resolved pipeline: return the files to stage (`srcs` and each
- * stage's runnable) and each stage's run spec. A single-stage command's
- * runnable is laid out at the root over `srcs`, so its `node_modules` sits
- * beside the sources and a source importing the tool resolves it. Each stage
- * of a longer pipeline goes under its own `.fabr-cmd-<n>/`, so the tools do
- * not share a `node_modules`. A runnable that collides with `srcs` is a
- * {@link ConflictError}.
+ * Lay out a resolved command list: return the files to stage (`srcs` and each
+ * stage's runnable) and each pipeline's stage specs. A command of one stage
+ * has its runnable laid out at the root over `srcs`, so its `node_modules`
+ * sits beside the sources and a source importing the tool resolves it. Each
+ * stage of any longer command goes under its own `.fabr-cmd-<n>/`, numbered
+ * across the list, so the tools do not share a `node_modules`. A runnable that
+ * collides with `srcs` is a {@link ConflictError}, and two redirections
+ * keeping one name an error.
  *
  * `apart` lays out a single stage under `.fabr-cmd-0/` too, for a command over
  * files that import nothing of its tool (`patched`'s). `cwd` is where the
@@ -256,26 +346,38 @@ export interface RunnableStage extends StageStreams {
  * relative to it.
  */
 export function stagePipeline(
-  stages: ReadonlyArray<RunnableStage>,
+  pipelines: ReadonlyArray<ReadonlyArray<RunnableStage>>,
   srcs: FileSet,
   options: { apart?: boolean; cwd?: string } = {}
-): { files: FileSet; specs: IPipelineStage[] } {
-  const single = stages.length === 1 && options.apart !== true;
+): { files: FileSet; specs: IPipelineStage[][] } {
+  const single = pipelines.length === 1 && pipelines[0].length === 1 && options.apart !== true;
   const cwd = options.cwd ?? ".";
   /* The tree pool, which a runnable interpreter is launched from, as a path from where the commands run. */
   const pool = path.posix.join(path.posix.relative(cwd, "."), TREE_MOUNT);
+  const kept = new Set<string>();
+  for (const name of pipelines.flat().flatMap(stage => [stage.stdout, stage.stderr])) {
+    if (name !== undefined) {
+      if (kept.has(name)) {
+        throw new FabrError(`'${name}' is kept by two redirections of the command`);
+      }
+      kept.add(name);
+    }
+  }
   const mounts: FileSet[] = [];
-  const specs: IPipelineStage[] = stages.map((stage, i) => {
-    const dir = single ? undefined : `.fabr-cmd-${i}`;
-    mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
-    return {
-      argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? { pool } : { base: path.posix.relative(cwd, dir), pool }),
-      stdout: stage.stdout,
-      stderr: stage.stderr,
-      mergedTo: stage.mergedTo,
-      ...(stage.runnable.env.size > 0 ? { env: envEntries(stage.runnable.env) } : {}),
-    };
-  });
+  let index = 0;
+  const specs = pipelines.map(stages =>
+    stages.map((stage): IPipelineStage => {
+      const dir = single ? undefined : `.fabr-cmd-${index++}`;
+      mounts.push(dir === undefined ? stage.runnable : FileSet.layout({ [dir]: stage.runnable }));
+      return {
+        argv: stage.runnable.toCommandLine(stage.args, dir === undefined ? { pool } : { base: path.posix.relative(cwd, dir), pool }),
+        stdout: stage.stdout,
+        stderr: stage.stderr,
+        mergedTo: stage.mergedTo,
+        ...(stage.runnable.env.size > 0 ? { env: envEntries(stage.runnable.env) } : {}),
+      };
+    })
+  );
   return { files: FileSet.unionAll(srcs, ...mounts), specs };
 }
 
@@ -288,14 +390,14 @@ export interface IKeptState {
 }
 
 /** @return a command-pipeline action over `files` (as {@link stagePipeline}
- * lays them out) running `specs`, with an optional single-file `stdin`, the
- * `output` projection (absent to collect only the redirect captures), a
- * display label, the variables every stage runs with (its whole environment),
- * and what it keeps between runs. */
+ * lays them out) running the command list `specs`, with each pipeline's
+ * optional single-file stdin, the `output` projection (absent to collect only
+ * the redirect captures), a display label, the variables every stage runs with
+ * (its whole environment), and what it keeps between runs. */
 export function createPipelineAction(
   files: FileSet,
-  specs: IPipelineStage[],
-  stdin: FileSet | undefined,
+  specs: IPipelineStage[][],
+  stdins: ReadonlyArray<FileSet | undefined>,
   output: Name | undefined,
   label?: string,
   env: ReadonlyMap<string, string> = new Map(),
@@ -303,7 +405,7 @@ export function createPipelineAction(
 ): BuildAction {
   return new BuildAction(
     PIPELINE_ACTION,
-    { files, ...(stdin ? { stdin } : {}) },
+    { files, ...stdinInputs(stdins) },
     {
       ...pipelineConfig(specs),
       ...(output ? { output } : {}),

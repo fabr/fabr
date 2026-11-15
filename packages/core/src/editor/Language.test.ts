@@ -83,6 +83,13 @@ describe("build file language", () => {
     expect(writtenAt(contents, at("lib ${"))?.kind).to.equal("value");
   });
 
+  it("finds no value at a '&&' joining commands", () => {
+    const text = "RUN = gen && check;\n";
+    const parsed = parseBuildString(EMPTY_FILESET, "BUILD.fabr", text, log);
+    expect(writtenAt(parsed, text.indexOf("&&"))).to.equal(undefined);
+    expect(writtenAt(parsed, text.indexOf("check"))?.kind).to.equal("value");
+  });
+
   it("finds where a reference, a substitution and a target's type are declared", () => {
     const declared = (offset: number): string[] =>
       (namedAt(model, writtenAt(contents, offset)!, offset)?.declarations ?? []).map(span =>

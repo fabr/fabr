@@ -250,7 +250,7 @@
         },
         {
           "name": "keyword.operator.pipe.fabr",
-          "match": "\\||2>|&>|>|<(?![^>\\s]*=)"
+          "match": "(?<!\\S)&&(?=[\\s;}]|$)|\\||2>|&>|>|<(?![^>\\s]*=)"
         },
         {
           "include": "#constraint"

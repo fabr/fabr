@@ -71,7 +71,7 @@ import { BUILD_OPERATION, Constraints, COVERAGE, HOST, operationOf, RUN_OVERRIDE
 import { TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import {
-  CommandPipeline,
+  CommandList,
   DeclKind,
   declName,
   declPosn,
@@ -80,11 +80,8 @@ import {
   IDecl,
   IMapItemDecl,
   ISpliceDecl,
-  ICommandValue,
-  IMapValue,
   INameValue,
   IPropertyDecl,
-  isCommandValue,
   isMapValue,
   isNameValue,
   ITargetDecl,
@@ -118,11 +115,13 @@ import { DeclaredResolvedTarget, BlockTargetNode, passedOn } from "./ResolvedTar
 import {
   collectRunnable,
   captureStages,
+  CommandListLookup,
   ICommandStageLookup,
   IPositionedName,
   normalizeCommandOutput,
+  MaterializedCommandList,
   MaterializedCommandStage,
-  SUBST_CAPTURE,
+  substCapture,
 } from "./Commands";
 import { ResolvedRequirements } from "./Collection";
 import type { Credential } from "../core/Credential";
@@ -820,8 +819,8 @@ export class BuildContextImpl implements InternalBuildContext {
   /**
    * Look up each of `prop`'s values with `tail` ({@link lookupStringValue} or
    * {@link lookupFileValue}), handing it the value's use frame. A value that is
-   * not a name (a map block or a command pipeline) is refused with a message
-   * naming the use `expects` ("a string", "files"). This is the only check of
+   * not a name (a map block) is refused with a message naming the use
+   * `expects` ("a string", "files"). This is the only check of
    * that for `default` and global properties and sync coordinates, which
    * Validate does not see.
    */
@@ -836,7 +835,7 @@ export class BuildContextImpl implements InternalBuildContext {
       prop.values.map(value =>
         isNameValue(value)
           ? tail(value, { property: prop, target, value, next: stack }).labelled(new ReferenceLabel({ value, property: prop, target }))
-          : Computable.reject<T>(nonNameValueError(prop, value, expects))
+          : Computable.reject<T>(mapInWrongContextError(prop, expects))
       ),
       (...resolved: T[]) => resolved
     );
@@ -1409,50 +1408,64 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /**
    * Run one `` `cmd` `` substitution and return the text it produced: look up
-   * the pipeline the parser attached and run it for its output
+   * the command list the parser attached and run it for its output
    * ({@link runResolvedCommand}).
    */
   private runCommandSubst(part: NamePart, stack?: IDependencyStack): Computable<string> {
-    const pipeline = part.command;
-    if (pipeline === undefined || pipeline.length === 0) {
+    const command = part.command;
+    if (command === undefined || command.length === 0) {
       return Computable.reject(new FabrError(`Malformed command substitution '${part.value}'`));
     }
     const written = useFrameOf(stack);
-    return Computable.forAll(
-      pipeline.map(stage => this.lookupCommandStage(stage, written?.property, written?.target, stack)),
-      (...substituted: ICommandStageLookup[]) => substituted
-    ).then(substituted => this.runResolvedCommand(substituted, part.value, stack));
+    return this.lookupCommandList(command, written?.property, written?.target, stack).then(substituted =>
+      this.runResolvedCommand(substituted, part.value, stack)
+    );
   }
 
   /**
    * Materialize each looked-up stage's command as a runnable and run the
-   * pipeline for its output ({@link captureOutput}). `written` names the command
-   * in errors and in the work item it reports as.
+   * command list for its output ({@link captureOutput}). `written` names the
+   * command in errors and in the work item it reports as.
    */
-  private runResolvedCommand(substituted: ICommandStageLookup[], written: string, stack?: IDependencyStack): Computable<string> {
+  private runResolvedCommand(substituted: CommandListLookup, written: string, stack?: IDependencyStack): Computable<string> {
     return Computable.forAll(
-      substituted.map(stage => this.materializeSubstStage(stage, written, stack)),
-      (...resolved: MaterializedCommandStage[]) => resolved
-    ).then(stages => this.captureOutput(stages, written));
+      substituted.map(stages =>
+        Computable.forAll(
+          stages.map(stage => this.materializeSubstStage(stage, written, stack)),
+          (...resolved: MaterializedCommandStage[]) => resolved
+        )
+      ),
+      (...pipelines: MaterializedCommandList) => pipelines
+    ).then(pipelines => this.captureOutput(pipelines, written));
   }
 
   /**
-   * Run a resolved pipeline and return its stdout as text: stage it as
+   * Run a resolved command list and return its stdout as text: stage it as
    * `generate` does, perform it as a build action through the cache, and
-   * normalize the output ({@link normalizeCommandOutput}). The action belongs
-   * to no target ({@link runOwnAction}) and stages no `srcs`, only what its
-   * stages carry. `written` labels the work.
+   * normalize the output of its pipelines, taken in order
+   * ({@link normalizeCommandOutput}). The action belongs to no target
+   * ({@link runOwnAction}) and stages no `srcs`, only what its stages carry.
+   * `written` labels the work.
    */
-  private captureOutput(stages: MaterializedCommandStage[], written: string): Computable<string> {
-    if (stages.length === 0) {
+  private captureOutput(pipelines: MaterializedCommandList, written: string): Computable<string> {
+    if (pipelines.length === 0) {
       return Computable.resolve("");
     }
-    const captured = captureStages(stages);
+    const captured = captureStages(pipelines);
     const { files, specs } = stagePipeline(captured, EMPTY_FILESET);
-    const action = createPipelineAction(files, specs, captured[0].stdin, undefined);
+    const action = createPipelineAction(
+      files,
+      specs,
+      captured.map(stages => stages[0].stdin),
+      undefined
+    );
     return this.runOwnAction(action, { kind: "command-subst", command: written })
-      .then(output => output.get(SUBST_CAPTURE))
-      .then(file => (file ? file.readString() : ""))
+      .then(output =>
+        Computable.forAll(
+          captured.map((_, index) => output.get(substCapture(index)).then(file => (file ? file.readString() : ""))),
+          (...texts: string[]) => texts.join("")
+        )
+      )
       .then(normalizeCommandOutput);
   }
 
@@ -1505,31 +1518,54 @@ export class BuildContextImpl implements InternalBuildContext {
     });
   }
 
-  public lookupCommand(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<ICommandStageLookup[]> {
-    return this.getCommandPipeline(prop, target, stack, new Set()).then(stages =>
-      Computable.forAll(
-        stages.map(stage => this.lookupCommandStage(stage, prop, target, stack)),
-        (...resolved: ICommandStageLookup[]) => resolved
-      )
+  public lookupCommand(prop: IPropertyDecl, target?: ITargetDecl, stack?: IDependencyStack): Computable<CommandListLookup> {
+    return this.getCommandList(prop, target, stack, new Set()).then(command => this.lookupCommandList(command, prop, target, stack));
+  }
+
+  /** Substitute every name of each pipeline of `command` ({@link lookupCommandStage}). */
+  private lookupCommandList(
+    command: CommandList,
+    prop: IPropertyDecl | undefined,
+    target: ITargetDecl | undefined,
+    stack: IDependencyStack | undefined
+  ): Computable<CommandListLookup> {
+    return Computable.forAll(
+      command.map(stages =>
+        Computable.forAll(
+          stages.map(stage => this.lookupCommandStage(stage, prop, target, stack)),
+          (...resolved: ICommandStageLookup[]) => resolved
+        )
+      ),
+      (...pipelines: CommandListLookup) => pipelines
     );
   }
 
-  /** Get the raw (unsubstituted) pipeline of a command property: its parsed
-   * pipeline, a single `cmd args…` stage, or — when the sole value references
-   * another command-valued property — that property's pipeline (chased,
-   * `seen`-guarded, mirroring lookupMapDecl). */
-  private getCommandPipeline(
+  /** Get the raw (unsubstituted) command list of a command property: its
+   * parsed command, a single `cmd args…` stage, or — when the sole value
+   * references another command-valued property — that property's command list
+   * (chased, `seen`-guarded, mirroring lookupMapDecl). Rejects a malformed
+   * command, which Validate does not see in a global. */
+  private getCommandList(
     prop: IPropertyDecl,
     target: ITargetDecl | undefined,
     stack: IDependencyStack | undefined,
     seen: Set<IPropertyDecl>
-  ): Computable<CommandPipeline> {
+  ): Computable<CommandList> {
     if (seen.has(prop)) {
       return Computable.reject(new FabrError(`Circular command reference at '${prop.name}'`));
     }
-    const commandValue = prop.values.find(isCommandValue);
-    if (commandValue !== undefined) {
-      return Computable.resolve(commandValue.pipeline);
+    const command = prop.command;
+    if (command !== undefined) {
+      return "error" in command
+        ? Computable.reject(
+            new NameResolutionError(
+              Name.fromLiteral(declName(prop)),
+              { ...prop.source, offset: command.offset },
+              useSiteOf(stack),
+              `Invalid command: ${command.error}`
+            )
+          )
+        : Computable.resolve(command.pipelines);
     }
     const names = prop.values.filter(isNameValue);
     if (names.length === 0) {
@@ -1546,12 +1582,12 @@ export class BuildContextImpl implements InternalBuildContext {
         .referencedProperty(value.value, info)
         .then(({ prop: ref, property, context }) =>
           ref
-            ? context.getCommandPipeline(ref, undefined, stack, nextSeen)
-            : Computable.resolve<CommandPipeline>(property ? [] : [{ command: value, args: [] }])
+            ? context.getCommandList(ref, undefined, stack, nextSeen)
+            : Computable.resolve<CommandList>(property ? [] : [[{ command: value, args: [] }]])
         );
     }
-    const [command, ...args] = names;
-    return Computable.resolve([{ command, args }]);
+    const [command0, ...args] = names;
+    return Computable.resolve([[{ command: command0, args }]]);
   }
 
   /** Substitute every name of one stage, keeping each written {@link INameValue}
@@ -2056,19 +2092,6 @@ function mapInWrongContextError(prop: IPropertyDecl, context: string): Error {
     `a map is referenced by bare name from a MAP property (\`metadata = ${prop.name};\`); ` +
       `it cannot be \${...}-interpolated or read as files`
   );
-}
-
-function commandInWrongContextError(prop: IPropertyDecl): Error {
-  return new FabrError(
-    `'${prop.name}' contains a pipeline operator ('|', '<', '>', '2>', '&>'), which is only valid in a COMMAND property`
-  ).withHelp("quote it to use the character literally (e.g. `'|'`)");
-}
-
-/** Make the error for a non-name value where a name was required: a map block or
- * a command pipeline, each explained. `context` names the consuming use in the map
- * message ("a string", "files"). */
-function nonNameValueError(prop: IPropertyDecl, value: IMapValue | ICommandValue, context: string): Error {
-  return isMapValue(value) ? mapInWrongContextError(prop, context) : commandInWrongContextError(prop);
 }
 
 /**

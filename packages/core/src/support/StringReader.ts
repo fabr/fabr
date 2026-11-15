@@ -77,6 +77,12 @@ export class StringReader {
     return this.data.codePointAt(this.offset + delta);
   }
 
+  /** Move back to `offset`, a place read before, to read on from there again. */
+  public seek(offset: number): void {
+    this.offset = offset;
+    this.currentChar = this.data.codePointAt(offset);
+  }
+
   /**
    * @return the next codepoint, or undefined for end of string.
    */
@@ -85,7 +91,8 @@ export class StringReader {
       return undefined;
     } else {
       this.offset += this.currentChar > 0xffff ? 2 : 1;
-      if (this.currentChar === CHAR_NEWLINE) {
+      /* A line read again after a seek is in the table already. */
+      if (this.currentChar === CHAR_NEWLINE && this.offset > this.lineTable[this.lineTable.length - 1]) {
         this.lineTable.push(this.offset);
       }
     }
@@ -109,7 +116,8 @@ export class StringReader {
   public skipUntil(test: (char: number) => boolean): number | undefined {
     while (this.currentChar !== undefined && !test(this.currentChar)) {
       this.offset += this.currentChar > 0xffff ? 2 : 1;
-      if (this.currentChar === CHAR_NEWLINE) {
+      /* A line read again after a seek is in the table already. */
+      if (this.currentChar === CHAR_NEWLINE && this.offset > this.lineTable[this.lineTable.length - 1]) {
         this.lineTable.push(this.offset);
       }
       this.currentChar = this.data.codePointAt(this.offset);

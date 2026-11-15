@@ -23,6 +23,7 @@ import { LogFormatter, LogLevel } from "../support/Log";
 import {
   DeclKind,
   IBuildFileContents,
+  CommandList,
   ICommandStage,
   IResolvableDecl,
   IMapItemDecl,
@@ -30,7 +31,6 @@ import {
   isPropertyDecl,
   IRuleBlock,
   ITargetDecl,
-  isCommandValue,
   isMapValue,
   isNameValue,
   isRuleBlock,
@@ -39,6 +39,19 @@ import {
 } from "./AST";
 import { Name, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { parseBuildString, parseName } from "./Parser";
+
+/** @return the command the first property of `text` is read as, which must be well formed. */
+function parsedCommand(text: string): { pipelines: CommandList } {
+  const command = parseValid(text).properties[0].command;
+  if (command === undefined || "error" in command) throw new Error(`expected a command, got ${JSON.stringify(command)}`);
+  return command;
+}
+
+/** @return why the first property of `text`, read as a command, is malformed. */
+function commandErrorOf(text: string): { error: string; offset: number } | undefined {
+  const command = parseValid(text).properties[0].command;
+  return command !== undefined && "error" in command ? command : undefined;
+}
 
 function parseValid(text: string): IBuildFileContents {
   const errors: string[] = [];
@@ -505,12 +518,12 @@ describe("Parser Tests", () => {
       const result = parseBuildString(EMPTY_FILESET, "PROJECT.fabr", src, new LogFormatter(LogLevel.Info, m => errors.push(m)));
       return { names: [...result.properties, ...result.targets].map(decl => decl.name.toBaseString()), errors };
     };
-    /* The first redirect aborts the statement; the second is lexed by recovery. */
-    const redirects = parse("a = 1 2>&3 x 2>&4;\nb = 2;");
-    expect(redirects.names).to.deep.equal(["b"]);
-    expect(redirects.errors).to.have.length(2);
-    /* The same within a target body, and for an extglob error. */
-    const body = parse("js_package foo {\n  a = = 1 2>&4;\n  b = = @(x !(y));\n  c = ok;\n}\nd = ok;");
+    /* The first unterminated group aborts the statement; the second is lexed by recovery. */
+    const groups = parse("a = 1 @(x @(y;\nb = 2;");
+    expect(groups.names).to.deep.equal(["b"]);
+    expect(groups.errors).to.have.length(2);
+    /* The same within a target body. */
+    const body = parse("js_package foo {\n  a = = 1 @(z;\n  b = = @(x !(y));\n  c = ok;\n}\nd = ok;");
     expect(body.names).to.deep.equal(["d", "foo"]);
     expect(body.errors).to.have.length(4);
     /* A lexical error in the file's first token. */
@@ -839,10 +852,10 @@ describe("Parser Tests", () => {
     it("treats a spaced '< file' with no '=' as a stdin redirect", () => {
       /* A spaced `<` is disambiguated by content: without a `key=` it is a
        * command stdin redirect, so the value parses to a `command`. */
-      const command = parseValid("run = mylib < src;").properties[0].values.find(isCommandValue);
-      expect(command?.pipeline).to.have.length(1);
-      expect(command?.pipeline[0].command.value.toString()).to.equal("mylib");
-      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("src");
+      const command = parsedCommand("run = mylib < src;");
+      expect(command?.pipelines[0]).to.have.length(1);
+      expect(command?.pipelines[0][0].command.value.toString()).to.equal("mylib");
+      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("src");
     });
 
     it("binds a spaced '<k=v>' as a constraint (disambiguated by the '=')", () => {
@@ -876,14 +889,14 @@ describe("Parser Tests", () => {
     it("keeps a spaced bare-identifier redirect a redirect (not a constraint)", () => {
       /* `< input` shares the IDENTIFIER prefix with a constraint key but has no
        * `=`, so the left-factoring commits it to a redirect target. */
-      const command = parseValid("run = cmd < input;").properties[0].values.find(isCommandValue);
-      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("input");
+      const command = parsedCommand("run = cmd < input;");
+      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("input");
     });
 
     it("keeps both spaced redirects working around the left-factoring", () => {
-      const command = parseValid("run = cmd < in > out;").properties[0].values.find(isCommandValue);
-      expect(command?.pipeline[0].stdin?.value.toString()).to.equal("in");
-      expect(command?.pipeline[0].stdout?.value.toString()).to.equal("out");
+      const command = parsedCommand("run = cmd < in > out;");
+      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("in");
+      expect(command?.pipelines[0][0].stdout?.value.toString()).to.equal("out");
     });
 
     it("parses constraints on a command-line name (parseName parity)", () => {
@@ -1267,12 +1280,64 @@ describe("Parser Tests", () => {
       return parts.join(" ");
     }
     function sequence(src: string): string {
-      const command = parseValid(src).properties[0].values.find(isCommandValue);
-      return (command?.pipeline ?? []).map(renderStage).join(" | ");
+      return parsedCommand(src)
+        .pipelines.map(stages => stages.map(renderStage).join(" | "))
+        .join(" && ");
     }
 
     it("parses a pipeline with a redirect", () => {
       expect(sequence("run = list_targetdefs --json | gendoc > out.mdx;")).to.equal("list_targetdefs --json | gendoc > out.mdx");
+    });
+
+    it("parses pipelines joined by '&&' into a command list", () => {
+      expect(sequence("run = gen > a.txt && check a.txt | count > n.txt;")).to.equal("gen > a.txt && check a.txt | count > n.txt");
+      /* The words before the first other operator hold whole pipelines too. */
+      expect(sequence("run = a x && b y && c < in > out;")).to.equal("a x && b y && c < in > out");
+      /* stdin and stdout are judged per pipeline. */
+      expect(sequence("run = a > x && b < y;")).to.equal("a > x && b < y");
+      expect(sequence("run = a && b;")).to.equal("a && b");
+    });
+
+    it("keeps a command's words as its values, the operators among them marked", () => {
+      const [property] = parseValid("run = gen a && check < in.txt | count > n.txt 2>&1;").properties;
+      const words = property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"));
+      expect(words).to.deep.equal(["gen", "a", "&&", "check", "<", "in.txt", "|", "count", ">", "n.txt", "2>&1"]);
+      expect(property.values.map(value => isNameValue(value) && value.operator === true)).to.deep.equal([
+        false,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true,
+      ]);
+    });
+
+    it("reads no command where no operator is written", () => {
+      expect(parseValid("run = gen a;").properties[0].command).to.equal(undefined);
+    });
+
+    it("reads a quoted or abutting '&&' as part of a word", () => {
+      const [property] = parseValid("run = a \"&&\" b&&c &&d '&&';").properties;
+      const words = property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"));
+      expect(words).to.deep.equal(["a", "&&", "b&&c", "&&d", "&&"]);
+      expect(property.command).to.equal(undefined);
+    });
+
+    it("keeps a malformed command's words, recording what is wrong with it", () => {
+      const [property] = parseValid("build = make > ;").properties;
+      expect(property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"))).to.deep.equal(["make", ">"]);
+      expect(property.command).to.deep.equal({ error: "redirect '>' must be followed by a target name", offset: 13 });
+    });
+
+    it("binds a spaced '<k=v>' after a word of a command as a constraint", () => {
+      expect(sequence("run = tool <K=v> a | b;")).to.equal("tool<K=v> a | b");
+      const values = parseValid("build = tool <K=v> a | b;").properties[0].values;
+      expect(values.map(value => (isNameValue(value) ? value.value.toString() : "?"))).to.deep.equal(["tool<K=v>", "a", "|", "b"]);
     });
 
     it("parses stdin, stderr and both redirects", () => {
@@ -1300,36 +1365,28 @@ describe("Parser Tests", () => {
        * whole, so anything that is not one of fabr's two streams is an error rather
        * than a filename. A self-dup is the no-op it says. */
       expect(sequence("run = tool 2>&2;")).to.equal("tool");
-      expect(parseInvalid("run = tool 2>&3;")).to.deep.equal([
-        diagnosticBlock(1, 12, "Invalid command: '&3' is not a stream: fabr has stdout (1) and stderr (2)", "run = tool 2>&3;"),
-      ]);
-      expect(parseInvalid("run = tool 2>&x;")).to.deep.equal([
-        diagnosticBlock(1, 12, "Invalid command: '&' is not a stream: fabr has stdout (1) and stderr (2)", "run = tool 2>&x;"),
-      ]);
+      expect(commandErrorOf("run = tool 2>&3;")).to.deep.equal({
+        error: "'&3' is not a stream: fabr has stdout (1) and stderr (2)",
+        offset: 11,
+      });
+      expect(commandErrorOf("run = tool 2>&x;")).to.deep.equal({
+        error: "'&' is not a stream: fabr has stdout (1) and stderr (2)",
+        offset: 11,
+      });
     });
 
     it("rejects redirecting one stream twice, dups included", () => {
-      expect(parseInvalid("run = tool 2> a 2>&1;")).to.deep.equal([
-        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool 2> a 2>&1;"),
-      ]);
-      expect(parseInvalid("run = tool 2>&1 2> a;")).to.deep.equal([
-        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool 2>&1 2> a;"),
-      ]);
-      expect(parseInvalid("run = tool &> a 2> b;")).to.deep.equal([
-        diagnosticBlock(1, 17, "Invalid command: stderr is redirected more than once", "run = tool &> a 2> b;"),
-      ]);
+      expect(commandErrorOf("run = tool 2> a 2>&1;")).to.deep.equal({ error: "stderr is redirected more than once", offset: 16 });
+      expect(commandErrorOf("run = tool 2>&1 2> a;")).to.deep.equal({ error: "stderr is redirected more than once", offset: 16 });
+      expect(commandErrorOf("run = tool &> a 2> b;")).to.deep.equal({ error: "stderr is redirected more than once", offset: 16 });
     });
 
     it("allows a dup mid-pipeline — it captures nothing, it feeds the pipe", () => {
       expect(sequence("run = a 2>&1 | b > out;")).to.equal("a 2>&1 | b > out");
-      expect(parseInvalid("run = a > f | b;")).to.deep.equal([
-        diagnosticBlock(
-          1,
-          13,
-          "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')",
-          "run = a > f | b;"
-        ),
-      ]);
+      expect(commandErrorOf("run = a > f | b;")).to.deep.equal({
+        error: "only the final stage of a pipeline can capture stdout ('>' / '&>')",
+        offset: 12,
+      });
     });
 
     /* --- command substitution ------------------------------------------- */
@@ -1361,6 +1418,11 @@ describe("Parser Tests", () => {
       expect(commandsOf("V = pre`a`mid`b`post;")).to.deep.equal(["a", "b"]);
     });
 
+    it("carries a substitution's pipelines joined by '&&'", () => {
+      const [part] = commandPartsOf("V = `a --x && b | c`;");
+      expect((part.command ?? []).map(stages => stages.map(renderStage))).to.deep.equal([["a --x"], ["b", "c"]]);
+    });
+
     it("round-trips a substitution through toString", () => {
       expect(valueName("V = v`ls -1`/x;").toString()).to.equal("v`ls -1`/x");
     });
@@ -1368,7 +1430,7 @@ describe("Parser Tests", () => {
     it("carries the parsed pipeline, not just the text", () => {
       const parts = commandPartsOf("V = `a --x | b 2>&1`;");
       expect(parts).to.have.length(1);
-      const pipeline = parts[0].command ?? [];
+      const [pipeline] = parts[0].command ?? [];
       expect(pipeline.map(renderStage)).to.deep.equal(["a --x", "b 2>&1"]);
     });
 
@@ -1425,53 +1487,47 @@ describe("Parser Tests", () => {
     });
 
     it("rejects a dangling redirect with no target", () => {
-      expect(parseInvalid("run = emit >;")).to.deep.equal([
-        diagnosticBlock(1, 12, "Invalid command: redirect '>' must be followed by a target name", "run = emit >;"),
-      ]);
+      expect(commandErrorOf("run = emit >;")).to.deep.equal({ error: "redirect '>' must be followed by a target name", offset: 11 });
     });
 
     it("rejects an empty command beside a pipe", () => {
-      expect(parseInvalid("run = emit | ;")).to.deep.equal([
-        diagnosticBlock(1, 12, "Invalid command: empty command (nothing beside '|')", "run = emit | ;"),
+      expect(commandErrorOf("run = emit | ;")).to.deep.equal({ error: "empty command (nothing beside '|')", offset: 11 });
+    });
+
+    it("rejects an empty command beside '&&'", () => {
+      expect(commandErrorOf("run = emit > a && ;")).to.deep.equal({ error: "empty command (nothing beside '&&')", offset: 15 });
+      expect(commandErrorOf("run = emit && | b;")).to.deep.equal({ error: "empty command (nothing beside '&&')", offset: 11 });
+      expect(commandErrorOf("run = && emit > a;")).to.deep.equal({ error: "empty command (nothing beside '&&')", offset: 6 });
+      expect(parseInvalid("V = `a &&`;")).to.deep.equal([
+        diagnosticBlock(1, 8, "Invalid command: empty command (nothing beside '&&')", "V = `a &&`;"),
       ]);
     });
 
     it("rejects a leading redirect with no command", () => {
-      expect(parseInvalid("run = > out;")).to.deep.equal([
-        diagnosticBlock(1, 7, "Invalid command: a redirect must follow a command", "run = > out;"),
-      ]);
+      expect(commandErrorOf("run = > out;")).to.deep.equal({ error: "a redirect must follow a command", offset: 6 });
     });
 
     it("rejects capturing a stream twice", () => {
-      expect(parseInvalid("run = emit > a > b;")).to.deep.equal([
-        diagnosticBlock(1, 16, "Invalid command: stdout is redirected more than once", "run = emit > a > b;"),
-      ]);
-      expect(parseInvalid("run = tool < a < b;")).to.deep.equal([
-        diagnosticBlock(1, 16, "Invalid command: stdin is redirected more than once", "run = tool < a < b;"),
-      ]);
+      expect(commandErrorOf("run = emit > a > b;")).to.deep.equal({ error: "stdout is redirected more than once", offset: 15 });
+      expect(commandErrorOf("run = tool < a < b;")).to.deep.equal({ error: "stdin is redirected more than once", offset: 15 });
     });
 
     it("rejects stdout capture on a non-final stage", () => {
-      expect(parseInvalid("run = a > x | b;")).to.deep.equal([
-        diagnosticBlock(
-          1,
-          13,
-          "Invalid command: only the final stage of a pipeline can capture stdout ('>' / '&>')",
-          "run = a > x | b;"
-        ),
-      ]);
+      expect(commandErrorOf("run = a > x | b;")).to.deep.equal({
+        error: "only the final stage of a pipeline can capture stdout ('>' / '&>')",
+        offset: 12,
+      });
     });
 
     it("rejects stdin on a non-first stage", () => {
-      expect(parseInvalid("run = a | b < x;")).to.deep.equal([
-        diagnosticBlock(1, 13, "Invalid command: only the first stage of a pipeline can take stdin ('<')", "run = a | b < x;"),
-      ]);
+      expect(commandErrorOf("run = a | b < x;")).to.deep.equal({
+        error: "only the first stage of a pipeline can take stdin ('<')",
+        offset: 12,
+      });
     });
 
     it("rejects a `{ ... }` block used as a command word", () => {
-      expect(parseInvalid("run = emit | { a = b; };")).to.deep.equal([
-        diagnosticBlock(1, 14, "Invalid command: a `{ ... }` block is not a command", "run = emit | { a = b; };"),
-      ]);
+      expect(commandErrorOf("run = emit | { a = b; };")).to.deep.equal({ error: "a `{ ... }` block is not a command", offset: 13 });
     });
   });
 

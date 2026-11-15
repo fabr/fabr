@@ -63,8 +63,11 @@ export interface ICommandStageLookup {
   mergedTo?: StreamName;
 }
 
+/** A command list's pipelines, each its stages, as {@link InternalBuildContext.lookupCommand} looks them up. */
+export type CommandListLookup = ICommandStageLookup[][];
+
 /**
- * A COMMAND property's value as read: its stages with variables substituted
+ * A COMMAND property's value as read: its pipelines with variables substituted
  * and every name still carrying where it was written, not yet materialized.
  * Opaque to a rule: read with {@link TargetContext.getCommand}, and handed to a
  * sub-target as the input its own {@link TargetContext.getCommandProperty}
@@ -72,7 +75,7 @@ export interface ICommandStageLookup {
  */
 export class CommandValue {
   /** @internal */
-  constructor(public readonly stages: ReadonlyArray<ICommandStageLookup>) {}
+  constructor(public readonly pipelines: ReadonlyArray<ReadonlyArray<ICommandStageLookup>>) {}
 }
 
 /**
@@ -89,8 +92,12 @@ export interface MaterializedCommandStage extends StageStreams {
 }
 
 /** A materialized command pipeline: the rule-facing counterpart of the parsed
- * {@link CommandPipeline}, yielded by {@link TargetContext.getCommandProperty}. */
+ * {@link CommandPipeline}. */
 export type MaterializedCommandPipeline = MaterializedCommandStage[];
+
+/** A materialized command list, its pipelines in the order they run, yielded
+ * by {@link TargetContext.getCommandProperty}. */
+export type MaterializedCommandList = MaterializedCommandPipeline[];
 
 /**
  * Collect `sources` as the tool `name` names and return its runnable. A tool
@@ -131,24 +138,30 @@ function asRunnable(sources: ReadonlyArray<FileSource | Repository | FileSetRef>
   throw new FabrError(`'${name}' must name a runnable (its BUILD_OPERATION=run result)`);
 }
 
-/** The content name a command substitution's stdout is captured under. */
-export const SUBST_CAPTURE = ".value";
+/** @return the content name the stdout of a command substitution's pipeline
+ * `index` is captured under. */
+export function substCapture(index: number): string {
+  return `.value-${index}`;
+}
 
 /**
  * Point a substitution's streams at where its value comes from, and everything
- * else at nothing. The last stage's stdout is captured as the value
- * ({@link SUBST_CAPTURE}). A redirected stream is captured under a generated
- * name and discarded, so `2> log` silences the stream and writes no file. A
- * command that redirects its own stdout captures nothing, and its value is
- * empty, as `$(cmd > f)` is in a shell.
+ * else at nothing. The stdout of each pipeline's last stage is captured as its
+ * part of the value ({@link substCapture}). A redirected stream is captured
+ * under a generated name and discarded, so `2> log` silences the stream and
+ * writes no file. A pipeline that redirects its own stdout captures nothing,
+ * and adds nothing to the value, as `$(cmd > f)` is empty in a shell.
  */
-export function captureStages(stages: MaterializedCommandStage[]): MaterializedCommandStage[] {
-  const last = stages.length - 1;
-  return stages.map((stage, i) => ({
-    ...stage,
-    stdout: stage.stdout !== undefined ? `.drop-${i}-out` : i === last && stage.mergedTo !== "err" ? SUBST_CAPTURE : undefined,
-    stderr: stage.stderr !== undefined ? `.drop-${i}-err` : undefined,
-  }));
+export function captureStages(pipelines: MaterializedCommandList): MaterializedCommandList {
+  return pipelines.map((stages, k) => {
+    const last = stages.length - 1;
+    return stages.map((stage, i) => ({
+      ...stage,
+      stdout:
+        stage.stdout !== undefined ? `.drop-${k}-${i}-out` : i === last && stage.mergedTo !== "err" ? substCapture(k) : undefined,
+      stderr: stage.stderr !== undefined ? `.drop-${k}-${i}-err` : undefined,
+    }));
+  });
 }
 
 /**

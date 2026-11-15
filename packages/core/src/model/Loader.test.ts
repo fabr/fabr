@@ -245,7 +245,7 @@ describe("Loader", () => {
   it("validates no declaration of a file that failed to parse, and every other file's", async () => {
     const { error, logged } = await loadErr(
       files({
-        "PROJECT.fabr": "include ./other.fabr;\ntargetdef needs { value = REQUIRED STRING; }\nneeds broken { value = a > ; }\n",
+        "PROJECT.fabr": "include ./other.fabr;\ntargetdef needs { value = REQUIRED STRING; }\nneeds broken { value = a @(b; }\n",
         "other.fabr": "needs missing { }\n",
       })
     );
