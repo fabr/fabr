@@ -14,6 +14,8 @@ your terminal. Two target types can be run: a `jar_package` with a main class, a
 | `mvn exec:java` / `gradle run` | `fabr run <target> [args…]`. |
 | `mainClass` | `main_class`. |
 | `applicationDefaultJvmArgs`, `exec.args` | A `java_program`'s `jvm_args` and `args`. |
+| `systemProperties`, `-D` options | A `java_program`'s `defines`. |
+| `environment` on a `JavaExec` task | A `java_program`'s `env`. |
 | Running a tool published to Maven Central | A `java_program` whose `deps` name it. |
 | `-javaagent:` in the JVM arguments | `agents`. |
 | A plugin that runs a Java tool during the build | A `java_program` used in a [`generate`](/reference/standard-rules/#generate) command. |
@@ -28,8 +30,8 @@ fabr run app arg1 arg2
 
 Everything after the target name is passed to the program; options for fabr go before it. The
 program runs with the jar and everything it requires on the classpath. A `jar_package` with no main
-class can't be run: `app has no main_class, so it cannot be run`. To run the jar with arguments or
-JVM options of its own, declare a [`java_program`](#java_program) with the jar in its `deps`.
+class can't be run: `app has no main_class, so it cannot be run`. To run the jar with arguments,
+JVM options, system properties or environment variables of its own, declare a [`java_program`](#java_program) with the jar in its `deps`.
 
 ## java_program
 
@@ -40,12 +42,18 @@ java_program migrate {
   srcs = tools/migrate:**/*.java;
   deps = @mvn:org.flywaydb:flyway-core:10.15.0;
   main_class = com.example.Migrate;
-  jvm_args = -Xmx1g "-Dflyway.cleanDisabled=true";
+  jvm_args = -Xmx1g;
+  defines = { flyway.cleanDisabled = true; }
+  env = { FLYWAY_LOCATIONS = filesystem:db/migration; }
   args = --verbose;
 }
 ```
 
-`jvm_args` are given to the JVM, and `args` to the program before any you give `fabr run`.
+`jvm_args` are given to the JVM, and `args` to the program before any you give `fabr run`. Each
+entry of `defines` is a system property, given the JVM as `-D<name>=<value>`; an entry with no
+value, `name = ;`, sets the property to the empty string. The JVM is given `defines` before
+`jvm_args`, and where both set a property, the last `-D` for it wins, so a `-D` in `jvm_args` takes
+precedence. `env` adds environment variables to those `fabr run` was started with.
 
 `main_class` may be left out where it is obvious: the class of the program's one source file, or,
 with no sources, the `Main-Class` of its one dependency's jar. That makes a tool published as an

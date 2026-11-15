@@ -567,5 +567,4 @@ BOM; see [Testing](/reference/java/testing/#troubleshooting).
 - **Excluding a package** a dependency brings in, with `<exclusions>` or `exclude` in your own build.
   Exclusions a dependency publishes are read; see
   [Dependencies](/reference/java/dependencies/#not-supported).
-- **Options for `javac`** beyond those fabr sets, such as `-Xlint` or `-Werror`, and **arguments for
-  the test JVM**, such as Surefire's `argLine`.
+- **Options for `javac`** beyond those fabr sets, such as `-Xlint`.

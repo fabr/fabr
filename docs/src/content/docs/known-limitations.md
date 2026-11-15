@@ -27,10 +27,8 @@ Your project can't be converted as it stands if it relies on any of these.
   [Dependencies](/reference/java/dependencies/#not-supported).
 - **`-SNAPSHOT` versions and the local repository** (`~/.m2/repository`); see
   [Dependencies](/reference/java/dependencies/#coming-from-maven-or-gradle).
-- **Options for `javac`**, such as `-Xlint`, `-Werror` or an annotation processor's `-A` options;
+- **Options for `javac`**, such as `-Xlint` or an annotation processor's `-A` options;
   see [Compiling](/reference/java/compiling/#not-supported).
-- **Arguments and environment variables for the test JVM**, such as `-Xmx`, `--add-opens` or
-  `DOCKER_HOST`; see [Testing](/reference/java/testing/#not-supported).
 - **Publishing to Maven Central**; see [Publishing](/reference/java/publishing/#not-supported).
 
 ## Rough edges

@@ -22,7 +22,8 @@
  * and run the test classes they compile to on the JUnit Platform with
  * `JAVA_TEST_RUNNER`, which finds them itself, with the jar and everything it
  * and the tests require on the classpath, the platform's launcher among them.
- * Under `COVERAGE=on` the JVM runs with `JACOCO_AGENT`, and the runner writes
+ * The JVM runs with `test_defines` and `test_jvm_args`, and with only the
+ * environment `test_env` gives. Under `COVERAGE=on` the JVM runs with `JACOCO_AGENT`, and the runner writes
  * the coverage of the package's own jar as lcov, beside the report.
  */
 
@@ -44,9 +45,10 @@ import {
   RuleResult,
   TargetContext,
   TEST_NAME_PATTERN,
+  toEnvironment,
   TREE_MOUNT,
 } from "@fabr-build/core";
-import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf } from "../JarPackage";
+import { classpathOf, compileOutputOf, COMPILED_CLASSES_DIR, packageOf, processorsOf, toDefineOptions } from "../JarPackage";
 import { describeJava } from "../Description";
 import { createTestRunAction } from "../TestRunAction";
 import { MAVEN_FORMAT } from "../MavenProtocol";
@@ -153,9 +155,22 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
         : undefined
     );
   const sourceSets = [tests, ...inputs.srcs];
+  const jvmOptions = Computable.forAll(
+    [context.getMap("test_defines").then(toDefineOptions), context.getProperty("test_jvm_args")],
+    (defines, jvmArgs) => [...defines, ...(jvmArgs?.getValues() ?? [])]
+  );
   return Computable.forAll(
-    [classes, runner, sourcesTable(sourceSets), context.getGlobalRunnable("JAVA"), namePattern, measuring],
-    (output, runnerJar, sources, java, pattern, coverage) => {
+    [
+      classes,
+      runner,
+      sourcesTable(sourceSets),
+      context.getGlobalRunnable("JAVA"),
+      namePattern,
+      measuring,
+      jvmOptions,
+      context.getMap("test_env").then(toEnvironment),
+    ],
+    (output, runnerJar, sources, java, pattern, coverage, jvm, env) => {
       const compiled = compileOutputOf(output, COMPILED_CLASSES_DIR);
       const pool = context.execution.buildCache;
       return pool.ensureTree(java).then(() => {
@@ -182,6 +197,7 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
         const argv = java.toCommandLine(
           [
             ...(measured?.jvm ?? []),
+            ...jvm,
             "-cp",
             classpath,
             RUNNER_CLASS,
@@ -192,7 +208,7 @@ function testJar(context: TargetContext, inputs: TestInputs): Computable<RuleRes
           ],
           { base: path.posix.join(TREE_MOUNT, java.toManifestHash()) }
         );
-        return createTestRunAction(FileSet.unionAll(staged, measured?.staged ?? EMPTY_FILESET), argv, measured !== undefined);
+        return createTestRunAction(FileSet.unionAll(staged, measured?.staged ?? EMPTY_FILESET), argv, measured !== undefined, env);
       });
     }
   );

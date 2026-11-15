@@ -79,6 +79,8 @@ function debugInformation(buildType: string | undefined): string {
 
 /** The flag among `deps` that has the classes leave out their methods' parameter names, which they otherwise record. */
 const NO_PARAMETERS_FLAG = "java/no_parameters";
+/** The flag among `deps` that makes a warning a compile error. */
+const WERROR_FLAG = "java/werror";
 
 /** Where the sources are staged. */
 const SOURCE_DIR = "src";
@@ -123,6 +125,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
           "-implicit:none",
           debugInformation(buildType),
           ...(deps.some(dep => dep instanceof Flag && dep.name === NO_PARAMETERS_FLAG) ? [] : ["-parameters"]),
+          ...(deps.some(dep => dep instanceof Flag && dep.name === WERROR_FLAG) ? ["-Werror"] : []),
           "-d",
           COMPILED_CLASSES_DIR,
           "-s",

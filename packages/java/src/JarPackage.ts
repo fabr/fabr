@@ -39,10 +39,12 @@ import {
   IBuildActionDefinition,
   IFile,
   ITaskReport,
+  mapEntryError,
   MemoryFile,
   PackageFileSet,
   packToZip,
   PERMISSIVE_RESOLUTION,
+  PropertyMap,
   readZipMember,
   readZipMembers,
   writeZip,
@@ -360,6 +362,25 @@ export interface JavaProgramOptions {
   /** Java agents the program runs with: each one's own jar is given the JVM
    *  as a `-javaagent`, and what it requires joins the classpath. */
   agents?: readonly FileSet[];
+}
+
+/**
+ * Convert a `defines` MAP to the JVM's system property options, a
+ * `-D<name>=<value>` per entry in name order. A value is its words joined by a
+ * space (`-Dname=` for none). A name that is empty or holds `=`, or a nested
+ * map for a value, is refused at the entry that wrote it.
+ */
+export function toDefineOptions(map: PropertyMap): string[] {
+  return [...map.keys()].sort().map(name => {
+    const value = map.get(name)!;
+    if (name === "" || name.includes("=")) {
+      throw mapEntryError(map, name, `'${name}' is not a valid system property name`);
+    }
+    if (!Array.isArray(value) || !value.every((word): word is string => typeof word === "string")) {
+      throw mapEntryError(map, name, `system property '${name}' must be a string`);
+    }
+    return `-D${name}=${value.join(" ")}`;
+  });
 }
 
 /** Where a program's jars go: on the module path, where it runs as a module, and on the classpath. */

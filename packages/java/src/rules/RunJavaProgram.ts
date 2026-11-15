@@ -34,6 +34,7 @@ import {
   PackageFileSet,
   RunnableFileSet,
   TargetContext,
+  toEnvironment,
 } from "@fabr-build/core";
 import {
   checkMainClass,
@@ -43,6 +44,7 @@ import {
   makeJarRunnable,
   packageOf,
   processorsOf,
+  toDefineOptions,
 } from "../JarPackage";
 import { describeJava } from "../Description";
 import { MAVEN_FORMAT } from "../MavenProtocol";
@@ -74,9 +76,18 @@ export default defineRule({
   },
   evaluateMaterialized(context, inputs) {
     return Computable.forAll(
-      [context.getProperty("main_class"), context.getProperty("args"), context.getProperty("jvm_args")],
-      (mainClass, args, jvmArgs) =>
-        runnableProgram(context, inputs, mainClass?.toString(), { args: args?.getValues() ?? [], jvmArgs: jvmArgs?.getValues() ?? [] })
+      [
+        context.getProperty("main_class"),
+        context.getProperty("args"),
+        context.getProperty("jvm_args"),
+        context.getMap("defines").then(toDefineOptions),
+        context.getMap("env").then(toEnvironment),
+      ] as const,
+      (mainClass, args, jvmArgs, defines, env) =>
+        runnableProgram(context, inputs, mainClass?.toString(), {
+          args: args?.getValues() ?? [],
+          jvmArgs: [...defines, ...(jvmArgs?.getValues() ?? [])],
+        }).then(runnable => runnable.withEnvironment(env))
     );
   },
   describe(context, requirements) {

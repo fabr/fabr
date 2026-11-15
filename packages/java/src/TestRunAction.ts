@@ -43,6 +43,7 @@ import {
   toArgv,
   toError,
   toTestReport,
+  variableEntry,
   writeFileSet,
 } from "@fabr-build/core";
 
@@ -62,14 +63,14 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, staged))
     .then(() =>
-      /* Run with an empty environment. Keep the runner's output for a failure rather than
-       * streaming it: the report carries the outcome. */
+      /* Run with only the declared environment. Keep the runner's output for a failure
+       * rather than streaming it: the report carries the outcome. */
       execute(
         ctx.processLimit,
         findExecutable(argv[0], ctx.workDir),
         invocation,
         ctx.workDir,
-        {},
+        Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry)),
         { ...report, output: undefined }
       ).then(
         () => undefined,
@@ -110,12 +111,21 @@ function judgeRun(workDir: string, invocation: string[], error: Error | undefine
   return report;
 }
 
-/** @return the action that runs `argv` (the runner's command line, less its report) in `staged`,
- * collecting the coverage report too where the run is `measured`. */
-export function createTestRunAction(staged: FileSet, argv: readonly RunnableArgument[], measured: boolean): BuildAction {
+/** @return the action that runs `argv` (the runner's command line, less its report) in `staged`
+ * with the environment `env` and no other, collecting the coverage report too where the run is `measured`. */
+export function createTestRunAction(
+  staged: FileSet,
+  argv: readonly RunnableArgument[],
+  measured: boolean,
+  env: ReadonlyMap<string, string>
+): BuildAction {
   return new BuildAction(
     JAVA_TEST_STEP,
     { staged },
-    { argv, outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])] }
+    {
+      argv,
+      outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])],
+      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+    }
   );
 }

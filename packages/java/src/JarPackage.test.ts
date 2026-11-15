@@ -42,6 +42,7 @@ import {
   manifestAttributes,
   manifestFile,
   packageOf,
+  toDefineOptions,
 } from "./JarPackage";
 
 const files = (...names: string[]): FileSet => new FileSet(new Map(names.map(name => [name, MemoryFile.from(name)])));
@@ -198,5 +199,21 @@ describe("manifests", () => {
     const jar = await packToZip(new FileSet(new Map([[MANIFEST_NAME, manifestFile([["Main-Class", "com.example.Tool"]])]])));
     const pkg = new PackageFileSet(new FileSet(new Map([["tool-1.0.jar", new MemoryFile(jar)]])), "com.example/tool", "1.0");
     expect(await jarMainClass(pkg)).to.equal("com.example.Tool");
+  });
+});
+
+describe("toDefineOptions", () => {
+  it("makes a -D option per entry in name order, a value's words joined by a space", () => {
+    const defines = new Map([
+      ["spring.profiles.active", ["dev"]],
+      ["app.banner", ["hello", "world"]],
+      ["flag", []],
+    ]);
+    expect(toDefineOptions(defines)).to.deep.equal(["-Dapp.banner=hello world", "-Dflag=", "-Dspring.profiles.active=dev"]);
+  });
+
+  it("refuses a name holding '=' and a nested map", () => {
+    expect(() => toDefineOptions(new Map([["a=b", ["c"]]]))).to.throw("'a=b' is not a valid system property name");
+    expect(() => toDefineOptions(new Map([["a", new Map([["b", ["c"]]])]]))).to.throw("system property 'a' must be a string");
   });
 });

@@ -5,6 +5,9 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 together and share a version number.
 
 ## Fabe 0.4.1
+@fabr-build/java
+- Add runtime defines + env on java_program, and test equivalents on jar_package
+
 @fabr-build/js
 - Fix coverage not working with layout/pnp.
 

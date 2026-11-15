@@ -17,6 +17,7 @@ you choose, against the jars its dependencies resolve to. This page covers what 
 | `module-info.java` with the module path | Recognised, as Gradle does it; see [Modules](#modules). |
 | `project.build.sourceEncoding` | Always UTF-8. |
 | `-parameters` in `<compilerArgs>` / `options.compilerArgs` | On by default; see [Parameter names](#parameter-names). |
+| `-Werror` in `<compilerArgs>` / `options.compilerArgs` | The [`java/werror` flag](#warnings). |
 | Other `<compilerArgs>` / `options.compilerArgs` | See [Not supported](#not-supported). |
 
 ## What the compiler is given
@@ -31,7 +32,7 @@ javac --release <N> -encoding UTF-8 -proc:none -implicit:none -g -parameters \
 with `-processorpath <the processors>` in place of `-proc:none` where the target has
 [annotation processors](#annotation-processors), and `--module-path` where it is a
 [module](#modules). The sources the processors generate (`-s`) are kept beside the classes, and
-are part of the target's [javadoc and sources](/reference/java/packaging/#javadoc-and-sources). `-parameters` is left out with the [`java/no_parameters` flag](#parameter-names).
+are part of the target's [javadoc and sources](/reference/java/packaging/#javadoc-and-sources). `-parameters` is left out with the [`java/no_parameters` flag](#parameter-names), and `-Werror` added with the [`java/werror` flag](#warnings).
 
 `-g` records all of javac's debug information, local variable names included, as Maven and
 Gradle record it. A `release` build (`BUILD_TYPE=release`) is given `-g:source,lines` instead:
@@ -83,6 +84,24 @@ jar_package app {
   deps = java/no_parameters;
 }
 ```
+
+## Warnings
+
+A target that has the `java/werror` flag in its `deps` fails to compile where javac reports a
+warning, as `javac -Werror` does:
+
+```
+jar_package app {
+  srcs = src/main/java:**/*.java;
+  deps = java/werror;
+}
+```
+
+A compile that succeeds is cached, and its warnings are shown only when it runs, so a warning seen
+once is not shown again until the sources change. The flag keeps warnings from building up unseen.
+It applies to the target's own sources; to make a warning in the tests an error too, add the flag
+to `test_deps`. Only the warnings javac reports by default count, such as a use of an API marked
+for removal; the categories `-Xlint` turns on can't be enabled.
 
 ## The JDK
 
@@ -155,5 +174,5 @@ without a `module-info.java` puts every jar on the classpath.
 
 ## Not supported
 
-- There is no way to pass further options to `javac`, such as `-Xlint` or `-Werror`.
+- There is no way to pass further options to `javac`, such as `-Xlint`.
 - The source encoding is always UTF-8.

@@ -83,6 +83,9 @@ default flag java25 { }
 # reflection.
 default flag java/no_parameters { }
 
+# A warning in compiling the sources is a compile error (`javac -Werror`).
+default flag java/werror { }
+
 ####################### Target types #######################
 
 #
@@ -158,6 +161,12 @@ targetdef jar_package {
     test_deps = PACKAGES;
     # Files on the classpath the tests run with, as `resources` are.
     test_resources = FILES;
+    # Arguments given the JVM the tests run in: `-Xmx2g`, `--add-opens=…`.
+    test_jvm_args = STRING;
+    # System properties the tests run with, each a string: `-D<name>=<value>`.
+    test_defines = MAP;
+    # Environment variables for the tests, which run with no others.
+    test_env = MAP;
 }
 
 #
@@ -185,8 +194,13 @@ targetdef java_program {
     main_class = STRING;
     # Arguments given the program, before any its caller gives.
     args = STRING;
-    # Arguments given the JVM, before the program: `-Xmx2g`, `"-Dname=value"`.
+    # Arguments given the JVM, before the program: `-Xmx2g`, `-XX:+UseZGC`.
     jvm_args = STRING;
+    # System properties the program runs with, each a string: `-D<name>=<value>`.
+    defines = MAP;
+    # Environment variables the program is launched with, wherever it runs: a
+    # `generate` or `patched` target's own `env` is set over them.
+    env = MAP;
     # Java agents the program runs with: each package's jar is given the JVM
     # as a `-javaagent`, and what it requires joins the classpath.
     agents = PACKAGES;

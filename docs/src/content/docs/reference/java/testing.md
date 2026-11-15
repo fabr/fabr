@@ -17,6 +17,9 @@ are among the target's `test_deps` find and run the tests.
 | `<scope>test</scope>` / `testImplementation` | `test_deps`. |
 | Surefire / `useJUnitPlatform()` | Built in: tests always run on the JUnit Platform. |
 | Surefire bundles the platform launcher | The launcher is one of your `test_deps`. |
+| Surefire's `argLine` / Gradle's `jvmArgs` | `test_jvm_args`; see [The test JVM](#the-test-jvm). |
+| `systemPropertyVariables` / `systemProperty` | `test_defines`. |
+| `environmentVariables` / `environment` | `test_env`. |
 | `-Dtest=…` / `--tests …` | `fabr test -t <regex>`; see [Running some of the tests](#running-some-of-the-tests). |
 | Test reports under `target/surefire-reports` | A summary per target; `fabr test --report <file> --format junit` writes JUnit XML, or [CTRF](https://ctrf.io) without `--format`. |
 | jacoco-maven-plugin / the `jacoco` plugin | `fabr test --coverage`; see [Code coverage](#code-coverage). |
@@ -70,10 +73,32 @@ target's results in one file for a CI system, as Surefire's XML reports are coll
 fabr test --report test-results.xml --format junit app
 ```
 
-The tests run with no environment variables of their own, so a test can't depend on what is set in
-your shell. JUnit's [configuration parameters](https://junit.org/junit5/docs/current/user-guide/#running-tests-config-params),
-such as those for parallel execution, are read from a `junit-platform.properties` among the
-`test_resources`.
+## The test JVM
+
+`test_jvm_args` are given to the JVM the tests run in, `test_defines` are system properties, given
+it as `-D<name>=<value>`, and `test_env` is the tests' environment:
+
+```
+jar_package app {
+  srcs = src/main/java:**/*.java;
+  tests = src/test/java:**/*.java;
+  test_deps = …;
+  test_jvm_args = -Xmx2g "--add-opens=java.base/java.lang=ALL-UNNAMED";
+  test_defines = { spring.profiles.active = test; }
+  test_env = { DOCKER_HOST = unix:///var/run/docker.sock; }
+}
+```
+
+The tests run with the variables `test_env` gives and no others, so a test can't depend on what is
+set in your shell. **Surefire / Gradle:** the tests inherit your shell's environment, with
+`environmentVariables` or `environment` added. **fabr:** a variable a test needs, such as
+`DOCKER_HOST` for Testcontainers, must be in `test_env`. All three properties are part of what
+decides whether a cached run can be reused, so changing one runs the tests again.
+
+The JVM is given `test_defines` before `test_jvm_args`; where both set a property, the last `-D`
+wins. JUnit's [configuration parameters](https://junit.org/junit5/docs/current/user-guide/#running-tests-config-params),
+such as those for parallel execution, are read from system properties, so `test_defines` can give
+them, as can a `junit-platform.properties` among the `test_resources`.
 
 ## Running some of the tests
 
@@ -132,7 +157,5 @@ BOM.
 
 ## Not supported
 
-- All of a target's tests run in one JVM, which can't be given arguments of its own.
-- Environment variables for the tests. They run with none, and a `jar_package` has no equivalent
-  of a `js_package`'s `test_env`, so a test that needs one, such as a Testcontainers test told
-  where Docker is by `DOCKER_HOST`, can't be given it.
+- Running test classes in JVMs of their own, as Surefire's `reuseForks=false` or Gradle's
+  `forkEvery` do: all of a target's tests run in one JVM.
