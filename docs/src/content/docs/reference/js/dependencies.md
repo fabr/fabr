@@ -24,6 +24,7 @@ are.
 | `overrides` / `resolutions` | The `!` marker. |
 | Workspace `catalog:` (pnpm, Yarn) | A [catalog](#catalogs). |
 | `patch-package`, `pnpm patch`, `yarn patch` | A [`patched` target](#patching-a-package). |
+| A `file:`, `link:` or tarball dependency | A target for code in your project, or a downloaded archive; see [Packages that aren't in a registry](#packages-that-arent-in-a-registry). |
 | `postinstall` scripts | Not run; see [Install scripts](#install-scripts). |
 | `.nvmrc`, or Volta's `volta.node` | The [`NODE` setting](#the-nodejs-version). Fabr downloads that release and runs your tools and tests on it. |
 
@@ -419,8 +420,8 @@ provide; prefer a release of the package that ships prebuilt binaries.
 ## Not supported
 
 - **Only registry dependencies are followed.** A dependency whose `package.json` requires
-  something by `git+https://`, `file:`, `workspace:` or a tarball URL can't be resolved, and fails
-  when that requirement is reached.
+  something by a git URL (`git+https://…`, `github:…`) or a tarball URL can't be resolved, and
+  fails when that requirement is reached.
 
 ## Private registries
 
@@ -464,6 +465,42 @@ npm's own format:
 
 `_authToken`, `_auth`, and `username` with `_password` are read, and `${VAR}` is replaced from the
 environment. `@scope:registry=` lines are not read; route scopes with a `repository_group`.
+
+## Packages that aren't in a registry
+
+npm accepts a `file:` or `link:` path, a tarball URL or a git URL in place of a version. In fabr,
+a package that isn't in a registry is either part of your project or an archive you download.
+
+**Code in your project**, which npm reaches by a `file:` or `link:` path, is a `js_package` of its
+own. Name the target in `deps`, as described in [Projects with several packages](/guides/multi-package/).
+
+**An archive**, which npm downloads from a tarball URL, is downloaded by a
+[`fetch`](/reference/standard-rules/#fetch) repository and added to a `repository_group` as the
+package of its name:
+
+```
+fetch @dl {
+  amperize.tgz = "https://example.com/amperize-0.6.1.tgz" "sha512-…";
+}
+
+repository_group @deps {
+  amperize = @dl:amperize.tgz:*:**;
+  *        = @npm;
+}
+
+js_package app {
+  srcs = src:**/*.ts;
+  deps = @deps:amperize:0.6.1 @deps:lodash:4.17.21;
+}
+```
+
+`@dl:amperize.tgz:*:**` is every file in the archive, with `*` standing for its top-level
+directory (`package/` in an archive made by `npm pack`). The package's name, version and
+dependencies come from the `package.json` inside, and its dependencies are routed through the
+group like any other package's. Any requirement on `amperize` in the build, including one in
+another package's dependencies, is answered by this package. The key must be the package's exact
+name, and the group needs at least one registry route. For a git dependency, download an archive
+of the commit the same way, where the host provides one.
 
 ## Tool versions
 

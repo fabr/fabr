@@ -1,41 +1,28 @@
 ---
 title: Known limitations
-description: What fabr doesn't support yet for JavaScript, TypeScript and Java projects, and the rough edges in what it does — shell scripts' programs, optional npm dependencies and cache concurrency.
+description: What a JavaScript, TypeScript or Java project may rely on that fabr can't do yet, and the rough edges in what it does — shell scripts' programs, optional npm dependencies and cache concurrency.
 ---
 
 Fabr builds, tests and runs real JavaScript, TypeScript and Java projects, itself included, but it
-is under active development. Before you convert a project, check the features it relies on
-against the first section of this page; each entry links to the page with the details. The
-second section lists the places where fabr's present behaviour falls short of what it intends,
-with a workaround for each.
+is under active development. Before you convert a project, check it against the first section of
+this page: it lists what a project coming from npm, Maven or Gradle may rely on that fabr can't do
+yet, each entry linking to the page with the details. The second section lists the places where
+fabr's present behaviour falls short of what it intends, with a workaround for each.
 
-## Features not supported yet
+## Before you convert
 
-**Everywhere**
-
-- **Editors other than VS Code.** There is no IntelliJ IDEA, WebStorm or other editor support;
-  see [VS Code support](/guides/vscode/#not-supported).
-- **A cache shared between machines.** Each machine, CI runner included, has its own cache; CI
-  keeps it between runs as described in [Continuous integration](/guides/ci/#not-supported).
+Your project can't be converted as it stands if it relies on any of these.
 
 **JavaScript and TypeScript**
 
-- **Bundler features beyond esbuild's basics** in a `js_bundle`: hot module reload, live reload,
-  plugins, an HTML entry point, `alias` and older-browser targets; see
-  [Bundling](/reference/js/bundling/#not-supported). A bundler run as itself, such as Vite, has
-  its own; see [Vite, Next.js and other frameworks](/guides/tools/#vite-nextjs-and-other-frameworks).
 - **PostCSS plugins other than autoprefixer**, so no Tailwind CSS, and no Less or Stylus; see
   [Stylesheets](/reference/js/stylesheets/#not-supported).
-- **`tsconfig.json` path aliases** (`baseUrl`, `paths`) **and `#` subpath imports.** Import your
-  own files by the package's name instead; see
-  [TypeScript compilation](/reference/js/typescript/#coming-from-tsconfigjson).
-- **Dependencies that aren't from a registry**: `git+https://`, `file:` and tarball URLs, in your
-  own requirements or a dependency's; see [Dependencies](/reference/js/dependencies/#not-supported).
+- **A registry package that requires one of its own dependencies by a git or tarball URL.** Fabr
+  can't resolve such a requirement; see
+  [Dependencies](/reference/js/dependencies/#not-supported).
 
 **Java**
 
-- **Kotlin, Groovy and Scala sources.** Fabr compiles Java only; see
-  [Migrating a Maven or Gradle project](/guides/migrating-java/#not-supported).
 - **Exclusions of your own**, and relocations; see
   [Dependencies](/reference/java/dependencies/#not-supported).
 - **`-SNAPSHOT` versions and the local repository** (`~/.m2/repository`); see
@@ -95,7 +82,7 @@ Relatedly, `fabr run` installs the program it runs in the cache, and keeps the i
 reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` is running deletes
 the files of the program it is running. Stop the program first.
 
-### On Windows, processes, file modes and links fall short
+### Windows-specific limitations.
 
 - **A process a build step leaves running outlives the step.** On macOS and Linux, fabr stops
   everything a step started when the step ends. On Windows it can stop a step's processes only

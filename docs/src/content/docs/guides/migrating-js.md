@@ -85,7 +85,7 @@ A project with no workspaces gets one `js_package`, for the root `package.json`,
 | `"ts6": "npm:typescript@^6.0.0"` (an alias) | `@npm:typescript:^6.0.0 -> ts6`, so your code still imports `ts6`. See [renaming a package](/reference/js/dependencies/#renaming-a-package). |
 | `"react": "catalog:"` (a pnpm catalog) | The catalog's version, as an ordinary entry. A named catalog (`catalog:legacy`) whose version differs from the default catalog's becomes an entry named `react-legacy`, which the package writes as `@dep:react-legacy -> react`. |
 | `"lodash": "latest"` (a dist-tag) | The version your lockfile installs, as `^4.17.21`, since a build file can't name a dist-tag. With no lockfile version to use, it isn't converted, and is listed in the report. |
-| `file:`, `link:`, git and tarball URLs | Not converted. Listed in the report. |
+| `file:`, `link:`, git and tarball URLs | Not converted. Listed in the report; see [Packages that aren't in a registry](/reference/js/dependencies/#packages-that-arent-in-a-registry). |
 
 Development dependencies go in `deps`, the same list as runtime ones. That is correct for an
 application. A library you publish would then declare its development dependencies as runtime
