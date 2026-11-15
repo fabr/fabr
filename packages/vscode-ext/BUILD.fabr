@@ -31,8 +31,13 @@ generate fabr_vsix {
   output = fabr.vsix;
 }
 
-# The Java language server's own packages, which a bundle it loads is compiled
-# against: its own from Eclipse's repository, what they require from Maven Central.
+# Whether the importer is compiled against the stubs of the Java language
+# server's classes (`on`), or against the language server's own jar (`off`).
+JDTLS_STUBS = on;
+
+# The Java language server's own packages, from Eclipse's repository, and what
+# they require from Maven Central. Eclipse's repository is read only where the
+# importer is compiled against the language server's jar, for the stub generator.
 maven_repository @jdtls-releases {
   url = "https://repo.eclipse.org/content/repositories/jdtls-releases";
 }
@@ -40,6 +45,32 @@ maven_repository @jdtls-releases {
 repository_group @jdtls {
   org.eclipse.jdt.ls/* = @jdtls-releases;
   * = @mvn;
+}
+
+# Stubs of the Java language server's classes, holding the members the
+# importer uses, written by `./fabr run jdtls_stubgen packages/vscode-ext/jdtls/stubs`.
+# The language server supplies the classes themselves.
+jar_package jdtls_stubs {
+  srcs = jdtls/stubs:**/*.java;
+  deps = java21;
+  compile_deps = @mvn:org.eclipse.platform:org.eclipse.core.runtime:3.35.0
+                 @mvn:org.eclipse.jdt:org.eclipse.jdt.core:3.47.0
+                 @mvn:org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0;
+}
+
+# Writes the stubs of the language server's classes the importer uses into the
+# directory it is given, from the importer compiled against the language
+# server's own jar, beside the bundles the stubs' classes extend.
+java_program jdtls_stubgen {
+  srcs = jdtls/stubgen:**/*.java;
+  deps = java21 @jdtls:org.ow2.asm:asm-util:9.11.1
+         fabr-jdtls-importer<JDTLS_STUBS=off>
+         @jdtls:org.eclipse.jdt.ls:org.eclipse.jdt.ls.core:1.63.0.20261019125307
+         @jdtls:org.eclipse.platform:org.eclipse.core.runtime:3.35.0
+         @jdtls:org.eclipse.jdt:org.eclipse.jdt.core:3.47.0
+         @jdtls:org.eclipse.lsp4j:org.eclipse.lsp4j:1.0.0;
+  main_class = build.fabr.jdtls.stubgen.StubGenerator;
+  args = build.fabr.jdtls.FabrProjectImporter org.eclipse.jdt.ls;
 }
 
 # The bundle the Java extension loads into the Java language server (the
@@ -50,8 +81,9 @@ jar_package fabr-jdtls-importer {
   resources = jdtls:plugin.xml;
   deps = java21;
   # The language server's own bundles, which it runs the importer with.
-  compile_deps = @jdtls:org.eclipse.jdt.ls:org.eclipse.jdt.ls.core:1.63.0.20261019125307
-                 @jdtls:org.eclipse.platform:org.eclipse.core.resources:3.24.100
+  compile_deps<JDTLS_STUBS=on> = jdtls_stubs;
+  compile_deps<JDTLS_STUBS=off> = @jdtls:org.eclipse.jdt.ls:org.eclipse.jdt.ls.core:1.63.0.20261019125307;
+  compile_deps = @jdtls:org.eclipse.platform:org.eclipse.core.resources:3.24.100
                  @jdtls:org.eclipse.platform:org.eclipse.core.runtime:3.35.0
                  @jdtls:org.eclipse.jdt:org.eclipse.jdt.core:3.47.0
                  @jdtls:org.eclipse.jdt:org.eclipse.jdt.launching:3.24.300

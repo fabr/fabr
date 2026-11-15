@@ -50,9 +50,9 @@ describing a project runs its build code.
 ## Java
 
 Java needs Red Hat's [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java)
-extension, which fabr's extension adds to. Each `jar_package` becomes a Java project in the
-editor: its sources, the jars the build compiles them against, and the packages of the project it
-requires, read from their sources. Its tests are test sources of the same project, so a test
+extension, which fabr's extension adds to (Microsoft's Extension Pack for Java includes it). Each
+`jar_package` and `java_program` becomes a Java project in the editor: its sources, the jars the
+build compiles them against, and the packages of the project it requires, read from their sources. Its tests are test sources of the same project, so a test
 dependency such as JUnit is visible to the tests and not to the main sources. The Java release
 the editor checks against is the one the build compiles for (`JVM_TARGET`, or a `java<release>`
 flag).
@@ -98,7 +98,7 @@ The extension runs `fabr build-server` in the workspace (see the
 [command line reference](/reference/command-line/#build-server)): a fabr process that watches the
 project and describes each of its targets over the
 [Build Server Protocol](https://build-server-protocol.github.io/), telling the extension when a
-description changes. For each package and each test run, the description holds its compilation
+description changes. For each package, program and test run, the description holds its compilation
 unit: the sources it compiles, the compiler options it compiles them with, and where each package
 it imports is. The same process serves the build files' language features, and builds and tests
 targets when you ask.

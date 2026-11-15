@@ -44,6 +44,7 @@ import {
   packageOf,
   processorsOf,
 } from "../JarPackage";
+import { describeJava } from "../Description";
 import { MAVEN_FORMAT } from "../MavenProtocol";
 
 interface ProgramInputs {
@@ -76,6 +77,15 @@ export default defineRule({
       [context.getProperty("main_class"), context.getProperty("args"), context.getProperty("jvm_args")],
       (mainClass, args, jvmArgs) =>
         runnableProgram(context, inputs, mainClass?.toString(), { args: args?.getValues() ?? [], jvmArgs: jvmArgs?.getValues() ?? [] })
+    );
+  },
+  describe(context, requirements) {
+    return requirements.describeAll().then(inputs =>
+      describeJava(context, requirements.resolved, {
+        sources: FileSet.unionAll(...inputs.srcs),
+        deps: inputs.deps,
+        tags: ["application"],
+      })
     );
   },
 });

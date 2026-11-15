@@ -51,16 +51,17 @@ import org.eclipse.lsp4j.TextDocumentIdentifier;
 
 /**
  * The JDT projects of a fabr project: one per package, made from the build
- * server's targets. A package's build target gives the project its source
- * folders, classpath and Java release, and its test target the test source
- * folders and the jars only the tests use, marked as JDT marks tests. A target
+ * server's targets. A package's targets not tagged `test` (its build, or a
+ * program's run) give the project its source folders, classpath and Java
+ * release, and its test target the test source folders and the jars only the
+ * tests use, marked as JDT marks tests. A target
  * the package depends on, directly or not, is a project it requires. The
  * projects lie in the language server's own workspace, the source folders
  * linked in, so nothing is written into the project's tree.
  */
 final class FabrProjects {
-    /** A described JVM target, as the server answers for it. */
-    record Target(String uri, List<String> dependencies, List<Path> roots, List<Path> classpath, List<String> options) {
+    /** A described JVM target, as the server answers for it; `test` where it is tagged as one. */
+    record Target(String uri, boolean test, List<String> dependencies, List<Path> roots, List<Path> classpath, List<String> options) {
     }
 
     /** The project property naming the fabr project a JDT project was made for. */
@@ -131,14 +132,14 @@ final class FabrProjects {
         return project;
     }
 
-    /** Configure `project` as package `pkg`'s, from `targets`, its build target first where it has one. */
+    /** Configure `project` as package `pkg`'s, from `targets`. */
     private static void configure(IProject project, String pkg, List<Target> targets, Map<String, Target> byUri, IProgressMonitor monitor) throws CoreException {
-        Target build = byUri.get(pkg);
-        List<Target> tests = targets.stream().filter(target -> !target.uri().equals(pkg)).toList();
+        List<Target> mains = targets.stream().filter(target -> !target.test()).toList();
+        List<Target> tests = targets.stream().filter(Target::test).toList();
         List<IClasspathEntry> entries = new ArrayList<>();
         Map<Path, IFolder> linked = new LinkedHashMap<>();
-        for (Target target : build == null ? tests : concat(List.of(build), tests)) {
-            boolean test = target != build;
+        for (Target target : concat(mains, tests)) {
+            boolean test = target.test();
             for (Path dir : target.roots()) {
                 if (linked.containsKey(dir)) {
                     continue;
@@ -157,7 +158,8 @@ final class FabrProjects {
             }
         }
         entries.add(JavaRuntime.getDefaultJREContainerEntry());
-        Set<Path> buildJars = new HashSet<>(build == null ? List.of() : build.classpath());
+        Set<Path> buildJars = new HashSet<>();
+        mains.forEach(main -> buildJars.addAll(main.classpath()));
         for (Path jar : buildJars.stream().sorted().toList()) {
             entries.add(JavaCore.newLibraryEntry(org.eclipse.core.runtime.Path.fromOSString(jar.toString()), null, null));
         }
@@ -167,7 +169,7 @@ final class FabrProjects {
         for (Path jar : testJars.stream().sorted().toList()) {
             entries.add(JavaCore.newLibraryEntry(org.eclipse.core.runtime.Path.fromOSString(jar.toString()), null, null, null, testAttribute(), false));
         }
-        Set<String> required = reached(build == null ? List.of() : build.dependencies(), byUri);
+        Set<String> required = reached(mains.stream().flatMap(main -> main.dependencies().stream()).toList(), byUri);
         Set<String> testRequired = new HashSet<>();
         tests.forEach(test -> testRequired.addAll(reached(test.dependencies(), byUri)));
         testRequired.removeAll(required);
@@ -181,7 +183,7 @@ final class FabrProjects {
         }
         IJavaProject javaProject = JavaCore.create(project);
         javaProject.setRawClasspath(entries.toArray(new IClasspathEntry[0]), project.getFullPath().append(OUTPUT), monitor);
-        String release = releaseOf(build != null ? build.options() : tests.isEmpty() ? List.of() : tests.get(0).options());
+        String release = releaseOf(!mains.isEmpty() ? mains.get(0).options() : tests.isEmpty() ? List.of() : tests.get(0).options());
         if (release != null) {
             Map<String, String> options = javaProject.getOptions(false);
             JavaCore.setComplianceOptions(release, options);

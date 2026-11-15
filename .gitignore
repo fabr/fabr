@@ -1,6 +1,7 @@
 *~
 build/
 !packages/vscode-ext/jdtls/src/build/
+!packages/vscode-ext/jdtls/stubgen/build/
 coverage/
 node_modules/
 yarn-error.log

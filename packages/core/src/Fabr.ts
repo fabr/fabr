@@ -42,7 +42,7 @@ import { Constraints } from "./model/Constraints";
 import { builtInProject } from "./model/Target";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
-import { DESCRIBED_OPERATIONS, DESCRIPTION_FILE, type IDescription, toDescription } from "./context/Description";
+import { DESCRIPTION_FILE, type IDescription, toDescription } from "./context/Description";
 import { readJsonFile } from "./support/Json";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
@@ -580,9 +580,8 @@ export interface IDescribing {
 }
 
 /**
- * Describe every target the project's own files declare, under each of
- * `DESCRIBED_OPERATIONS` its type has a rule for, as that operation would
- * build it, and put each description in the cache's tree pool. `configOf`
+ * Describe every target the project's own files declare, under each operation
+ * its type has a rule for, as that operation would build it, and put each description in the cache's tree pool. `configOf`
  * makes an operation's configuration and `refFor` the reference naming a
  * target.
  *
@@ -601,8 +600,11 @@ export function describeOperation(
     .getTargets()
     .filter(({ decl }) => decl.source.fs === execution.sourceFileSource)
     .flatMap(({ name, decl }) =>
-      DESCRIBED_OPERATIONS.filter(operation => model.getOperations(decl.type).includes(operation)).map(
-        (operation): IDescribingTarget => ({
+      /* `*` is a rule for every operation, which names none to describe under. */
+      model
+        .getOperations(decl.type)
+        .filter(operation => operation !== "*")
+        .map((operation): IDescribingTarget => ({
           name,
           operation,
           described: configOf(operation)
@@ -616,8 +618,7 @@ export function describeOperation(
                       : readJsonFile(file, toDescription).then(description => ({ directory, description }))
                   )
             ),
-        })
-      )
+        }))
     );
   /* A target's failure is its own: `settled` waits for it and does not reject. */
   const settled = Computable.forAll(

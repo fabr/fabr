@@ -175,6 +175,7 @@ public class FabrProjectImporter extends AbstractProjectImporter {
             String uri = target.getAsJsonObject("id").get("uri").getAsString();
             return new FabrProjects.Target(
                 uri,
+                target.has("tags") && strings(target, "tags").contains("test"),
                 target.getAsJsonArray("dependencies").asList().stream().map(dep -> dep.getAsJsonObject().get("uri").getAsString()).toList(),
                 paths(sources.get(uri), "roots"),
                 paths(javac.get(uri), "classpath"),

@@ -110,8 +110,8 @@ targetdef catalog {
 targetdef generate {
     # Input files, placed in the directory the commands run in.
     srcs = FILES;
-    # The command to run: a pipeline of runnables with their arguments, with
-    # `|`, `<`, `>`, `2>` and `&>` as in a shell.
+    # The command to run: pipelines of runnables with their arguments, with
+    # `&&`, `|`, `<`, `>`, `2>` and `&>` as in a shell.
     run = REQUIRED COMMAND;
     # Which files to keep, as a pattern with an optional rename: `dist:**`,
     # `*.out -> *.txt`.
@@ -144,7 +144,7 @@ targetdef patched {
     # them (`a/lib/x.js`).
     patches = FILES;
     # A command run after the patches, in the directory holding the files, which
-    # it changes in place: a pipeline of runnables as `generate`'s `run` is.
+    # it changes in place: pipelines of runnables as `generate`'s `run` is.
     run = COMMAND;
     # Environment variables for the command, over each runnable's own `env`:
     # the command runs with no others.

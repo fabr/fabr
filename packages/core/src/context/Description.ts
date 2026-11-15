@@ -41,9 +41,6 @@ import { isJsonObject } from "../support/Json";
 /** The name a target's description has among its `describe` result's files. */
 export const DESCRIPTION_FILE = "describe.json";
 
-/** The operations a target is described under: those that compile something. */
-export const DESCRIBED_OPERATIONS: readonly string[] = ["build", "test"];
-
 /** Where a description of a target made from a package (its `extends`) holds
  * that package's own description. */
 export const DESCRIPTION_EXTENDS = "extends";
