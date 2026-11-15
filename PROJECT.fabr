@@ -157,15 +157,15 @@ js_test e2e_tests {
 }
 
 sync release {
-  @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli;
-  @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core;
-  @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js;
-  @npm:@fabr-build/js-tools:${FABR_VERSION} = @fabr-build/js-tools;
-  @npm:@fabr-build/java:${FABR_VERSION} = @fabr-build/java;
-  @npm:@fabr-build/container:${FABR_VERSION} = @fabr-build/container;
-  @npm:@fabr-build/aws:${FABR_VERSION} = @fabr-build/aws;
-  @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer;
-  @npm:@fabr-build/migration:${FABR_VERSION} = @fabr-build/migration;
+  @npm:@fabr-build/cli:${FABR_VERSION} = @fabr-build/cli<BUILD_TYPE=release>;
+  @npm:@fabr-build/core:${FABR_VERSION} = @fabr-build/core<BUILD_TYPE=release>;
+  @npm:@fabr-build/js:${FABR_VERSION} = @fabr-build/js<BUILD_TYPE=release>;
+  @npm:@fabr-build/js-tools:${FABR_VERSION} = @fabr-build/js-tools<BUILD_TYPE=release>;
+  @npm:@fabr-build/java:${FABR_VERSION} = @fabr-build/java<BUILD_TYPE=release>;
+  @npm:@fabr-build/container:${FABR_VERSION} = @fabr-build/container<BUILD_TYPE=release>;
+  @npm:@fabr-build/aws:${FABR_VERSION} = @fabr-build/aws<BUILD_TYPE=release>;
+  @npm:@fabr-build/sass-pnp-importer:${FABR_VERSION} = @fabr-build/sass-pnp-importer<BUILD_TYPE=release>;
+  @npm:@fabr-build/migration:${FABR_VERSION} = @fabr-build/migration<BUILD_TYPE=release>;
 }
 
 # fabr as it is installed: the CLI and the plugins installed with it, each

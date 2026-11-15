@@ -1,0 +1,72 @@
+name: release
+# Pushing a tag `v<version>` publishes that version: the packages `sync release`
+# lists go to npm, the VS Code extension to the Marketplace, and a GitHub
+# release is made with the version's CHANGELOG.md section as its notes and the
+# extension attached.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  # contents: to make the GitHub release; id-token: trusted publishing (npm,
+  # the Marketplace) and npm provenance.
+  contents: write
+  id-token: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Check the tag names the version PROJECT.fabr releases
+        run: |
+          version=$(sed -n 's/^FABR_VERSION=\(.*\);$/\1/p' PROJECT.fabr)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match FABR_VERSION=$version in PROJECT.fabr"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Extract the release notes from CHANGELOG.md
+        run: |
+          awk -v heading="## Fabr $VERSION" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## Fabr $VERSION' section"
+            exit 1
+          fi
+      - run: yarn install --frozen-lockfile
+      # Builds fabr with itself and runs every test.
+      - run: yarn bootstrap
+      - name: Check formatting
+        run: ./fabr build prettier_check
+      - name: Lint
+        run: ./fabr build eslint_check
+      - name: Build the VS Code extension
+        run: ./fabr cp fabr_vsix dist
+      # Publishes through npm's trusted publishing, with provenance.
+      - name: Publish to npm
+        run: ./fabr sync release
+      # Publishes the extension to the Visual Studio Marketplace as the
+      # `fabr-build` publisher, through the Marketplace's trusted publishing.
+      - name: Publish the VS Code extension
+        run: ./fabr run @npm:@vscode/vsce:4.1.0 publish --oidc --packagePath dist/fabr_vsix/fabr.vsix
+      - name: Make the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Fabr $VERSION" \
+            --notes-file release-notes.md \
+            dist/fabr_vsix/fabr.vsix

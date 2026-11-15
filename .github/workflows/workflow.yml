@@ -22,8 +22,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:LOCALAPPDATA\fabr","$env:TEMP"
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: yarn install
