@@ -1,7 +1,8 @@
 Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
-(`@fabr-build/core`), the JavaScript plugin (`@fabr-build/js`), its tools (`@fabr-build/js-tools`)
-and the Sass importer (`@fabr-build/sass-pnp-importer`) are released together and share a version
-number.
+(`@fabr-build/core`), the plugins (`@fabr-build/js` with its tools `@fabr-build/js-tools`,
+`@fabr-build/java`, `@fabr-build/container` and `@fabr-build/aws`), the Sass importer
+(`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
+together and share a version number.
 
 ## Fabr 0.4.0
 @fabr-build/core:

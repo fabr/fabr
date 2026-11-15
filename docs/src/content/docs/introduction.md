@@ -1,18 +1,21 @@
 ---
 title: Introduction
-description: What fabr is, what it does for a JavaScript, TypeScript or Java project, how it differs from the tooling you already use, and the ideas you need to read a build file.
+description: What fabr is, what it does for your project, how it differs from the tooling you already use, and the ideas you need to read a build file.
 ---
 
-Fabr is a build tool for JavaScript, TypeScript and Java projects. It replaces the configuration
-files and scripts that accumulate around a project with one description of what the project
-produces, and from that it builds, tests and runs everything.
+Fabr is a build tool. It replaces the configuration files and scripts that accumulate around a
+project with one description of what the project produces, and from that it builds, tests and runs
+everything. What it knows about each ecosystem comes from a plugin: fabr ships plugins for
+JavaScript and TypeScript, Java, OCI container images and AWS, and one project can use several
+together.
 
-A typical TypeScript repository has a `package.json`, a `tsconfig.json` and a test configuration
-for each package, a bundler configuration, a lockfile, and scripts that have to be run in the
-right order. A Java one has a `pom.xml` or `build.gradle` per module, each configuring its own
-plugins, and a wrapper script pinning the build tool itself. Either way, it is left to you to keep
-the configurations agreeing with each other, to rebuild what a change affects before testing it,
-and to find out why CI disagrees with your machine.
+Whatever the language, a repository tends to accumulate a configuration per tool per package. A
+TypeScript one has a `package.json`, a `tsconfig.json` and a test configuration for each package, a
+bundler configuration, a lockfile, and scripts that have to be run in the right order. A Java one
+has a `pom.xml` or `build.gradle` per module, each configuring its own plugins, and a wrapper
+script pinning the build tool itself. Either way, it is left to you to keep the configurations
+agreeing with each other, to rebuild what a change affects before testing it, and to find out why
+CI disagrees with your machine.
 
 With fabr you declare each package's sources and dependencies, and the rest follows from that:
 
@@ -27,7 +30,8 @@ With fabr you declare each package's sources and dependencies, and the rest foll
   file alone, so there is nothing to drift between machines and nothing to conflict in a merge.
 - **Mistakes surface at build time.** JavaScript code can import only the packages its target
   declares, so an import that works by accident today, and breaks when something unrelated moves,
-  is an error from the start.
+  is an error from the start. Every build step sees only its declared inputs, in a directory and
+  environment of its own.
 - **Variants without a second configuration.** A release build, an ES-module build beside a
   CommonJS one, classes for an older Java release, a build for another platform: each is the same
   targets with a different setting, asked for on the command line or by the package that needs it.
@@ -176,8 +180,10 @@ of that guarantee. See
   several configurations.
 - **Guides**: [projects with several packages](/guides/multi-package/),
   [migrating an npm, Yarn or pnpm project](/guides/migrating-js/),
-  [watch mode and dev servers](/guides/watch/), [VS Code support](/guides/vscode/),
-  [continuous integration](/guides/ci/) and [writing your own rules](/guides/rules/).
+  [migrating a Maven or Gradle project](/guides/migrating-java/),
+  [running your own tools](/guides/tools/), [watch mode and dev servers](/guides/watch/),
+  [VS Code support](/guides/vscode/), [continuous integration](/guides/ci/),
+  [auditing dependencies](/guides/auditing/) and [writing your own rules](/guides/rules/).
 - **Example**: [Spring Boot with a React front end](/examples/spring-boot-react/).
 - **[Command line](/reference/command-line/)** and **[Language syntax](/reference/syntax/)**: the
   `fabr` command and the `.fabr` language in full.

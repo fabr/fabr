@@ -1,67 +1,80 @@
 # Fabr
 
-Fabr is a build tool for JavaScript and TypeScript projects. A typical repository accumulates a
-`package.json`, a `tsconfig.json` and a test configuration for each package, a bundler
-configuration, a lockfile, and scripts that have to run in the right order. Fabr replaces all of
-that with one description of what the project produces, and from it builds, tests and runs
-everything.
+Fabr is a build tool. You describe what your project produces — packages, programs, tests, images
+— and what each is made from, and fabr builds, tests and runs it. Support for each ecosystem comes
+from a plugin. Fabr ships plugins for JavaScript and TypeScript, Java, OCI container images and AWS,
+and one project can use any number of them together.
 
-- **One file, not a dozen.** A `PROJECT.fabr` describes every package in the repository. Each
-  `package.json` is generated, and there is no install step.
+Most repositories accumulate a configuration file per tool per package, a lockfile, and scripts
+that have to run in the right order. Fabr replaces them with one description of the project:
+
+- **One file, not a dozen.** A `PROJECT.fabr` describes every package in the repository. You
+  write no `tsconfig.json`, `pom.xml` or test configuration, generated manifests such as
+  `package.json` are written for you, and there is no install step.
 - **Nothing is stale, and nothing runs twice.** Fabr knows which files each step reads. Ask for a
   package's tests and whatever they depend on is brought up to date first; change one file and only
   the steps that read it run again, tests included.
 - **The same result everywhere, with no lockfile.** Dependency versions follow from the build file
-  alone, so there is nothing to drift between machines or conflict in a merge.
-- **Mistakes surface at build time.** Code can import only the packages its target declares, and
-  each build step sees only its declared inputs, in a directory and environment of its own.
+  alone, so there is nothing to drift between machines or conflict in a merge. Fabr downloads the
+  Node.js and JDK your build runs on, too.
+- **Mistakes surface at build time.** Each build step sees only its declared inputs, in a
+  directory and environment of its own, so a dependency that works by accident is an error from
+  the start.
 - **Variants without a second configuration.** A release build, an ES-module build beside a
-  CommonJS one, a build for another platform: the same targets with a different setting.
+  CommonJS one, classes for an older Java release, a build for another platform: the same targets
+  with a different setting.
 
 The [introduction](https://fabr.build/introduction/) explains the ideas behind it.
 
 ## Status
 
-Fabr is under active development. It builds, bundles, tests, runs and publishes JavaScript and
-TypeScript projects, and it builds and tests itself. It is young: other languages are still to
-come, and some things you may rely on aren't there yet. Read
-[Known limitations](https://fabr.build/known-limitations/) before you commit a project to it.
+Fabr is under active development. It builds, tests, runs and publishes JavaScript, TypeScript and
+Java projects, builds and pushes container images, and reads from and publishes to AWS. It is
+tested on macOS, Linux and Windows, and it builds and tests itself. It is young, and some things
+you may rely on aren't there yet: read [Known limitations](https://fabr.build/known-limitations/)
+before you commit a project to it.
 
 ## Install
 
-Fabr needs Node.js 22.19 or later. Install the CLI globally; it brings the JavaScript and
-TypeScript rules (`@fabr-build/js`) with it:
+Fabr needs Node.js 22.19 or later to run. Install the CLI globally, with any plugins you use
+besides the JavaScript one, which comes with it:
 
 ```sh
-npm install -g @fabr-build/cli
+npm install -g @fabr-build/cli                      # JavaScript and TypeScript
+npm install -g @fabr-build/cli @fabr-build/java     # and Java
 ```
 
-Install `@fabr-build/cli` only. Adding `@fabr-build/js` to the command makes npm give it a second
-copy of `@fabr-build/core`, and fabr can only work with one.
+The container and AWS plugins are `@fabr-build/container` and `@fabr-build/aws`, installed the
+same way.
 
 ## A minimal example
 
-Create a `PROJECT.fabr` at your project root:
+Create a `PROJECT.fabr` at your project root. It loads a plugin and declares a target: what to
+build, and what from.
 
 ```
-plugin @fabr-build/js;          # load the JavaScript/TypeScript rules
+plugin @fabr-build/js;
 
-JS_TARGET = es2021-commonjs;    # configuration
-
-js_package mylib {              # a target: what to build, and from what
+js_package mylib {
   srcs  = src:**/*.ts;
   tests = src:**/*.test.ts;
 }
 ```
 
-and a source file, `src/index.ts`:
+A Java jar is declared the same way, with the Java plugin's target type:
 
-```ts
-export const greet = (name: string): string => `Hello, ${name}!`;
+```
+plugin @fabr-build/java;
+
+jar_package greeter {
+  srcs = src/main/java:**/*.java;
+  deps = @mvn:org.apache.commons:commons-text:1.11.0;
+  main_class = com.example.Greeter;
+}
 ```
 
-Then build it, test it, and look at the result. The package is kept in fabr's cache, not written
-into your project, and you inspect it as if it were a directory:
+Then build, test and inspect it. The result is kept in fabr's cache rather than written into your
+project, and you look at it as if it were a directory:
 
 ```sh
 fabr build mylib           # compile and assemble the package
@@ -70,33 +83,40 @@ fabr ls    mylib           # list the built files
 fabr cat   mylib/index.js  # print one of them
 ```
 
-Nothing here says how to compile TypeScript or lay out a package. That knowledge is in the
-`@fabr-build/js` plugin; the build file only states what the package is made from. The
-[quick start](https://fabr.build/quickstart-js/) carries this example on to dependencies, tests
-and runnable programs.
+Nothing here says how to compile TypeScript or Java or how to lay out a package. That knowledge is
+in the plugins; the build file states only what each target is made from. The quick starts for
+[JavaScript and TypeScript](https://fabr.build/quickstart-js/) and
+[Java](https://fabr.build/quickstart-java/) carry these examples on to dependencies, tests and
+runnable programs.
+
+To convert an existing npm, Yarn or pnpm project, `fabr-migrate` writes a first set of build files
+from your `package.json` files and lockfile; see
+[Migrating an npm, Yarn or pnpm project](https://fabr.build/guides/migrating-js/). A Maven or
+Gradle build is converted by hand, as
+[Migrating a Maven or Gradle project](https://fabr.build/guides/migrating-java/) describes.
 
 ## Documentation
 
 The documentation is at **[fabr.build](https://fabr.build)**.
 
-- **Start here:** the [introduction](https://fabr.build/introduction/), the
-  [quick start](https://fabr.build/quickstart-js/) and the
+- **Start here:** the [introduction](https://fabr.build/introduction/), the quick starts for
+  [JavaScript and TypeScript](https://fabr.build/quickstart-js/) and
+  [Java](https://fabr.build/quickstart-java/), and the
   [conceptual model](https://fabr.build/guides/concepts/).
-- **JavaScript and TypeScript:**
-  [dependencies](https://fabr.build/reference/js/dependencies/),
-  [module resolution](https://fabr.build/reference/js/module-resolution/),
-  [TypeScript compilation](https://fabr.build/reference/js/typescript/),
-  [stylesheets](https://fabr.build/reference/js/stylesheets/),
-  [testing](https://fabr.build/reference/js/testing/) with `node:test`, jest or vitest,
-  [bundling](https://fabr.build/reference/js/bundling/) and
-  [publishing](https://fabr.build/reference/js/publishing/).
 - **Guides:** [projects with several packages](https://fabr.build/guides/multi-package/),
-  [watch mode and dev servers](https://fabr.build/guides/watch/) and
-  [continuous integration](https://fabr.build/guides/ci/).
+  [running your own tools](https://fabr.build/guides/tools/),
+  [watch mode and dev servers](https://fabr.build/guides/watch/),
+  [VS Code support](https://fabr.build/guides/vscode/),
+  [continuous integration](https://fabr.build/guides/ci/),
+  [auditing dependencies](https://fabr.build/guides/auditing/) and
+  [writing your own rules](https://fabr.build/guides/rules/).
 - **Reference:** the [command line](https://fabr.build/reference/command-line/), the
-  [language syntax](https://fabr.build/reference/syntax/), and the target types and properties of
-  [core](https://fabr.build/reference/standard-rules/) and
-  [JavaScript](https://fabr.build/reference/js/targets/).
+  [language syntax](https://fabr.build/reference/syntax/), and the
+  [core targets and configuration](https://fabr.build/reference/standard-rules/).
+- **Plugins:** [JavaScript and TypeScript](https://fabr.build/reference/js/dependencies/),
+  [Java](https://fabr.build/reference/java/dependencies/),
+  [container images](https://fabr.build/reference/container/images/) and
+  [AWS](https://fabr.build/reference/aws/accounts/).
 
 ## Building fabr
 
@@ -110,8 +130,8 @@ yarn dist        # build with tsc, run the tests under jest, and lint
 
 Run both before proposing a change. Contributions are welcome: see
 [Getting involved](https://fabr.build/contributing/) for the repository layout and conventions, and
-[Writing a plugin](https://fabr.build/developer/writing-a-plugin/) to add support for a new ecosystem. Please discuss a change to the design
-before implementing it.
+[Writing a plugin](https://fabr.build/developer/writing-a-plugin/) to add support for a new
+ecosystem. Please discuss a change to the design before implementing it.
 
 ## License
 
