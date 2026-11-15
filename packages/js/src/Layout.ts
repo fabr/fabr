@@ -24,6 +24,7 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
+  joinDepsPath,
   mapComputable,
   PackageFileSet,
   stringConfig,
@@ -78,6 +79,13 @@ export interface IPackageLayout {
    *   tree's hidden links: undefined.
    */
   nameRead(read: string): ReadName | undefined;
+  /**
+   * @return the absolute path of `path` within the package `route` names (its
+   * canonical route, as {@link nameRead} gives it), where the layout places
+   * it: under its instance directory, or at its location over the tree pool,
+   * which may be a virtual one. Undefined where no package has that route.
+   */
+  locate(route: ReadonlyArray<string>, path: string): string | undefined;
 }
 
 /** How {@link IPackageLayout.nameRead} names a read: one of the step's own files, or a path within a package. */
@@ -117,15 +125,34 @@ export function layoutPackages(
       trees,
       members,
       nameRead: poolReadNamer(dir, locations, routes),
+      locate: packageLocator(routes, new Map(locations.map(([location, pkg]) => [pkg, location]))),
     }));
   }
   const files = FileSet.layout({ [mount]: [assembleNodeModules(deps), selfLink(self, mount)] });
+  const directories = packageDirectories(deps);
   return Computable.resolve({
     files,
     trees: new Map(),
     members,
-    nameRead: treeReadNamer(dir, mount, packageDirectories(deps), routes, members),
+    nameRead: treeReadNamer(dir, mount, directories, routes, members),
+    locate: packageLocator(
+      routes,
+      new Map([...directories].map(([pkg, directory]) => [pkg, join(dir, ...mount.split("/"), ...directory.split("/"))]))
+    ),
   });
+}
+
+/** Make {@link IPackageLayout.locate} over each package's directory on this machine. */
+function packageLocator(
+  routes: ReadonlyMap<PackageFileSet, string[]>,
+  locations: ReadonlyMap<PackageFileSet, string>
+): IPackageLayout["locate"] {
+  const byRoute = new Map([...routes].map(([pkg, route]) => [joinDepsPath(route), pkg]));
+  return (route, path) => {
+    const pkg = byRoute.get(joinDepsPath(route));
+    const location = pkg && locations.get(pkg);
+    return location === undefined ? undefined : join(location, ...path.split("/"));
+  };
 }
 
 /** Read the action's `layout` config, one of the {@link NodeLayout} tokens. */

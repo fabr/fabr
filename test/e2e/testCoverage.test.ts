@@ -45,14 +45,18 @@ fs.writeFileSync(report, JSON.stringify({ results: { tool: { name: "fixture" }, 
   tests: [{ name: "loads", status: "passed", duration: 1 }] } }));
 `;
 
-  const CONVERTER = `const fs = require("fs"), path = require("path"), { pathToFileURL } = require("url");
+  const CONVERTER = `const fs = require("fs"), path = require("path"), { fileURLToPath } = require("url");
 const manifest = process.argv.find(a => a.startsWith("--manifest=")).slice("--manifest=".length);
 const options = JSON.parse(fs.readFileSync(manifest, "utf8"));
-const raw = fs.existsSync(options.raw) ? fs.readdirSync(options.raw).map(f => fs.readFileSync(path.join(options.raw, f), "utf8")).join("\\n") : "";
+const real = file => { try { return fs.realpathSync(file); } catch { return file; } };
+const loaded = new Set((fs.existsSync(options.raw) ? fs.readdirSync(options.raw) : [])
+  .flatMap(f => JSON.parse(fs.readFileSync(path.join(options.raw, f), "utf8")).result)
+  .filter(script => script.url.startsWith("file:"))
+  .map(script => real(fileURLToPath(script.url))));
 const out = [];
 for (const measured of options.measured) {
   const map = JSON.parse(fs.readFileSync(measured + ".map", "utf8"));
-  const ran = raw.includes(JSON.stringify(pathToFileURL(fs.realpathSync(measured)).href)) ? 1 : 0;
+  const ran = loaded.has(real(path.resolve(measured))) ? 1 : 0;
   if (options.loaded && !ran) continue;
   out.push("TN:", "SF:" + map.sources[0].slice("fabr:".length), "DA:1," + ran, "end_of_record");
 }
@@ -100,6 +104,40 @@ fs.writeFileSync(options.output, out.join("\\n") + "\\n");
     ]);
     expect(result.stderr).to.contain("Coverage: lines 66.67% (2/3), functions n/a, branches n/a");
     expect(result.stderr).to.contain(`Coverage report written to ${path.join(LCOV)}`);
+  });
+
+  it("measures the packages built for a target under layout/pnp", () => {
+    /* The node runner, which resolves through the PnP table; the fixture
+     * runner does not. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "js_script fixture_coverage { deps = coverage_driver:**; entry = coverage_driver:convert.js; }\n" +
+          "JS_COVERAGE_DRIVER = fixture_coverage;\n" +
+          "js_package lib { srcs = lib_src:**/*.ts; }\n" +
+          "js_package thing { srcs = src:**/*.ts; tests = src:**/*.test.ts; deps = lib; test_deps = layout/pnp; }\n",
+        "coverage_driver/convert.js": CONVERTER,
+        "lib_src/index.ts": "exports.value = 1;\n",
+        "lib_src/unused.ts": "exports.value = 0;\n",
+        "src/thing.ts": 'exports.value = require("lib").value + 1;\n',
+        "src/thing.test.ts": 'describe("thing", () => { it("loads", () => { require("./thing"); }); });\n',
+      },
+      ["-DJS_TARGET=es2020", "test", "--coverage", "thing"],
+      [LCOV]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    const records = (result.files?.[LCOV] ?? "")
+      .split("end_of_record")
+      .filter(record => record.includes("SF:"))
+      .map(record => [/SF:(.*)/.exec(record)![1], [...record.matchAll(/DA:(.*)/g)].map(match => match[1])]);
+    expect(records).to.deep.equal([
+      ["lib_src/index.ts", ["1,1"]],
+      ["lib_src/unused.ts", ["1,0"]],
+      ["src/thing.ts", ["1,1"]],
+    ]);
   });
 
   it("measures nothing without --coverage", () => {

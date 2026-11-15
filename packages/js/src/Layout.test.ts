@@ -139,6 +139,14 @@ describe("layoutPackages", () => {
         file: "node_modules/a/index.js",
       });
     });
+
+    it("locates a package's file by its route, in the package's instance directory", async () => {
+      const layout = await laid([a], NODE_MODULES);
+      const located = layout.locate(["a", "b"], "lib/x.js");
+      expect(located).to.equal(path.join(DIR, "node_modules", ...packageDirectories([a]).get(b)!.split("/"), "lib", "x.js"));
+      expect(row(layout.nameRead(located!))).to.deep.equal({ route: ["a", "b"], path: "lib/x.js", pkg: "b" });
+      expect(layout.locate(["b"], "index.js"), "a route the walk does not take").to.equal(undefined);
+    });
   });
 
   describe("under pnp", () => {
@@ -182,6 +190,23 @@ describe("layoutPackages", () => {
       expect(row(layout.nameRead(tree)), "the tree itself").to.deep.equal({ route: ["a", "b"], path: "", pkg: "b" });
       expect(layout.nameRead(path.join(DIR, "build", "a.test.js"))).to.deep.equal({ file: "build/a.test.js" });
       expect(layout.nameRead(path.join(POOL, "0000", "index.js")), "a tree of no package here").to.equal(undefined);
+    });
+
+    it("locates a package's file by its route, at the location of that wiring", async () => {
+      expect((await laid([a], PNP)).locate(["a", "b"], "lib/y.js")).to.equal(path.join(POOL, b.toManifestHash(), "lib", "y.js"));
+      const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
+      const left = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "1")));
+      const right = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(pkg("dep", "2")));
+      const layout = await laid([pkg("l", "l", [left]), pkg("r", "r", [right])], PNP);
+      for (const route of [
+        ["l", "shared"],
+        ["r", "shared"],
+      ]) {
+        const located = layout.locate(route, "index.js")!;
+        expect(located).to.contain("__virtual__");
+        const named = layout.nameRead(located);
+        expect(named !== undefined && "route" in named && named.package).to.equal(route[0] === "l" ? left : right);
+      }
     });
   });
 });

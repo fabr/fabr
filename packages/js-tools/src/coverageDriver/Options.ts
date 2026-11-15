@@ -19,14 +19,15 @@
 
 /* The options document the test pipeline writes for the coverage driver. */
 
-/** The coverage driver's options. Every path is relative to the driver's
- * working directory. */
+/** The coverage driver's options. Every path is absolute or relative to the
+ * driver's working directory. */
 export interface ICoverageOptions {
   /** The directory the run's processes wrote their V8 coverage into. */
   raw: string;
   /** The compiled files measured, each naming its source map in a
-   * `sourceMappingURL` comment (a file naming none is left out). A file no
-   * process loaded is reported as not run. */
+   * `sourceMappingURL` comment (a file naming none is left out), and each
+   * possibly through a PnP virtual location. A file no process loaded is
+   * reported as not run. */
   measured: string[];
   /** Where the lcov document is written. */
   output: string;

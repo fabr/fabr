@@ -273,6 +273,7 @@ describe("readsOf", () => {
     trees: new Map(),
     members: [y],
     nameRead: read => names.get(path.relative(cwd, read).split(path.sep).join("/")),
+    locate: () => undefined,
   };
 
   it("takes a package's lookup of itself as answered by the package", () => {

@@ -238,8 +238,7 @@ the library is not where the binary expects it and the addon fails to load. A pa
 dependencies is loaded from a path of its own for each set of peers it
 is given, which exists only for imports, so the package reading one of its own files through `fs`
 (`fs.readFileSync(path.join(__dirname, "template.html"))`) finds nothing there either.
-`layout/node_modules` asks for the tree explicitly. `--coverage` needs the tree, so a
-target with `layout/pnp` can't be measured.
+`layout/node_modules` asks for the tree explicitly.
 
 ### DOM tests
 
@@ -669,7 +668,6 @@ the runner starts are measured as long as that variable is passed on.
 | `EACCES: permission denied, open '…/__snapshots__/x.test.ts.snap'` under `fabr test -u`, or `.snap` files in the built package | The `.snap` files are matched by `srcs`, not `test_expectations` | Match them with `test_expectations` only. |
 | `Recorded snapshots need node 23.4 or later` | `node` framework snapshots, with `NODE` set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 23.4 or later. |
 | `The jest compatibility runner needs node 22.15 or later`, or `The vitest runner needs node 22.15 or later` | `NODE` is set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 22.15 or later. |
-| `Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage` | `fabr test --coverage` on a target with the `layout/pnp` flag | Measure it without the flag; see [How tests find their packages](#how-tests-find-their-packages). |
 | `No test's name matches the pattern '…'` | `fabr test -t` with a pattern that no test's full name matches | Check the pattern against the `describe` and test names, joined by spaces. |
 | `Test target has more than one setupTests script` | Two `setupTests` files at the root of the source tree, such as a `.ts` and a `.js` | Keep one. |
 | `The jest compatibility runner supports jest 29 and 30, but JEST is pinned to …` | `JEST` names another major version | Set `JEST` to a jest 29 or 30 release. |

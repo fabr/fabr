@@ -37,6 +37,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveVirtual } from "../pnp/VirtualPath";
 import { parseManifestPath } from "../support/Main";
 import type { ICoverageOptions } from "./Options";
 import { ICoverageRecord, IFileCoverageData, lcovOf, mergeRecord, recordOf, sourceOf } from "./Lcov";
@@ -136,6 +137,24 @@ function sourceMapOf(file: string, code: string): { map: unknown; dir: string } 
   return fs.existsSync(mapFile) ? { map: JSON.parse(fs.readFileSync(mapFile, "utf8")), dir: path.dirname(mapFile) } : undefined;
 }
 
+/** @return the real path of the file `file` names, through a PnP virtual
+ * location where it is written through one; `file` itself where it does not
+ * exist. */
+function physicalPath(file: string): string {
+  try {
+    return fs.realpathSync(resolveVirtual(file));
+  } catch {
+    return file;
+  }
+}
+
+/** @return `script` named by the physical path of the file it covers, so
+ * that the processes loading one file through two locations (a package's
+ * virtual locations over its one tree) count it as one script. */
+function physicalScript(script: IScriptCoverage): IScriptCoverage {
+  return script.url.startsWith("file:") ? { ...script, url: pathToFileURL(physicalPath(fileURLToPath(script.url))).href } : script;
+}
+
 /** Parse `code` as a script, or as a module where that fails. */
 function parse(acorn: IAcorn, code: string): INode {
   const options = { ecmaVersion: "latest", locations: true, allowHashBang: true };
@@ -168,16 +187,16 @@ export async function main(argv: string[]): Promise<void> {
         .map(name => JSON.parse(fs.readFileSync(path.join(rawDir, name), "utf8")) as { result: IScriptCoverage[] })
     : [];
   /* Sum the counts of a script several processes loaded before converting
-   * anything. A measured file is matched by its real path, which is how node
-   * names what it loads. */
-  const merged = mergeProcessCovs(processes.map(({ result }) => ({ result })));
+   * anything. A script and a measured file are each named by the physical
+   * path of the file, whether node loaded it by its real path or through a
+   * virtual location. */
+  const merged = mergeProcessCovs(processes.map(({ result }) => ({ result: result.map(physicalScript) })));
   const byFile = new Map(
     merged.result.filter(script => script.url.startsWith("file:")).map(script => [fileURLToPath(script.url), script])
   );
 
   const records = new Map<string, ICoverageRecord>();
-  for (const measured of options.measured) {
-    const file = fs.realpathSync(path.resolve(measured));
+  for (const file of new Set(options.measured.map(measured => physicalPath(path.resolve(measured))))) {
     if (options.loaded === true && !byFile.has(file)) {
       continue;
     }

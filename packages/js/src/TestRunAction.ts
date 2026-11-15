@@ -33,6 +33,7 @@ import {
   commandLineConfig,
   Computable,
   COVERAGE_REPORT_FILENAME,
+  DepsPath,
   DiscoveredDeps,
   execute,
   ExecutionError,
@@ -164,19 +165,15 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const argv = toArgv(commandLineConfig(action, "argv"));
   const outputs = stringListConfig(action, "outputs");
   const declared = declaredEnv(action);
-  const measured = Array.isArray(action.config.coverage_argv)
-    ? measuredFilesOf(action).then(
-        files => new TestCoverage(ctx, report, toArgv(commandLineConfig(action, "coverage_argv")), declared, files)
-      )
-    : Computable.resolve(undefined);
+  const measured = Array.isArray(action.config.coverage_argv) ? measuredFilesOf(action) : Computable.resolve(undefined);
   /* Tests run with only the environment their target declares, so a test that
    * spawns a tool names it by an absolute path (e.g. process.execPath). The
    * argv's leading command (the runner's interpreter) is found on PATH when each
    * invocation runs. */
   return Computable.forAll(
     [testFilesOf(action), ctx.changedFiles(), ctx.incrementalState().then(keptRunsOf), measured],
-    (testFiles, changes, kept, coverage) => {
-      const { rerun, reused } = filesToRun(testFiles, changes, kept, coverage !== undefined);
+    (testFiles, changes, kept, measuredFiles) => {
+      const { rerun, reused } = filesToRun(testFiles, changes, kept, measuredFiles !== undefined);
       return stageInstall(
         action,
         workDir,
@@ -184,6 +181,15 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
         work => ctx.admit(report, work)
       )
         .then(layout => {
+          const coverage =
+            measuredFiles &&
+            new TestCoverage(
+              ctx,
+              report,
+              toArgv(commandLineConfig(action, "coverage_argv")),
+              declared,
+              placeMeasured(measuredFiles, layout)
+            );
           /* Each file's outcome is tallied as its invocation ends, from the
            * report it wrote. */
           const tally = new RunTally(rerun.length, report.progress);
@@ -203,9 +209,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
                 .then(run => tally.add(run));
             }),
             (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
-          );
+          ).then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)));
         })
-        .then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)))
         .then(latest =>
           getResultFileSet(workDir, outputs).then(result => ({
             result,
@@ -297,13 +302,43 @@ class TestCoverage {
   }
 }
 
-/** @return the files a measured run measures, by their install names. */
-function measuredFilesOf(action: BuildAction): Computable<string[]> {
+/**
+ * The files a measured run measures: the run's own, by their names in the
+ * install, and the packages', each as the package's canonical route followed
+ * by the file's path within it (a {@link DepsPath}), placed by the layout the
+ * step stages.
+ */
+export interface IMeasuredFiles {
+  files: string[];
+  packages: DepsPath[];
+}
+
+/** @return the files a measured run measures, as the action's input names them. */
+function measuredFilesOf(action: BuildAction): Computable<IMeasuredFiles> {
   const file = fileSetInput(action, COVERAGE_INPUT).getFile(COVERAGE_MEASURED_FILE);
   if (file === undefined) {
     throw new FabrError(`internal: the measured run names no measured files`);
   }
-  return readJsonFile(file, toStringList);
+  return readJsonFile(file, json => {
+    const document = toJsonObject(json);
+    return { files: toStringList(document.files), packages: toStringList(document.packages).map(splitDepsPath) };
+  });
+}
+
+/** @return the measured files' paths as the coverage driver takes them: the
+ *  run's own relative to the install root, the packages' where `layout`
+ *  placed them. Throws where a package's route names none of the layout's. */
+function placeMeasured(measured: IMeasuredFiles, layout: IPackageLayout): string[] {
+  return [
+    ...measured.files,
+    ...measured.packages.map(read => {
+      const located = layout.locate(read.slice(0, -1), read[read.length - 1]);
+      if (located === undefined) {
+        throw new FabrError(`internal: no package of the measured run has the route '${read.slice(0, -1).join(" > ")}'`);
+      }
+      return located;
+    }),
+  ];
 }
 
 /** What a test file's last run came to, as the step keeps it. */
@@ -783,9 +818,8 @@ export interface ITestRunInputs {
   /** The environment variables each invocation runs with: its whole environment. */
   env: ReadonlyMap<string, string>;
   /** Where the run is measured for coverage: the coverage driver's command
-   * line, run from the install root, and the files it measures, by their
-   * install names. */
-  coverage?: { argv: readonly RunnableArgument[]; measured: string[] };
+   * line, run from the install root, and the files it measures. */
+  coverage?: { argv: readonly RunnableArgument[]; measured: IMeasuredFiles };
 }
 
 /** Make the test-run action ({@link JS_TEST_STEP}). */
@@ -809,7 +843,13 @@ export function createTestRunAction({
       writable,
       [TEST_FILES_INPUT]: FileSet.layout({ [TEST_FILES_FILE]: MemoryFile.from(JSON.stringify(testFiles)) }),
       ...(coverage
-        ? { [COVERAGE_INPUT]: FileSet.layout({ [COVERAGE_MEASURED_FILE]: MemoryFile.from(JSON.stringify(coverage.measured)) }) }
+        ? {
+            [COVERAGE_INPUT]: FileSet.layout({
+              [COVERAGE_MEASURED_FILE]: MemoryFile.from(
+                JSON.stringify({ files: coverage.measured.files, packages: coverage.measured.packages.map(joinDepsPath) })
+              ),
+            }),
+          }
         : {}),
     },
     {

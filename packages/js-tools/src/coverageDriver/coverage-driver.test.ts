@@ -29,6 +29,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as ts from "typescript";
+import { pathToFileURL } from "node:url";
+import { virtualLocation } from "../pnp/VirtualPath";
 import type { ICoverageOptions } from "./Options";
 
 const MATH = `// A comment line
@@ -157,13 +159,26 @@ describe("the coverage driver, over real V8 coverage", () => {
     file => fs.existsSync(file)
   )!;
 
-  function measure(): Map<string, ILcovRecord> {
+  /**
+   * Run the fixture's test under V8 coverage and convert what it recorded of
+   * `measured`. With `virtual`, every process records `out/math.js` as loaded
+   * through a PnP virtual location over `out/` instead.
+   */
+  function measure(measured = ["out/math.js", "out/unused.js"], virtual?: string): Map<string, ILcovRecord> {
     compile("math", MATH);
     compile("unused", NEVER_LOADED);
     fs.writeFileSync(path.join(root, "test.js"), TEST);
-    const run = spawnSync(process.execPath, ["test.js"], { cwd: root, env: { NODE_V8_COVERAGE: path.join(root, "raw") } });
+    const raw = path.join(root, "raw");
+    const run = spawnSync(process.execPath, ["test.js"], { cwd: root, env: { NODE_V8_COVERAGE: raw } });
     assert.equal(run.status, 0, String(run.stderr));
-    const options: ICoverageOptions = { raw: "raw", measured: ["out/math.js", "out/unused.js"], output: "lcov.info" };
+    if (virtual !== undefined) {
+      const physical = pathToFileURL(fs.realpathSync(path.join(root, "out", "math.js"))).href;
+      for (const name of fs.readdirSync(raw)) {
+        const text = fs.readFileSync(path.join(raw, name), "utf8");
+        fs.writeFileSync(path.join(raw, name), text.split(JSON.stringify(physical)).join(JSON.stringify(pathToFileURL(virtual).href)));
+      }
+    }
+    const options: ICoverageOptions = { raw: "raw", measured, output: "lcov.info" };
     fs.writeFileSync(path.join(root, "coverage.json"), JSON.stringify(options));
     const converted = spawnSync(process.execPath, [driver, "--manifest=coverage.json"], { cwd: root });
     assert.equal(converted.status, 0, String(converted.stderr));
@@ -173,6 +188,13 @@ describe("the coverage driver, over real V8 coverage", () => {
   it("names each source by its source path, read from the maps alone", () => {
     const records = measure();
     assert.deepEqual([...records.keys()], ["./lib/math.ts", "./lib/unused.ts"]);
+  });
+
+  it("counts a file loaded and measured through a virtual location as the one file beneath it", () => {
+    const virtual = path.join(virtualLocation(path.join(fs.realpathSync(root), "out"), "0123abcd"), "math.js");
+    const records = measure([virtual, "out/math.js", "out/unused.js"], virtual);
+    assert.deepEqual([...records.keys()], ["./lib/math.ts", "./lib/unused.ts"]);
+    assert.equal(records.get("./lib/math.ts")!.functions.get("add"), 1);
   });
 
   it("counts statements, not lines of text", () => {

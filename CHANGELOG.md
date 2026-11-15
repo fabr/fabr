@@ -4,6 +4,10 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
+## Fabe 0.4.1
+@fabr-build/js
+- Fix coverage not working with layout/pnp.
+
 ## Fabr 0.4.0
 @fabr-build/core:
 - Introduce fabr_plugin target + move rule/repository decls out to spec.

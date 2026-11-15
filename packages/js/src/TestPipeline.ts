@@ -90,13 +90,13 @@ import {
   describeTarget,
   descriptionFile,
   type Unmaterialized,
+  walkPackages,
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { PNP_DATA_FILE, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
-import { createTestRunAction } from "./TestRunAction";
+import { createTestRunAction, type IMeasuredFiles } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
-import { packageDirectories } from "./NodeModules";
 import {
   compileContents,
   DECLARATION_FILE,
@@ -612,7 +612,7 @@ interface ITestRun {
  * offers them.
  *
  * Throws where the tests compiled to no runnable file, where the root has two
- * setup scripts, or where coverage is asked for under `layout/pnp`.
+ * setup scripts.
  */
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
   return run.compiled.then(compiledTree => {
@@ -639,9 +639,6 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
     const coverage =
       run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
     const pnp = run.layout === "pnp";
-    if (pnp && coverage !== undefined) {
-      throw new FabrError("Measuring coverage needs the tests' packages in a node_modules tree; drop layout/pnp for --coverage");
-    }
     /* The run's own files; the step lays out the packages (the action's
      * `deps`) as `layout` says. */
     const files = FileSet.layout({
@@ -713,30 +710,37 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
 /**
  * Stage what a measured run adds to the install, and make the coverage driver's
  * command line, run from the install root, and the files it measures: every
- * compiled script of the compile but the tests and the setup script, and of
- * every package built in the project, by where the install lays it out.
+ * compiled script of the compile but the tests and the setup script, by its
+ * name in the install, and of every package built in the project, as the
+ * package's route and the script's path within it, which the step places
+ * under the layout it stages.
  */
 function measuredRun(
   { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
   compiled: FileSet,
   testInfrastructure: ReadonlySet<string>
-): { links: Record<string, FileSet>; argv: RunnableArgument[]; measured: string[] } {
-  const own = [...compiled]
+): { links: Record<string, FileSet>; argv: RunnableArgument[]; measured: IMeasuredFiles } {
+  const files = [...compiled]
     .map(([name]) => name)
     .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))
-    .map(name => `${COMPILE_OUT_DIR}/${name}`);
-  const installed = [...packageDirectories(packages)]
-    .filter(([pkg]) => builtInProject(pkg.origin))
-    .flatMap(([pkg, directory]) =>
-      [...pkg]
-        .map(([name]) => name)
-        .filter(name => COMPILED_SCRIPT.test(name))
-        .map(name => `node_modules/${directory}/${name}`)
-    );
+    .map(name => `${COMPILE_OUT_DIR}/${name}`)
+    .sort();
+  const routes = new Map<PackageFileSet, string[]>();
+  walkPackages(packages, (pkg, route) => {
+    if (!routes.has(pkg) && builtInProject(pkg.origin)) {
+      routes.set(pkg, route);
+    }
+  });
+  const installed = [...routes].flatMap(([pkg, route]) =>
+    [...pkg]
+      .map(([name]) => name)
+      .filter(name => COMPILED_SCRIPT.test(name))
+      .map(name => [...route, name])
+  );
   return {
     links: { [COVERAGE_STAGE_DIR]: driver },
     argv: driver.toCommandLine([], { base: COVERAGE_STAGE_DIR }),
-    measured: [...new Set([...own, ...installed])].sort(),
+    measured: { files, packages: installed },
   };
 }
 
