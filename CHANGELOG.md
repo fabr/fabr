@@ -4,7 +4,7 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
-## Fabe 0.4.1
+## Fabr 0.4.1
 @fabr-build/core
 - Allow '=' within a word of a property value (`args = --port=8080;`) without quoting.
 - `fabr sbom` takes several names, writing one bill of materials of them all.
