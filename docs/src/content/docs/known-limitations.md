@@ -17,9 +17,6 @@ with a workaround for each.
   see [VS Code support](/guides/vscode/#not-supported).
 - **A cache shared between machines.** Each machine, CI runner included, has its own cache; CI
   keeps it between runs as described in [Continuous integration](/guides/ci/#not-supported).
-- **Platforms other than macOS and Linux are untested.** Fabr runs wherever Node.js does, but it
-  is tested on macOS and Linux only. On Windows, see also
-  [the rough edges there](#on-windows-processes-file-modes-and-links-fall-short).
 
 **JavaScript and TypeScript**
 
@@ -62,7 +59,7 @@ with a workaround for each.
 
 Fabr intends a build to depend only on its
 [declared inputs](/introduction/#the-same-result-every-time). A [`script`](/reference/standard-rules/#script)
-target runs under your machine's `/bin/sh`, which fabr identifies by its contents, as it does any
+target runs under your machine's `/bin/sh` (on Windows, the `sh` on `PATH`), which fabr identifies by its contents, as it does any
 [program on your machine](/guides/tools/#programs-on-your-machine). The programs the script starts
 by name are the exception: fabr records nothing about them.
 
@@ -99,8 +96,6 @@ reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` i
 the files of the program it is running. Stop the program first.
 
 ### On Windows, processes, file modes and links fall short
-
-These will be fixed once fabr has native support for Windows.
 
 - **A process a build step leaves running outlives the step.** On macOS and Linux, fabr stops
   everything a step started when the step ends. On Windows it can stop a step's processes only

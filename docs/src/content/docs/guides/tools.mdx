@@ -40,7 +40,7 @@ target, and `fabr run` builds it and starts it:
 
 | Type | The program | Runs on |
 |---|---|---|
-| [`script`](/reference/standard-rules/#script) | A shell script, with the files it needs | Your machine's `/bin/sh` |
+| [`script`](/reference/standard-rules/#script) | A shell script, with the files it needs | Your machine's `/bin/sh` (on Windows, the `sh` on `PATH`) |
 | [`js_script`](/reference/js/targets/#js_script) | A JavaScript or TypeScript file, or an npm package's command-line program, with the packages it imports | The Node.js release fabr downloads |
 | [`java_program`](/reference/java/running/#java_program) | Java sources or a jar, with what it requires | The JDK fabr downloads |
 

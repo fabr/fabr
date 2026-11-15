@@ -7,9 +7,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows is not yet a supported platform: its job reports its result
-    # without failing the workflow.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     defaults:
       run:
         shell: bash
@@ -17,6 +14,14 @@ jobs:
       # Check out files with the line endings they were committed with, so
       # content hashes and test fixtures match on every platform.
       - run: git config --global core.autocrlf false
+      # Defender's real-time scanning inspects every file as it is written or
+      # first opened, which a build that unpacks and stages many files pays
+      # for many times over: leave the checkout, fabr's cache and the
+      # temporary directory out of it.
+      - name: Leave the build's directories out of Defender's scanning
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:LOCALAPPDATA\fabr","$env:TEMP"
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:

@@ -11,7 +11,7 @@ see [Migrating an npm, Yarn or pnpm project](/guides/migrating-js/).
 ## Install
 
 Fabr needs Node.js 22.19 or later to run, and runs on any platform Node.js does; it is tested on
-macOS and Linux. Install the `fabr` command globally:
+macOS, Linux and Windows. Install the `fabr` command globally:
 
 ```sh
 npm install -g @fabr-build/cli

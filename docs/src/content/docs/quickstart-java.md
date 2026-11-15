@@ -28,8 +28,8 @@ fabr downloads one.
 ## Install
 
 Fabr needs Node.js 22.19 or later to run, and runs on any platform Node.js does; it is tested on
-macOS and Linux. Your Java code never runs on that Node.js. Install the `fabr` command and the Java
-plugin together, globally:
+macOS, Linux and Windows. Your Java code never runs on that Node.js. Install the `fabr` command
+and the Java plugin together, globally:
 
 ```sh
 npm install -g @fabr-build/cli @fabr-build/java
