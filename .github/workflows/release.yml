@@ -1,8 +1,7 @@
 name: release
 # Pushing a tag `v<version>` publishes that version: the packages `sync release`
 # lists go to npm, the VS Code extension to the Marketplace, and a GitHub
-# release is made with the version's CHANGELOG.md section as its notes and the
-# extension attached.
+# release is made with the version's CHANGELOG.md section as its notes.
 on:
   push:
     tags: ['v*']
@@ -68,5 +67,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "Fabr $VERSION" \
-            --notes-file release-notes.md \
-            dist/fabr_vsix/fabr.vsix
+            --notes-file release-notes.md
