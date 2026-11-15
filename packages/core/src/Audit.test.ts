@@ -552,6 +552,18 @@ describe("audit", () => {
     expect(report.findings[1].packages.map(pkg => pkg.purl)).to.deep.equal(["pkg:test/lodash@4.17.15"]);
   });
 
+  it("refuses a name resolving to nothing, or to something that is not a package", () => {
+    const answers = server([]);
+    const none: ResolvedName = { title: "NONE", resolved: ResolvedRequirements.of([], [], NO_CONFLICTS, NO_COLLECTION) };
+    expect(() => audit([none], answers)).to.throw(FabrError, "'NONE' resolves to nothing; name a target or a package");
+    const files: ResolvedName = {
+      title: "src/*",
+      resolved: ResolvedRequirements.of([EMPTY_FILESET], [undefined], NO_CONFLICTS, NO_COLLECTION),
+    };
+    expect(() => audit([files], answers)).to.throw(FabrError, "'src/*' resolves to something that is not a package");
+    expect(answers.queries).to.deep.equal([]);
+  });
+
   it("asks nothing where there is nothing to ask about, and says so", async () => {
     const answers = server([]);
     const report = await audit([named("app", [built("lib")])], answers);

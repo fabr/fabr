@@ -28,7 +28,6 @@ import {
   audit,
   auditSarif,
   BuildContext,
-  INameValue,
   ISarifLocation,
   ISourceSpan,
   osvServer,
@@ -37,7 +36,7 @@ import {
   targetsReadWithin,
   toVexStatements,
   VexStatement,
-  requireWhole,
+  resolvedName,
   ResolvedName,
   sarifLocation,
   sbom,
@@ -1200,14 +1199,6 @@ function listTargets(options: Options, results: Array<Map<string, Reference> | S
   );
 }
 
-/** Resolve `ref` under `config` to what it names, titled `title`, refusing a reference that selects files. */
-function resolvedName(config: BuildContext, ref: INameValue, title: string): Computable<ResolvedName> {
-  return config.resolve(ref).then(resolved => {
-    requireWhole(ref, resolved.denoted);
-    return { title, resolved };
-  });
-}
-
 /**
  * Print the dependency tree of each name (`fabr deps`) to stdout: what a target
  * or a catalog requires, resolved and not built, or what any other name
@@ -1260,13 +1251,14 @@ function stdoutStyle(): ((code: string, text: string) => string) | undefined {
 }
 
 /**
- * Write the bill of materials of the one name (`fabr sbom`) to stdout, as
- * CycloneDX (core's {@link sbom}): what `fabr deps` prints, resolved and not
- * built, with each registry package's licence and digests from its metadata.
+ * Write the bill of materials of the names (`fabr sbom`) to stdout, as one
+ * CycloneDX document (core's {@link sbom}): what `fabr deps` prints, resolved
+ * and not built, with each registry package's licence and digests from its
+ * metadata.
  */
 function writeSbom(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   return resolvedNames(model, options, execution, site)
-    .then(([name]) => sbom(name, { version: getVersion() }))
+    .then(names => sbom(names, { version: getVersion() }))
     .then(bom => {
       console.log(JSON.stringify(bom, undefined, 2));
     });

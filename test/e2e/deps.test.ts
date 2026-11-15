@@ -270,4 +270,13 @@ describe("e2e: fabr deps", () => {
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.contain("'deps_app:index.js' selects files of 'deps_app'");
   });
+
+  it("refuses a pattern or a path, which names files rather than a target", () => {
+    for (const name of ["deps_*", "./app"]) {
+      const result = deps(name);
+      expect(result.status).to.not.equal(0);
+      expect(result.stderr).to.contain(`'${name}' is not a name the project declares`);
+      expect(result.stdout).to.not.contain("No dependencies");
+    }
+  });
 });

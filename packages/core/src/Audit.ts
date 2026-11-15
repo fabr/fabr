@@ -22,7 +22,7 @@ import { FabrError } from "./core/Errors";
 import { sendRequest } from "./core/Fetch";
 import { Dependency, Package } from "./core/PackageFileSet";
 import { ResolvedTarget } from "./context/index";
-import { madeFrom, nameEdges, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
+import { madeFrom, nameEdges, namedPackages, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
 import { declPosn } from "./model/AST";
 import { IModelStep, MODEL_PROVENANCE } from "./model/ModelProvenance";
 import { builtInProject } from "./model/Target";
@@ -85,6 +85,9 @@ function pathName(pkg: Package): string {
  * through for what it requires, and listed as the registry package it is made
  * from ({@link madeFrom}), as an entry apart from that package's own;
  * otherwise it is not listed.
+ *
+ * Throws a FabrError where a name resolves to nothing or to something that is
+ * not a package ({@link namedPackages}).
  */
 export function auditedPackages(names: ReadonlyArray<ResolvedName>): Computable<AuditedPackage[]> {
   return walkNames(names).then(walked => walked.packages);
@@ -94,6 +97,7 @@ export function auditedPackages(names: ReadonlyArray<ResolvedName>): Computable<
  * advisories declared fixed by each target among them that is made from no
  * registry package. */
 function walkNames(names: ReadonlyArray<ResolvedName>): Computable<{ packages: AuditedPackage[]; unattached: UnmatchedFix[] }> {
+  names.forEach(namedPackages);
   return walkReadingFiles(readFor => walkNamesReading(names, readFor));
 }
 
@@ -392,7 +396,9 @@ export function severityRank(advisory: Advisory): number {
  *   not affect the package it is made from, and each a target made from no
  *   registry package declares.
  *
- * Rejects where `server` fails to answer.
+ * Throws a FabrError where a name resolves to nothing or to something that is
+ * not a package ({@link namedPackages}); rejects where `server` fails to
+ * answer.
  */
 export function audit(
   names: ReadonlyArray<ResolvedName>,

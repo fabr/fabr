@@ -306,11 +306,10 @@ describe("Command", () => {
     expect(capture(["list-targets", "--no-progress"]).err.join("\n")).to.match(/Option '--no-progress' is not valid/);
   });
 
-  it("parses sbom as a query over one target", () => {
-    const options = parseCommandLine(["node", "fabr", "sbom", "app"]);
+  it("parses sbom as a query over its names", () => {
+    const options = parseCommandLine(["node", "fabr", "sbom", "app", "lib"]);
     expect(options.command).to.equal("sbom");
-    expect(options.targets).to.deep.equal(["app"]);
-    expect(capture(["sbom", "app", "lib"]).err.join("\n")).to.match(/takes a single target/);
+    expect(options.targets).to.deep.equal(["app", "lib"]);
     expect(capture(["sbom"]).err.join("\n")).to.match(/requires/);
   });
 

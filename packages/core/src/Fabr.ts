@@ -230,14 +230,20 @@ function build(config: BuildContext, refs: INameValue[]): Computable<SourceRef[]
 /** Refuse `refs` where any of them is not a name the project declares. */
 function requireAllDeclared(config: BuildContext, refs: INameValue[]): Computable<void> {
   return Computable.forAll(
-    refs.map(ref => requireDeclared(config, ref)),
+    refs.map(ref =>
+      requireDeclared(config, ref, false, "'build' and 'test' act on a declared target or global; read files with ls, cat or cp")
+    ),
     () => undefined
   );
 }
 
-/** Refuse `ref` where it is not a name the project declares. */
-function requireDeclared(config: BuildContext, ref: INameValue): Computable<void> {
-  return config.isDeclared(ref).then(declared => {
+/**
+ * Refuse `ref` where it is not a name the project declares, or, with
+ * `prefix`, a name within one ({@link BuildContext.isDeclared}), `help`
+ * saying what may be named instead.
+ */
+function requireDeclared(config: BuildContext, ref: INameValue, prefix: boolean, help: string): Computable<void> {
+  return config.isDeclared(ref, prefix).then(declared => {
     if (declared) {
       return undefined;
     }
@@ -246,11 +252,29 @@ function requireDeclared(config: BuildContext, ref: INameValue): Computable<void
      * not declared. */
     return config.resolve(ref).then((resolved): void => {
       requireWhole(ref, resolved.denoted);
-      throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(
-        "'build' and 'test' act on a declared target or global; read files with ls, cat or cp"
-      );
+      throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(help);
     });
   });
+}
+
+/**
+ * Resolve `ref` under `config` to what it names, titled `title`, as `deps`,
+ * `audit` and `sbom` read their names. It must be a name the project declares
+ * or a name within one (a repository's reference, `@npm:express:4.19.2`);
+ * a path, a pattern and a selection of a target's files are refused.
+ */
+export function resolvedName(config: BuildContext, ref: INameValue, title: string): Computable<ResolvedName> {
+  return requireDeclared(
+    config,
+    ref,
+    true,
+    "name a declared target, global or catalog, or a repository's package; read files with ls, cat or cp"
+  )
+    .then(() => config.resolve(ref))
+    .then(resolved => {
+      requireWhole(ref, resolved.denoted);
+      return { title, resolved };
+    });
 }
 
 /**
@@ -301,6 +325,27 @@ export function testOperation(config: BuildContext, refs: INameValue[]): Computa
 export interface ResolvedName {
   readonly title: string;
   readonly resolved: ResolvedRequirements;
+}
+
+/**
+ * @return the packages `name` resolved to, or undefined where it names a
+ * declaration's requirements (a catalog's).
+ *
+ * Throws a FabrError where it resolves to nothing or to something that is not
+ * a package, such as files.
+ */
+export function namedPackages({ title, resolved }: ResolvedName): Package[] | undefined {
+  if (!isDenoted(resolved)) {
+    return undefined;
+  }
+  const { denoted } = resolved;
+  const pkgs = denoted.filter(isPackage);
+  if (denoted.length === 0 || pkgs.length !== denoted.length) {
+    throw new FabrError(
+      `'${title}' resolves to ${denoted.length === 0 ? "nothing" : "something that is not a package"}; name a target or a package`
+    );
+  }
+  return pkgs;
 }
 
 /** A source among what a target requires, with where it was required. */

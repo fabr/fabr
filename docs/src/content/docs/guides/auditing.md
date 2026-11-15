@@ -370,24 +370,26 @@ suppressed package's result carries a `suppressions` entry of kind `external`.
 
 ## Writing a bill of materials
 
-`fabr sbom` writes a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) bill of materials of one
-target or package to stdout, as JSON:
+`fabr sbom` writes a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) bill of materials of
+targets or packages to stdout, as JSON:
 
 ```sh
 fabr sbom app > app.cdx.json
 fabr sbom @mvn:org.apache.commons:commons-text:1.10.0 > commons-text.cdx.json
+fabr sbom app worker > services.cdx.json
 ```
 
 The packages it lists are the ones `fabr audit` checks for the same name, read the same way, so a
 `<BUILD_OPERATION=…>` on the name, and the [Java classpath](#running-fabr-audit), apply here too.
 A target whose files another target takes in, such as a program a `container_image` holds in its
-`files`, is a component of the target that takes it. It takes exactly one name.
+`files`, is a component of the target that takes it.
 
 The document holds:
 
 - **The component described**, under `metadata.component`: the target, as an `application`, named
   as the target is, with the `version` it declares. A registry package named on the command line is
-  described as a `library`, by its package URL.
+  described as a `library`, by its package URL. Where the names resolve to more than one target or
+  package, nothing is described: each is a component like any other, a target as an `application`.
 - **A component for every package** among its dependencies, direct or not, each a `library` named
   by its [package URL](https://github.com/package-url/purl-spec) (`pkg:npm/async@2.6.3`,
   `pkg:maven/org.apache.commons/commons-lang3@3.11`), with its Maven group or npm scope as `group`. A package
@@ -439,6 +441,6 @@ GitHub Actions steps.
 | `No packages to audit` | The name has no registry packages among its dependencies. | Check with `fabr deps <name>` that you named the right target. |
 | `error:https://osv.example.com/v1/querybatch answered 404: …` | `ADVISORIES_URL` names something that isn't an OSV API server, or has a path on the end. | Set `ADVISORIES_URL` to the server's root URL, such as `https://api.osv.dev`. |
 | `error:getaddrinfo ENOTFOUND osv.example.com` | The advisory server can't be reached. | Check the URL and the network; behind a proxy, set `HTTPS_PROXY`. |
-| `The 'sbom' command takes a single target` | `fabr sbom` describes one thing. | Run it once per target, or name a property listing them with `fabr audit` instead. |
 | `error: 'app:**' selects files of 'app'` | Both commands take a target or package, not a selection of its files. | Name the target: `app`. |
+| `'app_*' is not a name the project declares` | A pattern or a path names files in the current directory, not targets. | Name each target, or a property listing them (`APPS = app_a app_b;`). |
 | `Option '--format' is not valid for the 'sbom' command` | `fabr sbom` writes only CycloneDX JSON. | Leave `--format` out. |

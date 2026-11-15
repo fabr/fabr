@@ -20,11 +20,10 @@
 import SPDX_LICENSE_IDS from "spdx-license-ids/index.json";
 import SPDX_DEPRECATED_IDS from "spdx-license-ids/deprecated.json";
 import { Computable } from "./core/Computable";
-import { FabrError } from "./core/Errors";
-import { isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
+import { Package, ResolvedNode } from "./core/PackageFileSet";
 import { ILicense, IVersionMetadata } from "./core/Repository";
-import { ResolvedTarget } from "./context/index";
-import { isDenoted, madeFrom, nameEdges, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
+import { ResolvedRequirements, ResolvedTarget } from "./context/index";
+import { madeFrom, nameEdges, namedPackages, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
 import { builtInProject } from "./model/Target";
 import { purlOf } from "./resolver/ResolutionProvenance";
 import { compareText } from "./support/Functional";
@@ -81,7 +80,8 @@ export interface ICycloneDxBom {
   version: 1;
   metadata: {
     tools: { components: ICycloneDxComponent[] };
-    component: ICycloneDxComponent;
+    /** What the document describes; none where it covers several names. */
+    component?: ICycloneDxComponent;
   };
   components: ICycloneDxComponent[];
   dependencies: ICycloneDxDependency[];
@@ -168,13 +168,20 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
 }
 
 /**
- * Make the CycloneDX bill of materials of what `name` resolves to. The
- * component described (`metadata.component`) is one of:
+ * Make the CycloneDX bill of materials of what `names` resolve to.
+ *
+ * Where there is one name resolving to one thing, the component described
+ * (`metadata.component`) is one of:
  * - one target, an `application`, whose dependencies are the packages among
  *   everything its rule requires;
  * - a declaration's requirements (a catalog's), described by the name as
  *   written, whose dependencies are the packages among them;
  * - one package, a `library`, whose dependencies are its own.
+ *
+ * Otherwise no component is described: each target or package the names
+ * resolve to is one of `components` (a target an `application`) with those
+ * dependencies, and a declaration's requirements are components with nothing
+ * in the document depending on them.
  *
  * Every other package reached is listed once in `components`, sorted by its
  * `bom-ref`: its purl where it is a registry package, otherwise its name, a
@@ -189,27 +196,17 @@ function pedigreeOf(from: Package, fixes: ReadonlyArray<string>): NonNullable<IC
  * The document has no timestamp or serial number; `tool.version` is the
  * version of fabr that wrote it.
  *
- * Throws a FabrError where `name` resolves to more than one thing or to
- * something that is not a package; rejects where reading a registry's
- * metadata fails.
+ * Throws a FabrError where a name resolves to nothing or to something that is
+ * not a package; rejects where reading a registry's metadata fails.
  */
-export function sbom(name: ResolvedName, tool: { version: string }): Computable<ICycloneDxBom> {
-  const { title, resolved } = name;
-  /* A declaration's requirements (a catalog's) are described by the declaration's name. */
-  const declared = !isDenoted(resolved);
-  const [only] = resolved.denoted;
-  if (!declared && (resolved.denoted.length !== 1 || !isPackage(only))) {
-    throw new FabrError(
-      `'${title}' resolves to ${
-        resolved.denoted.length === 1 ? "something that is not a package" : `${resolved.denoted.length} things`
-      }; a bill of materials describes one package or target`
-    );
-  }
-  const described = declared ? undefined : (only as Package);
-  const root = {
-    type: described === undefined || described instanceof ResolvedTarget ? "application" : "library",
-    "bom-ref": described === undefined ? title : referenceOf(described),
-  } as const;
+export function sbom(names: ReadonlyArray<ResolvedName>, tool: { version: string }): Computable<ICycloneDxBom> {
+  const named = names.flatMap(({ title, resolved }): Array<{ title: string; resolved: ResolvedRequirements; pkg?: Package }> => {
+    const pkgs = namedPackages({ title, resolved });
+    return pkgs === undefined ? [{ title, resolved }] : pkgs.map(pkg => ({ title, resolved, pkg }));
+  });
+  /* Where the names resolve to one thing, it is the component described. */
+  const [single] = named.length === 1 ? named : [];
+  const singleRef = single === undefined ? undefined : single.pkg === undefined ? single.title : referenceOf(single.pkg);
   const bill = walkReadingFiles(readFor => {
     /* Every package reached, by its bom-ref, with the bom-refs of the packages it depends on. */
     const reached = new Map<string, { pkg: Package; dependsOn: Set<string> }>();
@@ -219,29 +216,43 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
           return [];
         }
         const ref = referenceOf(pkg);
-        if (!reached.has(ref) && ref !== root["bom-ref"]) {
+        if (!reached.has(ref) && ref !== singleRef) {
           const entry = { pkg, dependsOn: new Set<string>() };
           reached.set(ref, entry);
           walk(walkedEdges(pkg, whole, readFor)).forEach(dep => entry.dependsOn.add(dep));
         }
         return [ref];
       });
-    const rootDependsOn = new Set(
-      walk(
-        described === undefined ? nameEdges(resolved, readFor) : walkedEdges(described, described instanceof ResolvedTarget, readFor)
-      )
+    /* Each package named is put in place before any is walked, so that it is
+     * walked as named, through everything a target requires, however another
+     * reaches it. */
+    for (const { pkg } of named) {
+      if (pkg !== undefined && single === undefined && !reached.has(referenceOf(pkg))) {
+        reached.set(referenceOf(pkg), { pkg, dependsOn: new Set() });
+      }
+    }
+    const dependsOn = named.map(({ resolved, pkg }) =>
+      walk(pkg === undefined ? nameEdges(resolved, readFor) : walkedEdges(pkg, pkg instanceof ResolvedTarget, readFor))
     );
-    return { reached, rootDependsOn };
+    if (single === undefined) {
+      named.forEach(({ pkg }, at) => {
+        if (pkg !== undefined) {
+          dependsOn[at].forEach(dep => reached.get(referenceOf(pkg))!.dependsOn.add(dep));
+        }
+      });
+    }
+    return { reached, rootDependsOn: new Set(dependsOn[0]) };
   });
   const document = (
     reached: ReadonlyMap<string, { pkg: Package; dependsOn: Set<string> }>,
     rootDependsOn: ReadonlySet<string>
   ): Computable<ICycloneDxBom> => {
     const entries = [...reached].sort(([a], [b]) => compareText(a, b));
-    const metadata = (pkg: Package): Computable<IVersionMetadata | undefined> =>
+    const applications = new Set(named.flatMap(({ pkg }) => (pkg instanceof ResolvedTarget ? [referenceOf(pkg)] : [])));
+    const metadata = (pkg: Package | undefined): Computable<IVersionMetadata | undefined> =>
       pkg instanceof ResolvedNode && pkg.content.metadata !== undefined ? pkg.content.metadata() : Computable.resolve(undefined);
     return Computable.forAll(
-      [described === undefined ? Computable.resolve(undefined) : metadata(described), ...entries.map(([, { pkg }]) => metadata(pkg))],
+      [metadata(single?.pkg), ...entries.map(([, { pkg }]) => metadata(pkg))],
       (...published: Array<IVersionMetadata | undefined>) => {
         const component = (
           ref: string,
@@ -265,21 +276,26 @@ export function sbom(name: ResolvedName, tool: { version: string }): Computable<
             ...(made === undefined ? {} : { pedigree: pedigreeOf(made.from, made.fixes) }),
           };
         };
-        const [rootMeta, ...rest] = published;
+        const [singleMeta, ...rest] = published;
+        const described =
+          single === undefined || singleRef === undefined
+            ? undefined
+            : single.pkg === undefined
+              ? { type: "application" as const, "bom-ref": singleRef, name: single.title }
+              : component(singleRef, single.pkg, singleMeta, single.pkg instanceof ResolvedTarget ? "application" : "library");
         return {
           bomFormat: "CycloneDX",
           specVersion: "1.6",
           version: 1,
           metadata: {
             tools: { components: [{ type: "application", "bom-ref": "fabr", name: "fabr", version: tool.version }] },
-            component:
-              described === undefined
-                ? { type: root.type, "bom-ref": root["bom-ref"], name: title }
-                : component(root["bom-ref"], described, rootMeta, root.type),
+            ...(described === undefined ? {} : { component: described }),
           },
-          components: entries.map(([ref, { pkg }], at) => component(ref, pkg, rest[at], "library")),
+          components: entries.map(([ref, { pkg }], at) =>
+            component(ref, pkg, rest[at], applications.has(ref) ? "application" : "library")
+          ),
           dependencies: [
-            { ref: root["bom-ref"], dependsOn: [...rootDependsOn].sort(compareText) },
+            ...(singleRef === undefined ? [] : [{ ref: singleRef, dependsOn: [...rootDependsOn].sort(compareText) }]),
             ...entries.map(([ref, { dependsOn }]) => ({ ref, dependsOn: [...dependsOn].sort(compareText) })),
           ],
         };

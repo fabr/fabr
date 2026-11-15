@@ -1743,7 +1743,7 @@ export class BuildContextImpl implements InternalBuildContext {
     return resolved;
   }
 
-  public isDeclared(ref: INameValue): Computable<boolean> {
+  public isDeclared(ref: INameValue, prefix = false): Computable<boolean> {
     /* A marker counts only on a name written literally, as in lookupFileSource. */
     const substituted = ref.value.getSubstitutions().length > 0;
     return this.inFile(ref.source.file)
@@ -1753,7 +1753,8 @@ export class BuildContextImpl implements InternalBuildContext {
         return (
           context.constraints.has(name) ||
           this.lookupDecl(name) !== undefined ||
-          (!substituted && this.markedTarget(reference) !== undefined)
+          (!substituted && this.markedTarget(reference) !== undefined) ||
+          (prefix && this.model.getPrefixMatch(reference, ref.source.file) !== undefined)
         );
       });
   }

@@ -260,10 +260,9 @@ const COMMAND_SPECS: CommandSpec[] = [
   {
     name: "sbom",
     group: "Inspecting",
-    synopsis: "<target>",
-    summary: "Write a target's bill of materials (CycloneDX)",
+    synopsis: "<names>",
+    summary: "Write the bill of materials of targets or packages (CycloneDX)",
     accepts: STEP_OPTIONS,
-    singleTarget: true,
     requiresTarget: true,
   },
   {

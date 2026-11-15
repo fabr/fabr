@@ -40,7 +40,7 @@ import {
   Resolved,
 } from "../core/Repository";
 import { dependencyName, isPackage, PackageFileSet, ResolvedNode, UsedFor } from "../core/PackageFileSet";
-import { buildOperation, describeOperation } from "../Fabr";
+import { buildOperation, describeOperation, resolvedName } from "../Fabr";
 import { materializeTargets, TargetRef } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -3801,6 +3801,28 @@ describe("unresolved-name diagnostics", () => {
     expect(await refused("MIXED")).to.equal(undefined);
     /* A pattern is no declared name, so a mistyped one does not pass. */
     expect(await refused("nothing/*.zzz")).to.equal("'nothing/*.zzz' is not a name the project declares");
+  });
+
+  it("resolves a name the project declares, or a name within one, for a command reading what it requires", async () => {
+    const input =
+      "targetdef test_file { content = STRING; }\ntest_file mytarget { content = x; }\n" +
+      "targetdef test_repo { }\ntest_repo @repo { }\nALL = mytarget;\n";
+    const model = modelOf(input);
+    const context = model.getConfig(Constraints.of({}), execution);
+    const declared = (name: string, prefix: boolean): Promise<boolean> =>
+      Promise.resolve(context.isDeclared(writtenOnCommandLine(name), prefix));
+    expect(await declared("mytarget", true)).to.equal(true);
+    expect(await declared("ALL", true)).to.equal(true);
+    expect(await declared("@repo:pkg:1.0.0", true)).to.equal(true);
+    expect(await declared("@repo:pkg:1.0.0", false)).to.equal(false);
+    expect(await declared("mytarget:x", true)).to.equal(true);
+    expect(await declared("my*", true)).to.equal(false);
+    expect(await declared("./src", true)).to.equal(false);
+    const refused = await Promise.resolve(resolvedName(context, writtenOnCommandLine("nothing/*.zzz"), "nothing/*.zzz")).then(
+      () => undefined,
+      (err: FabrError) => err.message
+    );
+    expect(refused).to.equal("'nothing/*.zzz' is not a name the project declares");
   });
 });
 

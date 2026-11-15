@@ -91,4 +91,11 @@ describe("e2e: fabr audit", () => {
     expect(result.stderr).to.contain("Audit failed");
     expect(result.stderr).to.not.contain("Build failed");
   });
+
+  it("refuses a pattern, which names files rather than a target, as deps and sbom do", () => {
+    const result = fabrAudit("audit_*");
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'audit_*' is not a name the project declares");
+    expect(result.stdout).to.not.contain("No packages to audit");
+  });
 });

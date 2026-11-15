@@ -102,9 +102,11 @@ export interface BuildContext {
    * or a repository — or one this configuration was given a value for, once its
    * `${NAME}` parts are substituted and any `<k=v>` on it set aside, otherwise
    * false. A declared target's name with a `?` or `!` marker counts. A path, a
-   * pattern and a selection of a target's files do not.
+   * pattern and a selection of a target's files do not. With `prefix`, so does
+   * a name whose leading part is a declared name (`@npm:express:4.19.2`,
+   * `app:build/*.js`).
    */
-  isDeclared(ref: INameValue): Computable<boolean>;
+  isDeclared(ref: INameValue, prefix?: boolean): Computable<boolean>;
 
   /**
    * Get the build action that the rule of the target `ref` names yields,

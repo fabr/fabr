@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
-/* `fabr sbom` writes the bill of materials of one target: the target as the
+/* `fabr sbom` writes the bill of materials of a target: the target as the
  * component described, and every package among what its rule requires as a
  * component, with the dependency graph. The fixture's packages are all built in
  * the project, so none has a purl, a licence or a digest to publish. */
@@ -89,9 +89,20 @@ describe("e2e: fabr sbom", () => {
     ]);
   });
 
-  it("takes one target", () => {
+  it("writes one bill of several targets, describing none of them", () => {
     const result = runFabr({ "PROJECT.fabr": PROJECT, ...FILES }, ["sbom", "sbom_app", "sbom_lib"]);
-    expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.match(/takes a single target/);
+    expect(result.status, result.stderr).to.equal(0);
+    const bom = JSON.parse(result.stdout);
+    expect(bom.metadata.component).to.equal(undefined);
+    expect(bom.components).to.deep.equal([
+      { type: "application", "bom-ref": "sbom_app@1.2.3", name: "sbom_app", version: "1.2.3" },
+      { type: "library", "bom-ref": "sbom_base", name: "sbom_base" },
+      { type: "application", "bom-ref": "sbom_lib", name: "sbom_lib" },
+    ]);
+    expect(bom.dependencies).to.deep.equal([
+      { ref: "sbom_app@1.2.3", dependsOn: ["sbom_base", "sbom_lib"] },
+      { ref: "sbom_base", dependsOn: [] },
+      { ref: "sbom_lib", dependsOn: ["sbom_base"] },
+    ]);
   });
 });

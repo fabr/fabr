@@ -166,7 +166,7 @@ describe("sbom", () => {
       licenses: [{ text: "Some Custom License", url: "https://example.com/LICENSE" }],
       hashes: [{ algorithm: "md5", encoding: "hex", value: "00" }],
     });
-    const bom = await sbom(named("@npm:express:4.19.2", express), { version: "1.2.3" });
+    const bom = await sbom([named("@npm:express:4.19.2", express)], { version: "1.2.3" });
     expect(bom.bomFormat).to.equal("CycloneDX");
     expect(bom.specVersion).to.equal("1.6");
     expect(bom.metadata.tools.components).to.deep.equal([{ type: "application", "bom-ref": "fabr", name: "fabr", version: "1.2.3" }]);
@@ -218,10 +218,12 @@ describe("sbom", () => {
       { reference: new TargetRef({} as TargetSource, "image"), package: image },
     ]);
     const bom = await sbom(
-      {
-        title: "outer",
-        resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS, NO_COLLECTION),
-      },
+      [
+        {
+          title: "outer",
+          resolved: ResolvedRequirements.of([outer], [new TargetRef({} as TargetSource, "outer")], NO_CONFLICTS, NO_COLLECTION),
+        },
+      ],
       { version: "1.2.3" }
     );
     expect(bom.dependencies).to.deep.equal([
@@ -238,7 +240,7 @@ describe("sbom", () => {
       reference: new TargetRef({} as TargetSource, "lodash"),
       package: new PatchedTarget("lodash", lodash, ["CVE-2021-23337"]),
     };
-    const bom = await sbom(named("app", built("app", "", [patched])), { version: "1.2.3" });
+    const bom = await sbom([named("app", built("app", "", [patched]))], { version: "1.2.3" });
     expect(bom.components).to.deep.equal([
       {
         type: "library",
@@ -257,19 +259,28 @@ describe("sbom", () => {
     const lodash = registry("lodash", "4.17.15");
     const build = new RequiringTarget("app", "app", "deps", [lodash]);
     const run = new RequiringTarget("app", "app", "build", [{ reference: new TargetRef({} as TargetSource, "app"), package: build }]);
-    const bom = await sbom(named("app", { reference: new TargetRef({} as TargetSource, "app"), package: run }), { version: "1.2.3" });
+    const bom = await sbom([named("app", { reference: new TargetRef({} as TargetSource, "app"), package: run })], {
+      version: "1.2.3",
+    });
     expect(bom.components.map(component => component["bom-ref"])).to.deep.equal(["pkg:test/lodash@4.17.15"]);
     expect(bom.dependencies[0].dependsOn).to.deep.equal(["pkg:test/lodash@4.17.15"]);
   });
 
-  it("refuses a name resolving to several things", () => {
+  it("describes nothing for a name resolving to several things, each a component", async () => {
     const a = registry("a", "1.0.0");
     const b = registry("b", "1.0.0");
     const name: ResolvedName = {
       title: "BOTH",
       resolved: ResolvedRequirements.of([a.package!, b.package!], [a.reference, b.reference], NO_CONFLICTS, NO_COLLECTION),
     };
-    expect(() => sbom(name, { version: "1" })).to.throw(/'BOTH' resolves to 2 things/);
+    const bom = await sbom([name], { version: "1" });
+    expect(bom.metadata.component).to.equal(undefined);
+    expect(bom.components.map(component => component["bom-ref"])).to.deep.equal(["pkg:test/a@1.0.0", "pkg:test/b@1.0.0"]);
+  });
+
+  it("refuses a name resolving to nothing", () => {
+    const name: ResolvedName = { title: "NONE", resolved: ResolvedRequirements.of([], [], NO_CONFLICTS, NO_COLLECTION) };
+    expect(() => sbom([name], { version: "1" })).to.throw(/'NONE' resolves to nothing/);
   });
 
   it("describes a declaration's requirements (a catalog's) as the declaration, by its name", async () => {
@@ -287,13 +298,42 @@ describe("sbom", () => {
         false
       ),
     };
-    const bom = await sbom(name, { version: "1" });
+    const bom = await sbom([name], { version: "1" });
     expect(bom.metadata.component).to.deep.equal({ type: "application", "bom-ref": "@cat", name: "@cat" });
     expect(bom.components.map(component => component["bom-ref"])).to.deep.equal([
       "pkg:test/express@4.17.1",
       "pkg:test/lodash@4.17.15",
     ]);
     expect(bom.dependencies[0]).to.deep.equal({ ref: "@cat", dependsOn: ["pkg:test/express@4.17.1"] });
+  });
+
+  it("describes nothing for several names, each target among the components by everything it requires", async () => {
+    const lodash = registry("lodash", "4.17.21");
+    const semver = registry("semver", "7.6.3");
+    const lib = new RequiringTarget("lib", "lib", "deps", [lodash]);
+    const libEdge: Dependency = { reference: new TargetRef({} as TargetSource, "lib"), package: lib };
+    const app = new RequiringTarget("app", "app", "deps", [libEdge, semver]);
+    const bom = await sbom(
+      [
+        named("app", { reference: new TargetRef({} as TargetSource, "app"), package: app }),
+        named("lib", libEdge),
+        named("@npm:semver:7.6.3", semver),
+      ],
+      { version: "1" }
+    );
+    expect(bom.metadata.component).to.equal(undefined);
+    expect(bom.components.map(component => [component["bom-ref"], component.type])).to.deep.equal([
+      ["app", "application"],
+      ["lib", "application"],
+      ["pkg:test/lodash@4.17.21", "library"],
+      ["pkg:test/semver@7.6.3", "library"],
+    ]);
+    expect(bom.dependencies).to.deep.equal([
+      { ref: "app", dependsOn: ["lib", "pkg:test/semver@7.6.3"] },
+      { ref: "lib", dependsOn: ["pkg:test/lodash@4.17.21"] },
+      { ref: "pkg:test/lodash@4.17.21", dependsOn: [] },
+      { ref: "pkg:test/semver@7.6.3", dependsOn: [] },
+    ]);
   });
 });
 

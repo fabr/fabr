@@ -7,6 +7,8 @@ together and share a version number.
 ## Fabe 0.4.1
 @fabr-build/core
 - Allow '=' within a word of a property value (`args = --port=8080;`) without quoting.
+- `fabr sbom` takes several names, writing one bill of materials of them all.
+- `fabr deps`, `fabr audit` and `fabr sbom` now refuse globs cleanly.
 
 @fabr-build/java
 - Add runtime defines + env on java_program, and test equivalents on jar_package

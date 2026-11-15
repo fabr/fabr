@@ -23,7 +23,7 @@ can be piped or redirected on its own.
 | [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
 | [`deps`](#deps) | Print the dependency tree of targets or packages. |
 | [`audit`](#audit) | Check the dependencies of targets or packages for known security advisories. |
-| [`sbom`](#sbom) | Write the software bill of materials of a target or package. |
+| [`sbom`](#sbom) | Write the software bill of materials of targets or packages. |
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
@@ -312,8 +312,12 @@ takes in (`files = server:** -> opt/server/**;` on a `container_image`) is liste
 property too, with everything it requires beneath it, since its build becomes part of this one;
 plain files (`srcs = src:**;`) are left out. So are the tools a target runs, such as the
 TypeScript compiler or a `generate` target's `run` command, which are installed apart from the
-target's own packages. A target with no packages prints `No dependencies`. A reference that selects
-files (`mylib:*.js`) is an error: name the target.
+target's own packages. A target with no packages prints `No dependencies`.
+
+`deps`, `audit` and `sbom` take a target, a global or a catalog the project declares, or a package
+reference into a repository. A path or a pattern (`./src`, `'lambda_*'`) names files, not targets,
+and is an error, as is a reference that selects files of a target (`mylib:*.js`): name the target,
+or a global listing the targets (`APPS = lambda_a lambda_b;`).
 
 Two things are still computed, because the dependencies cannot be known without them:
 
@@ -383,14 +387,19 @@ part of any build.
 
 ### `sbom`
 
-Writes the software bill of materials of one target or package to stdout, as
+Writes the software bill of materials of targets or packages to stdout, as
 [CycloneDX](https://cyclonedx.org) 1.6 JSON: the target as the component described, every package
 among what its build requires as a component, and the dependency graph between them.
 
 ```sh
 fabr sbom myapp > myapp.cdx.json
 fabr sbom @npm:express:4.19.2
+fabr sbom myapp mycli > all.cdx.json
 ```
+
+Given several names, or a name that resolves to several targets or packages, it writes one document
+with no component described: each target or package named is a component of its own, a target as
+an `application`, and a package more than one of them depends on is listed once.
 
 A catalog named on its own is described by its name, the packages it pins being what it requires.
 `audit` checks those packages too, so `fabr audit @pkg` checks every version a catalog pins.
