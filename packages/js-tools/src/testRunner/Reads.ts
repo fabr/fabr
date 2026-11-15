@@ -384,7 +384,11 @@ export function writeReads(file: string, reads: IRecordedReads | undefined): voi
     return;
   }
   const cwd = process.cwd();
-  const relative = (read: string): string => path.relative(cwd, read).split(path.sep).join("/");
+  /* `path.relative` drops a trailing separator, which marks a directory. */
+  const relative = (read: string): string => {
+    const name = path.relative(cwd, read).split(path.sep).join("/");
+    return read.endsWith(path.sep) && name !== "" ? `${name}/` : name;
+  };
   const files = [...new Set(reads.files.map(relative))].sort();
   const lookups = [...new Map(reads.lookups.map(lookup => [`${lookup.from}\0${lookup.name}`, lookup])).values()]
     .map((lookup): ILookup => ({

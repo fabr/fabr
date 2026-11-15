@@ -54,6 +54,7 @@ import {
   mergeCoverage,
   mergeTestReports,
   MultiError,
+  PackageFileSet,
   parseJson,
   parseLcov,
   readJsonFile,
@@ -91,7 +92,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 10, run: runTests, stage: stageTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 11, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -186,13 +187,14 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
           /* Each file's outcome is tallied as its invocation ends, from the
            * report it wrote. */
           const tally = new RunTally(rerun.length, report.progress);
+          const directories = new DirectoryRows();
           return Computable.forAll(
             /* All issued at once; each execution queues for a slot of the
              * process funnel. An invocation never rejects here, so a failed
              * file cannot stop the others: concludeRun judges the outcomes. */
             rerun.map(file => {
               const index = testFiles.indexOf(file);
-              return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout)
+              return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout, directories)
                 .then(run =>
                   coverage === undefined || "error" in run
                     ? run
@@ -504,7 +506,8 @@ function invocationReads(index: number): string {
  *
  * - `reads`: the run's own files read, by name.
  * - `deps`: rows naming what was read of the packages: each file read; a probe
- *   that found a package's own directory, as its `package.json`; and for each
+ *   that found a directory within a package, as the row of the least name the
+ *   package holds under it ({@link DirectoryRows}); and for each
  *   package looked up by name, the requirer's route then `<name> package.json`
  *   (a row whether or not the lookup was answered), plus the top-level row
  *   `<name> package.json` where a direct member answered rather than the
@@ -515,13 +518,15 @@ function invocationReads(index: number): string {
  *   could not follow), or where a read fits no row: a lookup answered by
  *   neither the requirer's own dependencies nor a direct member (a
  *   `node_modules` tree's hidden links, which answer from the whole closure),
- *   or a probe that found a directory within a package. The file then runs
- *   again next time, and the run is keyed on the whole input.
+ *   or a probe that found a directory within a package under which the
+ *   package holds no file. The file then runs again next time, and the run is
+ *   keyed on the whole input.
  */
 export function readsOf(
   document: string,
   cwd: string,
-  layout: IPackageLayout
+  layout: IPackageLayout,
+  directories: DirectoryRows = new DirectoryRows()
 ): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
   let read: IReadsDocument;
   try {
@@ -542,10 +547,12 @@ export function readsOf(
       reads.add(named.file);
     } else if (!directory) {
       deps.add(joinDepsPath([...named.route, named.path]));
-    } else if (named.path === "") {
-      deps.add(joinDepsPath([...named.route, MANIFEST_FILE]));
     } else {
-      return undefined;
+      const least = named.package === undefined ? undefined : directories.leastUnder(named.package, named.path);
+      if (least === undefined) {
+        return undefined;
+      }
+      deps.add(joinDepsPath([...named.route, least]));
     }
   }
   for (const lookup of read.lookups) {
@@ -579,6 +586,38 @@ export function readsOf(
 /** The file node reads to resolve a package: a lookup's row ends at it. */
 const MANIFEST_FILE = "package.json";
 
+/**
+ * The row a found directory within a package is read as: the least name the
+ * package holds under it, present exactly while that file is. Its going
+ * reruns the file even where the directory remains, never the reverse.
+ * Memoised per package and directory, so one step scans a package's names
+ * once for each directory its test files probed.
+ */
+export class DirectoryRows {
+  private readonly least = new Map<PackageFileSet, Map<string, string | undefined>>();
+
+  /** @return the least name `pkg` holds under `directory` (`""` for its
+   *  root), or undefined where it holds none. */
+  public leastUnder(pkg: PackageFileSet, directory: string): string | undefined {
+    let byDirectory = this.least.get(pkg);
+    if (byDirectory === undefined) {
+      byDirectory = new Map();
+      this.least.set(pkg, byDirectory);
+    }
+    if (!byDirectory.has(directory)) {
+      const prefix = directory === "" ? "" : `${directory}/`;
+      let least: string | undefined;
+      for (const [name] of pkg) {
+        if (name.startsWith(prefix) && (least === undefined || name < least)) {
+          least = name;
+        }
+      }
+      byDirectory.set(directory, least);
+    }
+    return byDirectory.get(directory);
+  }
+}
+
 /** Run the runner on one test file and judge the invocation ({@link judgeRun}),
  * adding what it read where its reads document says ({@link readsOf}). */
 function runOneFile(
@@ -588,7 +627,8 @@ function runOneFile(
   env: Record<string, string>,
   file: string,
   index: number,
-  layout: IPackageLayout
+  layout: IPackageLayout,
+  directories: DirectoryRows
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = invocationOf(argv, file, index);
@@ -609,7 +649,7 @@ function runOneFile(
     .then(error => judgeRun(join(ctx.workDir, COMPILE_OUT_DIR), [argv[0], ...invocation], reportName, file, error))
     .then((run): IFileRun => {
       const cwd = join(ctx.workDir, COMPILE_OUT_DIR);
-      const named = "error" in run ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout);
+      const named = "error" in run ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout, directories);
       return named === undefined ? run : { ...run, reads: named.reads, deps: named.deps };
     });
 }

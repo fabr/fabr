@@ -196,7 +196,7 @@ function routesOf(deps: FileSet[]): Map<PackageFileSet, string[]> {
 
 /**
  * Make {@link IPackageLayout.nameRead} for a `node_modules` layout. A path under
- * a package's instance directory is that package's (a module load records the
+ * a package's instance directory, or the directory itself, is that package's (a module load records the
  * link's target, the real path). A path under the mount's top-level `<name>/`
  * is the direct dep of that name, or `[<name>]` with no package where there is
  * none. A path anywhere else under the mount (the hidden links) is undefined.
@@ -217,7 +217,7 @@ function treeReadNamer(
     if (!name.startsWith(`${mount}/`)) {
       return { file: name };
     }
-    const owner = byDirectory.find(([prefix]) => name.startsWith(prefix));
+    const owner = byDirectory.find(([prefix]) => name.startsWith(prefix) || `${name}/` === prefix);
     if (owner !== undefined) {
       return within(routes, owner[1], name.slice(owner[0].length));
     }
@@ -241,7 +241,7 @@ function topLevelName(path: string): { name: string; path: string } | undefined 
 }
 
 /** Make {@link IPackageLayout.nameRead} for a PnP layout. A path within a
- *  package's location (its virtual location where it has one, else its tree in
+ *  package's location, or the location itself, (its virtual location where it has one, else its tree in
  *  the pool) is that package's. A physical path into a tree that only virtual
  *  locations name is the package at the first of them. */
 function poolReadNamer(
@@ -250,7 +250,7 @@ function poolReadNamer(
   routes: ReadonlyMap<PackageFileSet, string[]>
 ): IPackageLayout["nameRead"] {
   const owning = (path: string): [string, PackageFileSet] | undefined =>
-    locations.find(([location]) => path.startsWith(location + sep));
+    locations.find(([location]) => path === location || path.startsWith(location + sep));
   return read => {
     const name = workName(dir, read);
     if (name !== undefined) {
@@ -268,7 +268,9 @@ function poolReadNamer(
       );
     }
     const physical = resolveVirtual(read);
-    const tree = locations.find(([location]) => physical.startsWith(resolveVirtual(location) + sep));
+    const tree = locations.find(
+      ([location]) => physical === resolveVirtual(location) || physical.startsWith(resolveVirtual(location) + sep)
+    );
     return tree === undefined
       ? undefined
       : within(

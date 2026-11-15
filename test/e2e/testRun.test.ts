@@ -307,6 +307,35 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(ran(), "the test probed for the package").to.deep.equal(["a:true:true"]);
   });
 
+  for (const layout of ["node_modules", "pnp"]) {
+    it(`keys a test that probed a directory within a package on that directory, not the whole input (layout/${layout})`, () => {
+      const { marker, ran } = runMarker();
+      const unique = `${process.pid}-${Date.now()}`;
+      const files = (other: string): Record<string, string> => ({
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+          `js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/${layout};\n  test_env = { MARKER = '${marker}'; }\n}\n`,
+        "libsrc/index.ts": `exports.greeting = "${unique}";\n`,
+        "libsrc/sub/a.ts": "exports.a = 1;\n",
+        "libsrc/sub/zz.ts": `exports.other = "${other}";\n`,
+        "src/a.test.ts":
+          'const fs = require("fs"); const path = require("path");\n' +
+          'const present = fs.existsSync(path.join(path.dirname(require.resolve("lib")), "sub"));\n' +
+          'fs.appendFileSync(process.env.MARKER, "a:" + present + "\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      });
+      expect(runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]).status).to.equal(0);
+      expect(ran()).to.deep.equal(["a:true"]);
+      /* The probe found a directory within the package: it is read as the
+       * least file there, which the change does not touch. */
+      const changed = runFabr(files(`${unique}-changed`), ["-DJS_TARGET=es2020", "test", "thing"]);
+      expect(changed.status, changed.stderr).to.equal(0);
+      expect(ran(), "the probe reads no changed file").to.deep.equal([]);
+    });
+  }
+
   it("keys a test on the whole input where a package it loaded was found through the tree's hidden links (layout/node_modules)", () => {
     /* `lib` requires `other` without declaring it: the tree's hidden links
      * answer from the whole closure, which no row can pin, so the run is keyed

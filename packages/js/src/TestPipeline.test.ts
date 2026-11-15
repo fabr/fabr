@@ -299,4 +299,32 @@ describe("readsOf", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("reads a found directory within a package as the least name the package holds under it", () => {
+    const z = new PackageFileSet(
+      new Map<string, IFile>(["package.json", "lib/b.js", "lib/a/c.js", "README.md"].map(name => [name, MemoryFile.from("")])),
+      "z",
+      "1.0.0"
+    );
+    const probed = new Map<string, ReadName>([
+      ["node_modules/z", { route: ["z"], path: "", package: z }],
+      ["node_modules/z/lib", { route: ["z"], path: "lib", package: z }],
+      ["node_modules/z/empty", { route: ["z"], path: "empty", package: z }],
+    ]);
+    const zLayout: IPackageLayout = {
+      ...layout,
+      members: [z],
+      nameRead: read => probed.get(path.relative(cwd, read).split(path.sep).join("/")),
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-reads-"));
+    try {
+      const document = path.join(dir, "reads.json");
+      fs.writeFileSync(document, JSON.stringify({ files: ["node_modules/z/", "node_modules/z/lib/"], lookups: [] }));
+      expect([...readsOf(document, cwd, zLayout)!.deps].sort()).to.deep.equal(["z README.md", "z lib/a/c.js"]);
+      fs.writeFileSync(document, JSON.stringify({ files: ["node_modules/z/empty/"], lookups: [] }));
+      expect(readsOf(document, cwd, zLayout), "a directory holding none of the package's files").to.equal(undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

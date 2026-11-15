@@ -95,6 +95,14 @@ describe("layoutPackages", () => {
         path: "lib/x.js",
         pkg: "b",
       });
+      expect(
+        row(layout.nameRead(path.join(DIR, "node_modules", ...directories.get(b)!.split("/")))),
+        "the instance directory"
+      ).to.deep.equal({
+        route: ["a", "b"],
+        path: "",
+        pkg: "b",
+      });
     });
 
     it("names a probe of the mount's own <name> by that name, with the member there or none", async () => {
@@ -171,6 +179,7 @@ describe("layoutPackages", () => {
         path: "lib/y.js",
         pkg: "b",
       });
+      expect(row(layout.nameRead(tree)), "the tree itself").to.deep.equal({ route: ["a", "b"], path: "", pkg: "b" });
       expect(layout.nameRead(path.join(DIR, "build", "a.test.js"))).to.deep.equal({ file: "build/a.test.js" });
       expect(layout.nameRead(path.join(POOL, "0000", "index.js")), "a tree of no package here").to.equal(undefined);
     });
