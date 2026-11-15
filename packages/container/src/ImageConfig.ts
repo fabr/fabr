@@ -25,8 +25,10 @@ export const FIXED_CREATED = "1970-01-01T00:00:00Z";
 
 /** What a `container_image` target sets on its image's config; anything absent is the base's. */
 export interface IImageSettings {
-  readonly entry?: string;
-  readonly args: readonly string[];
+  /** The entrypoint: the program and its leading arguments. */
+  readonly entry?: readonly string[];
+  /** The command: the arguments after the entrypoint, which arguments given at run time replace. */
+  readonly cmd?: readonly string[];
   readonly workdir?: string;
   readonly user?: string;
   /** Environment variables, by name, over the base's. */
@@ -60,8 +62,8 @@ function labelKey(key: string): string {
  * Make the config of an image built on `base` (a config document; none for an
  * image of only its own layers): `settings` applied over it, a layer whose
  * uncompressed digest is `diffId` added where there is one, and a history
- * entry for it. `entry` and `args` are written together as `Entrypoint`, which
- * clears the base's `Cmd`; where neither is set, both are the base's.
+ * entry for it. `entry` is written as `Entrypoint` and `cmd` as `Cmd`; `entry`
+ * without `cmd` clears the base's `Cmd`, and either unset is otherwise the base's.
  */
 export function imageConfig(
   base: Record<string, unknown> | undefined,
@@ -70,9 +72,6 @@ export function imageConfig(
   diffId: string | undefined,
   createdBy: string
 ): Record<string, unknown> {
-  if (settings.entry === undefined && settings.args.length > 0) {
-    throw new FabrError("'args' is set without 'entry'").withHelp("set 'entry' to the program the arguments are given to");
-  }
   const document: Record<string, unknown> =
     base === undefined
       ? {
@@ -90,8 +89,11 @@ export function imageConfig(
     config.Env = [...env.values()];
   }
   if (settings.entry !== undefined) {
-    config.Entrypoint = [settings.entry, ...settings.args];
+    config.Entrypoint = [...settings.entry];
     delete config.Cmd;
+  }
+  if (settings.cmd !== undefined) {
+    config.Cmd = [...settings.cmd];
   }
   if (settings.workdir !== undefined) {
     config.WorkingDir = settings.workdir;

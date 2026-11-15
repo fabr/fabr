@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { FIXED_CREATED, IImageSettings, imageConfig } from "./ImageConfig";
 
-const NONE: IImageSettings = { args: [], env: [], ports: [], metadata: [] };
+const NONE: IImageSettings = { env: [], ports: [], metadata: [] };
 const AMD64 = { os: "linux", architecture: "amd64" };
 const DIFF_ID = `sha256:${"b".repeat(64)}`;
 
@@ -40,8 +40,7 @@ describe("imageConfig", () => {
       AMD64,
       {
         ...NONE,
-        entry: "/app/server",
-        args: ["--port", "8080"],
+        entry: ["/app/server", "--port", "8080"],
         env: [
           ["LANG", "C.UTF-8"],
           ["MODE", "prod"],
@@ -102,8 +101,20 @@ describe("imageConfig", () => {
     });
   });
 
-  it("refuses args with no entry, and a port that is none", () => {
-    expect(() => imageConfig(base, AMD64, { ...NONE, args: ["x"] }, undefined, "made")).to.throw(/'args' is set without 'entry'/);
+  it("writes cmd as the command, over the base's entrypoint or beside the target's own", () => {
+    expect(imageConfig(base, AMD64, { ...NONE, cmd: ["postgres", "-c", "fsync=off"] }, undefined, "made").config).to.deep.include({
+      Entrypoint: ["docker-entrypoint.sh"],
+      Cmd: ["postgres", "-c", "fsync=off"],
+    });
+    expect(
+      imageConfig(base, AMD64, { ...NONE, entry: ["nginx"], cmd: ["-g", "daemon off;"] }, undefined, "made").config
+    ).to.deep.include({
+      Entrypoint: ["nginx"],
+      Cmd: ["-g", "daemon off;"],
+    });
+  });
+
+  it("refuses a port that is none", () => {
     expect(() => imageConfig(base, AMD64, { ...NONE, ports: ["http"] }, undefined, "made")).to.throw(/'http' is not a port/);
   });
 });

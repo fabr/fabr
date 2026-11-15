@@ -49,10 +49,9 @@ passed to the container; options for fabr go before it.
 
 The image runs as `docker run` would run it:
 
-- **Arguments** follow the image's entrypoint. For a `container_image` with an
-  [`entry`](/reference/container/images/#entrypoint-and-arguments), they come after its `args`; for
-  an image with a `CMD`, they replace the `CMD`, so `fabr run @docker:alpine:3.20 cat
-  /etc/alpine-release` runs `cat` in place of Alpine's shell.
+- **Arguments** follow the image's entrypoint, in place of its
+  [command](/reference/container/images/#entrypoint-and-command), so `fabr run @docker:alpine:3.20
+  cat /etc/alpine-release` runs `cat` in place of Alpine's shell.
 - **Ports**: each port the image exposes is published on the same port of the host, so an image
   exposing `80/tcp` is reached at `localhost:80`. To publish on other ports, or none, use a
   [`container_program`](#container_program).
@@ -89,7 +88,7 @@ container_program api_dev {
 | Property | Meaning |
 |---|---|
 | `image` | The image: a `container_image`, or an image from a registry (`@docker:redis:7-alpine`). Required. |
-| `args` | Arguments given the image's entrypoint, before any given to `fabr run`. |
+| `args` | Arguments given the image's entrypoint in place of its command (`docker run <image> <args>`), before any given to `fabr run`. |
 | `env` | Environment variables, set over the image's (`docker run -e`). |
 | `ports` | Ports published on the host, `<host port>:<container port>`, with a protocol where it isn't TCP (`5353:53/udp`). Setting `ports` replaces the default of publishing each port the image exposes. |
 | `network` | The network the container joins: `host`, or the name of a network the engine has (`docker network create`). |

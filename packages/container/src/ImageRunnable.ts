@@ -52,7 +52,7 @@ export interface IContainerRun {
   readonly network?: string;
   /** Names added to the container's hosts file, each with its address. */
   readonly hosts: ReadonlyArray<readonly [string, string]>;
-  /** Arguments given the image's entry, before any its caller gives. */
+  /** Arguments the container runs with in place of the image's command, before any its caller gives. */
   readonly args: readonly string[];
 }
 
@@ -66,8 +66,8 @@ const IMAGE_RUN: IContainerRun = { env: [], hosts: [], args: [] };
  * `localhost/fabr/<name>:<config digest>` (its layers are the stored tars, so
  * they stage by hardlink), the engine's install where it is not a program of
  * the host, and the launcher (`launcher/fabr-container-launch.ts`), run by the
- * node that runs fabr. The launch runs the image as `run` says, the caller's
- * arguments after the entrypoint's and `run.args`; the teardown is the
+ * node that runs fabr. The launch runs the image as `run` says, `run.args` and
+ * then the caller's arguments in place of the image's command; the teardown is the
  * launcher removing the launch's container. Before it is made, containers dead
  * fabr runs left in a host engine are removed. Throws where `engine` is not a
  * single program.

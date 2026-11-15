@@ -8,6 +8,9 @@ together and share a version number.
 @fabr-build/js
 - Fix coverage not working with layout/pnp.
 
+@fabr-build/container
+- Change entry/args to entry/cmd for better docker consistency.
+
 ## Fabr 0.4.0
 @fabr-build/core:
 - Introduce fabr_plugin target + move rule/repository decls out to spec.

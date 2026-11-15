@@ -126,7 +126,7 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
   return Computable.forAll(
     [
       value("entry"),
-      value("args"),
+      value("cmd"),
       value("workdir"),
       value("user"),
       value("ports"),
@@ -134,9 +134,9 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
       context.getMap("metadata"),
       value("build"),
     ] as const,
-    (entry, args, workdir, user, ports, env: PropertyMap, metadata: PropertyMap, build): IImageSettings => ({
-      ...(entry === undefined ? {} : { entry: entry.toString() }),
-      args: args?.getValues() ?? [],
+    (entry, cmd, workdir, user, ports, env: PropertyMap, metadata: PropertyMap, build): IImageSettings => ({
+      ...(entry === undefined ? {} : { entry: entry.getValues() }),
+      ...(cmd === undefined ? {} : { cmd: cmd.getValues() }),
       ...(workdir === undefined ? {} : { workdir: workdir.toString() }),
       ...(user === undefined ? {} : { user: user.toString() }),
       env: stringEntries(context.name, "env", env),
@@ -151,7 +151,7 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
 function setsMoreThanBuild(settings: IImageSettings): boolean {
   return (
     settings.entry !== undefined ||
-    settings.args.length > 0 ||
+    settings.cmd !== undefined ||
     settings.workdir !== undefined ||
     settings.user !== undefined ||
     settings.ports.length > 0 ||

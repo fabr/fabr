@@ -37,8 +37,8 @@ configuration](/reference/container/targets/).
 | `FROM scratch` | No `base`. |
 | `COPY dist/ /app/` | `files = ./dist:** -> app/**;`; see [Adding files](#adding-files). |
 | `RUN apt-get install -y curl` | `build = apt-get install -y curl;`; see [Build commands](#build-commands). |
-| `ENTRYPOINT ["node", "main.js"]` | `entry = node; args = main.js;`; see [Entrypoint and arguments](#entrypoint-and-arguments). |
-| `CMD […]` | No equivalent: `args` are part of the entrypoint, and arguments given at run time follow them. |
+| `ENTRYPOINT ["node", "main.js"]` | `entry = node main.js;`; see [Entrypoint and command](#entrypoint-and-command). |
+| `CMD ["--port", "8080"]` | `cmd = --port 8080;`; see [Entrypoint and command](#entrypoint-and-command). |
 | `WORKDIR /app` | `workdir = /app;` |
 | `USER 1000:1000` | `user = 1000:1000;` |
 | `ENV NODE_ENV=production` | `env = { NODE_ENV = production; }` |
@@ -151,35 +151,48 @@ Each setting is applied over the base image's; anything the target doesn't set i
 
 | Property | Sets | Example |
 |---|---|---|
-| `entry` | The program the container runs; see [Entrypoint and arguments](#entrypoint-and-arguments). | `entry = node;` |
-| `args` | The arguments after `entry`. | `args = main.js --port 8080;` |
+| `entry` | The entrypoint: the program the container runs and its leading arguments; see [Entrypoint and command](#entrypoint-and-command). | `entry = node main.js;` |
+| `cmd` | The command: the arguments after the entrypoint, which arguments given at run time replace. | `cmd = --port 8080;` |
 | `workdir` | The directory the process starts in. | `workdir = /app;` |
 | `user` | The user the process runs as: a name, a uid, or `uid:gid`. | `user = 1000:1000;` |
 | `env` | Environment variables, set over the base's. | `env = { NODE_ENV = production; }` |
 | `ports` | The ports the image exposes: a number for TCP, or with its protocol. | `ports = 8080 53/udp;` |
 | `metadata` | The image's labels; see [Labels](#labels). | `metadata = { licenses = MIT; }` |
 
-### Entrypoint and arguments
+### Entrypoint and command
 
-`entry` and `args` are written together as the image's entrypoint, in exec form, and the base's
-`CMD` is cleared:
+`entry` and `cmd` are the image's `ENTRYPOINT` and `CMD`, each in exec form, and behave as they do
+in a Dockerfile. The container runs the entrypoint followed by the command, and arguments given
+when the image is run replace the command:
 
 ```
 container_image tool {
   base = @docker:alpine:3.20;
   files = ./bin:hello.sh -> usr/local/bin/hello;
-  entry = hello;
-  args = --verbose;
+  entry = hello --verbose;
+  cmd = world;
 }
 ```
 
-is the image a Dockerfile would build with `ENTRYPOINT ["hello", "--verbose"]`. Arguments given
-when the image is run follow them: `fabr run tool world` runs `hello --verbose world`.
+is the image a Dockerfile would build with `ENTRYPOINT ["hello", "--verbose"]` and `CMD
+["world"]`. `fabr run tool` runs `hello --verbose world`, and `fabr run tool Ada` runs `hello
+--verbose Ada`.
 
-`entry` is the one program, a path or a command found on the image's `PATH`; its arguments go in
-`args`. Setting `args` without `entry` is an error, `'args' is set without 'entry'`. With neither
-set, the image keeps the base's entrypoint and `CMD`, as an image built `FROM` it with no
-`ENTRYPOINT` or `CMD` of its own would.
+The first value of `entry` is the program, a path or a command found on the image's `PATH`.
+Setting `entry` clears the base's `CMD`, since the base's command was written for the base's
+entrypoint; set `cmd` too to give the new entrypoint one. Setting `cmd` alone keeps the base's
+entrypoint, which is how you give an image with a wrapper entrypoint, such as the official
+`postgres` and `node` images' `docker-entrypoint.sh`, a command of its own:
+
+```
+container_image db {
+  base = @docker:postgres:17-alpine;
+  cmd = postgres -c "fsync=off";
+}
+```
+
+With neither set, the image keeps the base's entrypoint and `CMD`, as an image built `FROM` it with
+no `ENTRYPOINT` or `CMD` of its own would.
 
 ### Labels
 

@@ -35,11 +35,12 @@ targetdef container_image {
     # Files placed in the image under their own names, from `/`. They are
     # resolved for the image's platform and the base's C library.
     files = FILES;
-    # The program the container runs: a path or command inside the image.
-    # Replaces the base's entrypoint and command.
+    # The image's entrypoint: the program the container runs, a path or command
+    # inside the image, and its leading arguments. Clears the base's command.
     entry = STRING;
-    # Arguments placed after `entry`, ahead of any given when the image is run.
-    args = STRING;
+    # The image's command: the arguments after the entrypoint, replaced by any
+    # given when the image is run.
+    cmd = STRING;
     # The directory the container's process starts in.
     workdir = STRING;
     # The user the container's process runs as (`name`, `uid`, `uid:gid`).
@@ -65,8 +66,8 @@ targetdef container_program {
     # The image the program runs: a `container_image`, or a reference
     # (`@docker:redis:7-alpine`).
     image = REQUIRED PACKAGES;
-    # Arguments given the image's entry, after its own `args` and before any
-    # its caller gives.
+    # Arguments the container runs with in place of the image's command,
+    # before any its caller gives.
     args = STRING;
     # Environment variables, set over the image's.
     env = MAP;
