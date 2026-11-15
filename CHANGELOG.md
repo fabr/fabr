@@ -5,6 +5,9 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 together and share a version number.
 
 ## Fabe 0.4.1
+@fabr-build/core
+- Allow '=' within a word of a property value (`args = --port=8080;`) without quoting.
+
 @fabr-build/java
 - Add runtime defines + env on java_program, and test equivalents on jar_package
 

@@ -286,6 +286,35 @@ describe("Parser Tests", () => {
     expect(parseInvalid("foo/bar=woo;")).to.deep.equal([diagnosticBlock(1, 1, "Read Name but expected Statement", "foo/bar=woo;")]);
   });
 
+  it("reads an '=' inside a value as part of the word", () => {
+    expect(summarize(parseValid("args = --command=foo -Dk=v FOO=bar=baz;\ntool=x=y;"))).to.deep.equal(
+      summary({ properties: { args: ["--command=foo", "-Dk=v", "FOO=bar=baz"], tool: ["x=y"] } })
+    );
+    /* A redirect's target and a substitution's text are values too. */
+    const command = parsedCommand("run = cmd --x=1 < ./in=put > out=put;");
+    expect(command?.pipelines[0][0].args.map(arg => arg.value.toString())).to.deep.equal(["--x=1"]);
+    expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("./in=put");
+    expect(command?.pipelines[0][0].stdout?.value.toString()).to.equal("out=put");
+    expect(nameOf(parseValid("v = --x=${V};").properties[0].values[0]).toString()).to.equal("--x=${V}");
+  });
+
+  it("still ends a word at '=' in a <k=v> list, among map keys, and at a word's start", () => {
+    const valueOf = (text: string): Name => nameOf(parseValid(text).properties[0].values[0]);
+    expect(valueOf("dep = mylib<A=1,B=2>:x=y;").toString()).to.equal("mylib:x=y<A=1, B=2>");
+    expect(valueOf("dep = mylib <A=1,B=2>;").toString()).to.equal("mylib<A=1, B=2>");
+    expect(valueOf("dep = ${V<A=1,B=2>}=x;").toString()).to.equal("${V<A=1, B=2>}=x");
+    const items = entriesOf(parseValid("m = { a=--x=1; b={ c=d=e; }; }").properties[0].values[0]) ?? [];
+    expect(items.map(item => (item.kind === DeclKind.Property ? item.name.toBaseString() : ""))).to.deep.equal(["a", "b"]);
+    const [a, b] = items as IPropertyDecl[];
+    expect(nameOf(a.values[0]).toString()).to.equal("--x=1");
+    expect(nameOf((entriesOf(b.values[0])?.[0] as IPropertyDecl).values[0]).toString()).to.equal("d=e");
+    /* A block may end its property with no ';'. */
+    expect(parseValid("m = { a=1; } after=1;").properties.map(prop => prop.name.toString())).to.deep.equal(["m", "after"]);
+    /* A missing ';' before the next declaration is still reported. */
+    expect(parseInvalid("a = x\nb = y;")).to.deep.equal([diagnosticBlock(2, 3, "Read '=' but expected Name, ';', or '}'", "b = y;")]);
+    expect(parseInvalid("a = =x;")).to.deep.equal([diagnosticBlock(1, 5, "Read '=' but expected Name, ';', or '}'", "a = =x;")]);
+  });
+
   it("treats tabs and CRLF as insignificant whitespace", () => {
     /* Tab indentation and Windows CRLF line endings must parse identically to
      * space-indented LF: the full POSIX [[:space:]] set is whitespace. */

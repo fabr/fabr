@@ -645,6 +645,10 @@ export class BuildParser {
    * closes it (substitutions do not nest). A counter so that it restores
    * correctly; it never exceeds 1. */
   private commandSubstDepth = 0;
+  /** True while lexing a property's values, where an `=` after the start of a
+   * word is part of it (`--command=foo`). False in a `<k=v>` list and among a
+   * map block's keys. */
+  private inValues = false;
 
   private source: IBuildFile;
   private result: IBuildFileContents;
@@ -754,8 +758,9 @@ export class BuildParser {
    * restored on return.
    */
   private readBracedSubstVar(builder?: NameBuilder): void {
-    const outer = { token: this.token, abuts: this.tokenAbutsPrev, prevEnd: this.prevTokenEnd };
+    const outer = { token: this.token, abuts: this.tokenAbutsPrev, prevEnd: this.prevTokenEnd, inValues: this.inValues };
     this.reader.next(); /* the '{' */
+    this.inValues = false;
     try {
       this.reader.skipUntil(ch => !isWhitespace(ch));
       const nameStart = this.reader.currentOffset();
@@ -783,6 +788,7 @@ export class BuildParser {
       this.token = outer.token;
       this.tokenAbutsPrev = outer.abuts;
       this.prevTokenEnd = outer.prevEnd;
+      this.inValues = outer.inValues;
     }
   }
 
@@ -911,7 +917,8 @@ export class BuildParser {
 
   /**
    * Read a name token, up to whitespace or one of `, = { } ; < > #` (and,
-   * inside a command substitution, a backtick). Quoted strings, backslash
+   * inside a command substitution, a backtick). In a property's values an `=`
+   * does not end it ({@link inValues}). Quoted strings, backslash
    * escapes, `$` and command substitutions, wildcards, character classes and
    * extglob groups (`!(…)`, `@(…)`, `*(…)`, `?(…)`, `+(…)`) are read as parts of
    * the name.
@@ -935,7 +942,8 @@ export class BuildParser {
     const endsName = (ch: number | undefined): boolean =>
       ch === undefined ||
       isWhitespace(ch) ||
-      [CHAR_COMMA, CHAR_EQUALS, CHAR_LBRACE, CHAR_RBRACE, CHAR_SEMI, CHAR_LANGLE, CHAR_RANGLE, CHAR_HASH].includes(ch) ||
+      [CHAR_COMMA, CHAR_LBRACE, CHAR_RBRACE, CHAR_SEMI, CHAR_LANGLE, CHAR_RANGLE, CHAR_HASH].includes(ch) ||
+      (ch === CHAR_EQUALS && !this.inValues) ||
       (ch === CHAR_BACKTICK && this.commandSubstDepth > 0);
     /* The reader is at a character that starts a name. Quoted strings,
      * substitutions and character classes are read whole by their readers; the
@@ -1044,8 +1052,13 @@ export class BuildParser {
           this.readCharClass(nameBuilder);
           posn = this.reader.currentOffset();
           break;
-        case CHAR_COMMA:
         case CHAR_EQUALS:
+          if (!this.inValues) {
+            return true;
+          }
+          maybeIdent = false;
+          break;
+        case CHAR_COMMA:
         case CHAR_LBRACE:
         case CHAR_RBRACE:
         case CHAR_SEMI:
@@ -1466,8 +1479,7 @@ export class BuildParser {
    *
    * Parse a command list from its first operator. `stage0` is the words
    * already read before it (the first stage's command and arguments), `firstOp`
-   * the operator, already consumed,
-   * and `firstTarget` that operator's target where the caller has read it too.
+   * the operator, already consumed.
    * Reported as errors: a stage other than the last of its pipeline capturing
    * stdout, a stage other than the first of its pipeline taking stdin, a stream
    * redirected twice ({@link applyRedirect}), a missing command or target, and
@@ -1475,12 +1487,11 @@ export class BuildParser {
    *
    * @return the pipelines, each stage with its redirects applied.
    */
-  private parseCommand(stage0: IValue[], firstOp: CommandOp, firstTarget?: INameValue): CommandList {
+  private parseCommand(stage0: IValue[], firstOp: CommandOp): CommandList {
     const list: CommandList = [];
     let stages: ICommandStage[] = [];
     let pending = this.firstStage(stage0, firstOp);
     let op: CommandOp | undefined = firstOp;
-    /* `firstTarget` is used by the first operator only. */
     while (op !== undefined) {
       if (op.op === CommandOpKind.And) {
         stages.push(flattenStage(pending));
@@ -1496,12 +1507,11 @@ export class BuildParser {
         stages.push(flattenStage(pending));
         pending = { stage: { command: this.parseRequiredWord(op), args: [] }, fds: newStageFds() };
       } else {
-        this.applyRedirect(pending, op, takesTarget(op.op) ? (firstTarget ?? this.parseRequiredWord(op)) : undefined);
+        this.applyRedirect(pending, op, takesTarget(op.op) ? this.parseRequiredWord(op) : undefined);
         if (op.op === CommandOpKind.Stdin && stages.length > 0) {
           this.commandError("only the first stage of a pipeline can take stdin ('<')", op.at);
         }
       }
-      firstTarget = undefined;
       /* Words up to the next operator are the stage's arguments, after a
        * redirect too (`cmd a > out b`). */
       while (!this.atCommandOp() && !this.atCommandEnd()) {
@@ -1771,8 +1781,14 @@ export class BuildParser {
    */
   private parseRefSuffix(name: Name, kind: ConstraintKind = "requirement"): Name {
     if (this.token.type === TokenType.LANGLE && this.tokenAbutsPrev) {
-      this.nextToken(); /* consume '<' */
-      return this.applyConstraintsAndRename(name, this.parseConstraintList(undefined, kind));
+      const inValues = this.inValues;
+      this.inValues = false;
+      try {
+        this.nextToken(); /* consume '<' */
+        return this.applyConstraintsAndRename(name, this.parseConstraintList(undefined, kind, true, inValues));
+      } finally {
+        this.inValues = inValues;
+      }
     }
     /* The rename; the arrow is spaced, so it never abuts. */
     if (this.token.type === TokenType.ARROW) {
@@ -1892,14 +1908,16 @@ export class BuildParser {
    * Where `firstKey` is given, that key has already been read too and the
    * current token is its `=`. With `readOn` false, the `>` is left as the
    * current token with the reader just past it, for a caller that reads on by
-   * character.
+   * character. The list is read with {@link inValues} false; the token after
+   * the `>` is read with it set to `inValuesAfter`.
    *
    * @return the constraints, in written order.
    */
   private parseConstraintList(
     firstKey?: { text: string; start: number },
     kind: ConstraintKind = "requirement",
-    readOn = true
+    readOn = true,
+    inValuesAfter = false
   ): NameConstraint[] {
     const constraints: NameConstraint[] = [];
     const seen = new Set<string>();
@@ -1956,6 +1974,7 @@ export class BuildParser {
       this.suppressRedirect = false;
     }
     if (readOn) {
+      this.inValues = inValuesAfter;
       this.consumeToken(TokenType.RANGLE);
     } else if (this.token.type !== TokenType.RANGLE) {
       this.unexpectedTokenError(TOKEN_NAME_MAP[TokenType.RANGLE]);
@@ -2020,7 +2039,9 @@ export class BuildParser {
       this.renameTemplateError("a property key cannot carry a rename", nameOffset);
     }
     const name = this.blockGuard ? key.withConstraints(this.mergeGuards(key.getConstraints(), nameOffset, "this declaration")) : key;
-    this.consumeToken(TokenType.EQUALS);
+    if (this.token.type !== TokenType.EQUALS) {
+      this.unexpectedTokenError(TOKEN_NAME_MAP[TokenType.EQUALS]);
+    }
     const base = {
       kind: DeclKind.Property as const,
       source: this.source,
@@ -2051,27 +2072,35 @@ export class BuildParser {
   /**
    * Parse a property's values through the terminating ';', for a `name = …;`
    * declaration and a targetdef's `default …;` clause alike. The current token
-   * starts the first value. The values are the words written, a command
+   * is the `=` or `default` before the first value. The values are read with
+   * {@link inValues} set. They are the words written, a command
    * operator among them a word too ({@link INameValue.operator}). Where there is
    * one, the values are read again from their start as a command, which is the
    * property's {@link IPropertyDecl.command}.
    */
   private parsePropertyValues(base: Omit<IPropertyDecl, "values">): IPropertyDecl {
-    const start = this.mark();
-    const values = this.parseValueWords();
+    let values: IValue[];
     let command: ParsedCommand | undefined;
-    if (values.some(value => isNameValue(value) && value.operator === true)) {
-      const end = this.mark();
-      this.restore(start);
-      /* Reading the words reported anything wrong with them. */
-      const log = this.log;
-      this.log = DISCARDING_LOG;
-      try {
-        command = this.parseCommandValue();
-      } finally {
-        this.log = log;
+    this.inValues = true;
+    try {
+      this.nextToken(); /* the '=' or 'default' */
+      const start = this.mark();
+      values = this.parseValueWords();
+      if (values.some(value => isNameValue(value) && value.operator === true)) {
+        const end = this.mark();
+        this.restore(start);
+        /* Reading the words reported anything wrong with them. */
+        const log = this.log;
+        this.log = DISCARDING_LOG;
+        try {
+          command = this.parseCommandValue();
+        } finally {
+          this.log = log;
+        }
+        this.restore(end);
       }
-      this.restore(end);
+    } finally {
+      this.inValues = false;
     }
     this.consumeIfToken(TokenType.SEMI);
     return { ...base, values, ...(command === undefined ? {} : { command }) };
@@ -2091,7 +2120,7 @@ export class BuildParser {
         if (after.redirect === undefined) {
           continue;
         }
-        values.push(this.operatorWord("<", after.redirect), ...(after.target === undefined ? [] : [after.target]));
+        values.push(this.operatorWord("<", after.redirect));
         continue;
       }
       if (this.atCommandOp()) {
@@ -2126,7 +2155,7 @@ export class BuildParser {
           if (after.redirect === undefined) {
             continue;
           }
-          return { pipelines: this.parseCommand(values, { op: CommandOpKind.Stdin, at: after.redirect }, after.target) };
+          return { pipelines: this.parseCommand(values, { op: CommandOpKind.Stdin, at: after.redirect }) };
         }
         const op = this.tryCommandOp();
         if (op !== undefined) {
@@ -2147,35 +2176,39 @@ export class BuildParser {
    * Read a `<` with whitespace before it, the current token. After a reference
    * (the last of `values`) it is a `<k=v>` on that reference where an
    * identifier and an `=` follow it, applied to the reference in `values`;
-   * anything else makes it a stdin redirect.
+   * anything else makes it a stdin redirect, the current token then its target.
    *
-   * @return for a redirect, the `<`'s offset, and its target where the
-   * identifier that begins it has been read; nothing for a `<k=v>`.
+   * @return for a redirect, the `<`'s offset; nothing for a `<k=v>`.
    */
-  private readAfterSpacedLangle(values: IValue[]): { redirect?: number; target?: INameValue } {
+  private readAfterSpacedLangle(values: IValue[]): { redirect?: number } {
     const langleAt = this.token.start;
     const last = values[values.length - 1];
-    const afterLangle = this.nextToken(); /* consume '<' */
-    if (last === undefined || !isNameValue(last) || last.operator === true || afterLangle.type !== TokenType.IDENTIFIER) {
+    const afterLangle = this.mark();
+    const inValues = this.inValues;
+    /* Read what follows as a `<k=v>` list would be, then again as a value
+     * where it is a redirect's target. */
+    this.inValues = false;
+    try {
+      const key = this.nextToken(); /* consume '<' */
+      if (last !== undefined && isNameValue(last) && last.operator !== true && key.type === TokenType.IDENTIFIER) {
+        const keyToken = { text: key.text, start: key.start };
+        if (this.nextToken().type === TokenType.EQUALS) {
+          /* A `<k=v>` on the preceding reference, as if it abutted. */
+          const refined = this.applyConstraintsAndRename(
+            last.value,
+            this.parseConstraintList(keyToken, "requirement", true, inValues)
+          );
+          values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
+          return {};
+        }
+      }
+      this.restore(afterLangle);
+      this.inValues = inValues;
+      this.nextToken(); /* consume '<' */
       return { redirect: langleAt };
+    } finally {
+      this.inValues = inValues;
     }
-    const keyToken = { text: afterLangle.text, start: afterLangle.start };
-    const afterKey = this.nextToken(); /* consume the shared identifier prefix */
-    if (afterKey.type === TokenType.EQUALS) {
-      /* A `<k=v>` on the preceding reference, as if it abutted. */
-      const refined = this.applyConstraintsAndRename(last.value, this.parseConstraintList(keyToken));
-      values[values.length - 1] = { ...last, value: refined, endOffset: this.prevTokenEnd };
-      return {};
-    }
-    /* A stdin redirect whose target starts with the identifier. */
-    const target: INameValue = {
-      kind: DeclKind.NameValue,
-      source: this.source,
-      offset: keyToken.start,
-      value: this.parseRefSuffix(Name.fromLiteral(keyToken.text)),
-      endOffset: this.prevTokenEnd,
-    };
-    return { redirect: langleAt, target };
   }
 
   /** Consume the command operator at the current token, reporting a mis-spaced
@@ -2274,7 +2307,22 @@ export class BuildParser {
 
   /** Parse {@link parseMapBlock}'s block, its depth already counted. */
   private parseMapBlockBody(): IMapItemDecl[] {
-    this.consumeToken(TokenType.LBRACE);
+    /* Its keys are read as a declaration's are, and so is what follows its
+     * `}`: another block, the end of the property, or the next declaration. */
+    const inValues = this.inValues;
+    this.inValues = false;
+    try {
+      this.consumeToken(TokenType.LBRACE);
+      const entries = this.parseMapItems();
+      this.consumeToken(TokenType.RBRACE);
+      return entries;
+    } finally {
+      this.inValues = inValues;
+    }
+  }
+
+  /** Parse a map block's entries, from the first up to its `}`. */
+  private parseMapItems(): IMapItemDecl[] {
     const entries: IMapItemDecl[] = [];
     while (this.token.type !== TokenType.RBRACE && this.token.type !== TokenType.EOF) {
       try {
@@ -2308,7 +2356,6 @@ export class BuildParser {
         this.recoverInBody();
       }
     }
-    this.consumeToken(TokenType.RBRACE);
     return entries;
   }
 
@@ -2708,7 +2755,6 @@ export class BuildParser {
            * a property's values. The default's declaration is positioned at the
            * schema key. */
           if (next.text === "default") {
-            this.nextToken();
             defaultDecl = this.parsePropertyValues({
               kind: DeclKind.Property,
               source: this.source,

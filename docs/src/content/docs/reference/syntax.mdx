@@ -218,6 +218,10 @@ extended-glob forms above are wildcards, `$` and a backtick start a
 `@npm:react:^19.1.0` needs no quotes. Outside an extended glob, `(`, `)`, `|` and `!` are ordinary
 characters, so a leading `!` on its own doesn't negate anything.
 
+In a property's value, an `=` within a word is part of it, so `args = --port=8080 NODE_ENV=test;`
+needs no quotes. An `=` that starts a word is still an error, and so is one in a `<KEY=VALUE>`
+list or a map's key, where it ends the key.
+
 Quote a value, or part of one, that contains whitespace or any of those characters:
 
 - **Single quotes** `'…'` take the text as it is: no substitution, no escapes, no wildcards.

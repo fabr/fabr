@@ -90,6 +90,18 @@ describe("build file language", () => {
     expect(writtenAt(parsed, text.indexOf("check"))?.kind).to.equal("value");
   });
 
+  it("reads a word holding an '=' as one value, and a substitution in it", () => {
+    const text = "ARGS = --libs=${LIBS} -x;\n";
+    const parsed = parseBuildString(EMPTY_FILESET, "BUILD.fabr", text, log);
+    const written = writtenAt(parsed, text.indexOf("libs="))!;
+    expect(written.kind).to.equal("value");
+    const substitution = text.indexOf("LIBS}");
+    expect(namedAt(model, writtenAt(parsed, substitution)!, substitution)?.declarations.map(span => span.offset)).to.deep.equal([
+      TEXT.indexOf("LIBS"),
+    ]);
+    expect(completionsAt(model, "holder x { srcs = --libs=", 25).map(completion => completion.label)).to.include.members(["lib"]);
+  });
+
   it("finds where a reference, a substitution and a target's type are declared", () => {
     const declared = (offset: number): string[] =>
       (namedAt(model, writtenAt(contents, offset)!, offset)?.declarations ?? []).map(span =>
