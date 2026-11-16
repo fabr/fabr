@@ -9,6 +9,7 @@ together and share a version number.
 - Compile dep .ts files even if the main entry is .js.
 - Fix pnp coverage still missing some cases.
 - Remove patched registry packages from coverage reports.
+- Handle broken transpiled cjs imports from esm output better.
 
 ## Fabr 0.4.1
 @fabr-build/core

@@ -25,6 +25,7 @@
 import { expect } from "chai";
 import { cssImportRewrites } from "../CSSCompile";
 import { importRewrites } from "../rules/BuildJSCompile";
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -1607,6 +1608,194 @@ describe("bridging module-system globals across the emit format", () => {
      * there `__dirname` is defined — so the reference stays as written. */
     expect(read("legacy.cjs")).to.contain("__dirname");
     expect(read("legacy.cjs")).to.not.contain("import.meta");
+  });
+});
+
+describe("binding default imports of packages under an ES-module emit", () => {
+  /** Compile `sources` (by name under `src/`, `index.ts` the entry) against
+   * four packages: CommonJS compiled from ES modules (`exports.default` flagged
+   * `__esModule`, a function in `flagged` and a class in `klass`), plain
+   * CommonJS (`module.exports`), and an ES module. Answer the compile, what it
+   * emitted for a source, and what running the entry under node prints. */
+  function compileAndRun(
+    sources: Record<string, string>,
+    options: { module?: string; compilerOptions?: Record<string, unknown> } = {}
+  ): { status: number; output: string; emitted: (name?: string) => string; run: () => string } {
+    const work = fixture();
+    const flaggedPrefix = 'Object.defineProperty(exports, "__esModule", { value: true });\n';
+    const packages: Array<[string, Record<string, string>, Record<string, unknown>?]> = [
+      [
+        "flagged",
+        {
+          "index.js": flaggedPrefix + 'exports.default = function flagged() { return "flagged"; };\nexports.named = "named";\n',
+          "index.d.ts": "export default function flagged(): string;\nexport declare const named: string;\n",
+        },
+      ],
+      [
+        "klass",
+        {
+          "index.js": flaggedPrefix + 'exports.default = class Klass { name() { return "klass"; } };\n',
+          "index.d.ts": "export default class Klass { name(): string; }\n",
+        },
+      ],
+      [
+        "plain",
+        {
+          "index.js": 'module.exports = function plain() { return "plain"; };\n',
+          "index.d.ts": "declare function plain(): string;\nexport = plain;\n",
+        },
+      ],
+      [
+        "esm",
+        { "index.js": 'export default function esm() { return "esm"; }\n', "index.d.ts": "export default function esm(): string;\n" },
+        { type: "module" },
+      ],
+    ];
+    const references = packages.map(([name, files, manifest]) => [name, work.add(name, files, manifest)] as [string, string]);
+    stage(
+      work.root,
+      references.map(([name, reference]) => [name, reference, []]),
+      references,
+      references,
+      undefined,
+      options.module ?? "esnext"
+    );
+    const configPath = path.join(work.root, "tsconfig.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    config.compilerOptions = { ...config.compilerOptions, esModuleInterop: true, declaration: false, ...options.compilerOptions };
+    config.include = ["./src/**/*.ts", "./src/**/*.tsx"];
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    for (const [name, text] of Object.entries(sources)) {
+      fs.writeFileSync(path.join(work.root, "src", name), text);
+    }
+    const { status, output } = compile(work.root);
+    const build = path.join(work.root, "build");
+    return {
+      status,
+      output,
+      emitted: (name = "index.js") => fs.readFileSync(path.join(build, name), "utf8"),
+      run: () => {
+        /* Lay the packages out where node looks for them, the output marked
+         * as ES modules as a package of the compile is. */
+        fs.writeFileSync(path.join(build, "package.json"), JSON.stringify({ type: "module" }));
+        fs.mkdirSync(path.join(build, "node_modules"), { recursive: true });
+        for (const [name, reference] of references) {
+          fs.symlinkSync(path.join(work.store, reference), path.join(build, "node_modules", name), "dir");
+        }
+        return execFileSync(process.execPath, [path.join(build, "index.js")], { encoding: "utf8", stdio: "pipe" }).trim();
+      },
+    };
+  }
+
+  it("binds a default import as the CommonJS emit does, whatever the module is", () => {
+    const { status, output, emitted, run } = compileAndRun({
+      "index.ts":
+        'import flagged from "flagged";\nimport plain from "plain";\nimport esm from "esm";\n' +
+        "console.log([flagged(), plain(), esm()].join(' '));\n",
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted()).to.match(
+      /import flagged_1 from "flagged";\nconst flagged = flagged_1 && flagged_1.__esModule \? flagged_1.default : flagged_1;/
+    );
+    expect(run()).to.equal("flagged plain esm");
+  });
+
+  it("rewrites only the default binding of an import, keeping the others on it", () => {
+    const { status, output, emitted, run } = compileAndRun({
+      "index.ts":
+        'import flagged, { named } from "flagged";\nimport { default as again } from "flagged";\n' +
+        "console.log([flagged(), named, again()].join(' '));\n",
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted()).to.contain('import flagged_1, { named } from "flagged";');
+    expect(emitted()).to.contain("const again = flagged_2 && flagged_2.__esModule ? flagged_2.default : flagged_2;");
+    expect(run()).to.equal("flagged named flagged");
+  });
+
+  it("binds the default import that a call, a re-export and a shorthand property read", () => {
+    const { status, output, run } = compileAndRun({
+      "index.ts": 'import flagged from "flagged";\nexport { flagged };\nconst holder = { flagged };\nconsole.log(holder.flagged());\n',
+    });
+    expect(status, output).to.equal(0);
+    expect(run()).to.equal("flagged");
+  });
+
+  it("re-exports a package's default as its default import binds it", () => {
+    const { status, output, emitted, run } = compileAndRun({
+      "reexport.ts": 'export { default, named } from "flagged";\nexport { default as Plain } from "plain";\n',
+      "index.ts": 'import flagged, { named, Plain } from "./reexport.js";\nconsole.log([flagged(), named, Plain()].join(" "));\n',
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted("reexport.js")).to.contain('export { named } from "flagged";');
+    expect(run()).to.equal("flagged named plain");
+  });
+
+  it("binds the default import a JSX element names", () => {
+    const { status, output, run } = compileAndRun(
+      {
+        "index.tsx":
+          'import Flagged from "flagged";\n' +
+          "declare global { namespace JSX { type Element = unknown; interface IntrinsicElements {} } }\n" +
+          "const h = (component: () => string): string => component();\n" +
+          "console.log(<Flagged />);\n",
+      },
+      { compilerOptions: { jsx: "react", jsxFactory: "h" } }
+    );
+    expect(status, output).to.equal(0);
+    expect(run()).to.equal("flagged");
+  });
+
+  it("binds the default import decorator metadata names", () => {
+    const { status, output, emitted, run } = compileAndRun(
+      {
+        "index.ts":
+          'import Klass from "klass";\n' +
+          "let recorded: unknown;\n" +
+          "(Reflect as unknown as { metadata: unknown }).metadata = (key: string, value: unknown) => () => {\n" +
+          '  if (key === "design:type") recorded = value;\n' +
+          "};\n" +
+          "function mark(_target: object, _key: string): void {}\n" +
+          "class Holder { @mark held!: Klass; }\n" +
+          "console.log(new (recorded as typeof Klass)().name(), Holder.name);\n",
+      },
+      { compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true } }
+    );
+    expect(status, output).to.equal(0);
+    expect(emitted()).to.contain('__metadata("design:type", Klass)');
+    expect(run()).to.equal("klass Holder");
+  });
+
+  it("leaves imports that bind no default as written", () => {
+    const { status, output, emitted } = compileAndRun({
+      "index.ts": 'import { named } from "flagged";\nimport * as all from "flagged";\nimport "plain";\nconsole.log(named, all);\n',
+    });
+    expect(status, output).to.equal(0);
+    expect(emitted()).to.contain('import { named } from "flagged";');
+    expect(emitted()).to.contain('import * as all from "flagged";');
+    expect(emitted()).to.not.contain("__esModule");
+  });
+
+  for (const module of ["commonjs", "nodenext"]) {
+    it(`leaves a ${module} emit as the compiler emits it`, () => {
+      const { status, output, emitted } = compileAndRun(
+        { "index.ts": 'import plain from "plain";\nexport const value = plain;\n' },
+        { module }
+      );
+      expect(status, output).to.equal(0);
+      expect(emitted()).to.not.contain("plain_1.__esModule ?");
+    });
+  }
+
+  it("throws where an ES-module cycle reads the binding before the importer's body runs", () => {
+    /* `index` loads `a`, whose dependencies run first: `flagged`, then `b`,
+     * which calls into `a` before `a`'s body has bound `flagged`. */
+    const { status, output, run } = compileAndRun({
+      "a.ts": 'import flagged from "flagged";\nimport "./b.js";\nexport function call(): string { return flagged(); }\n',
+      "b.ts": 'import { call } from "./a.js";\nconsole.log(call());\n',
+      "index.ts": 'import "./a.js";\n',
+    });
+    expect(status, output).to.equal(0);
+    expect(run).to.throw(/ReferenceError: Cannot access 'flagged' before initialization/);
   });
 });
 

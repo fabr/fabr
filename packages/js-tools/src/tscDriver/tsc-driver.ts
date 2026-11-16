@@ -33,6 +33,7 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { builtinModules } from "node:module";
 import * as path from "node:path";
 import type { IConditionSet } from "../pnp/PackageExports";
 import { PnpResolver, splitSpecifier, typesPackageName } from "../pnp/PnPResolver";
@@ -142,6 +143,34 @@ interface ISyntaxNode extends INode {
 interface ISourceFileNode extends INode {
   fileName: string;
   text: string;
+  /** The file's top-level statements; read only in an `after` transform. */
+  statements?: readonly INode[];
+}
+interface IImportClauseNode extends INode {
+  isTypeOnly: boolean;
+  /** The default binding. */
+  name?: IIdentifierNode;
+  namedBindings?: INode;
+}
+interface INamedImportsNode extends INode {
+  elements: readonly IImportSpecifierNode[];
+}
+interface IImportSpecifierNode extends INode {
+  isTypeOnly: boolean;
+  name: IIdentifierNode;
+  /** The name imported where it differs from the local one: an identifier, or
+   * a string literal (`import { "a-b" as x }`). */
+  propertyName?: INode;
+}
+interface INamedExportsNode extends INode {
+  elements: readonly IExportSpecifierNode[];
+}
+interface IExportSpecifierNode extends INode {
+  isTypeOnly: boolean;
+  /** The name exported: an identifier, or a string literal. */
+  name: INode;
+  /** The name re-exported where it differs from the exported one. */
+  propertyName?: INode;
 }
 interface IImportDeclarationNode extends INode {
   modifiers?: unknown;
@@ -216,6 +245,7 @@ interface ITypeChecker {
 type TransformerFactory = (context: unknown) => (sourceFile: ISourceFileNode) => INode;
 interface ICustomTransformers {
   before?: TransformerFactory[];
+  after?: TransformerFactory[];
   afterDeclarations?: TransformerFactory[];
 }
 /** The properties of a source file this driver reads: its name, whether it is
@@ -328,6 +358,7 @@ export interface ITypeScript {
   ModuleResolutionKind: { Node10?: number; NodeJs?: number; Node16: number; NodeNext: number; Bundler: number };
   JsxEmit: { Preserve: number };
   SyntaxKind: { ImportKeyword: number };
+  NodeFlags: { Const: number };
   /* Node construction and traversal, for the rewrites. The `update` forms take
    * every member of the node, so a caller passes back each one it is not
    * changing. */
@@ -340,6 +371,27 @@ export interface ITypeScript {
     createStrictEquality(left: INode, right: INode): INode;
     createParenthesizedExpression(expression: INode): INode;
     createPropertyAssignment(name: string | INode, initializer: INode): INode;
+    createUniqueName(text: string): IIdentifierNode;
+    createLogicalAnd(left: INode, right: INode): INode;
+    createConditionalExpression(
+      condition: INode,
+      questionToken: undefined,
+      whenTrue: INode,
+      colonToken: undefined,
+      whenFalse: INode
+    ): INode;
+    createVariableDeclaration(name: INode, exclamationToken: undefined, type: undefined, initializer: INode): INode;
+    createVariableDeclarationList(declarations: readonly INode[], flags: number): INode;
+    createVariableStatement(modifiers: undefined, declarationList: INode): INode;
+    /** The first parameter is the phase modifier from TypeScript 6, which still
+     * takes the boolean `isTypeOnly` form. */
+    createImportClause(isTypeOnly: boolean, name: INode | undefined, namedBindings: INode | undefined): INode;
+    createNamedImports(elements: readonly INode[]): INode;
+    createNamedExports(elements: readonly INode[]): INode;
+    createExportSpecifier(isTypeOnly: boolean, propertyName: INode | undefined, name: INode): INode;
+    createExportDeclaration(modifiers: unknown, isTypeOnly: boolean, exportClause: INode, moduleSpecifier?: INode): INode;
+    createImportDeclaration(modifiers: unknown, importClause: INode, moduleSpecifier: INode, attributes?: unknown): INode;
+    updateSourceFile(node: INode, statements: readonly INode[]): INode;
     updateImportDeclaration(
       node: INode,
       modifiers: unknown,
@@ -388,6 +440,10 @@ export interface ITypeScript {
   isShorthandPropertyAssignment(node: INode): boolean;
   isImportSpecifier(node: INode): boolean;
   isExportSpecifier(node: INode): boolean;
+  isNamedImports(node: INode): boolean;
+  isNamedExports(node: INode): boolean;
+  /** Give a node a source range; returns the node. */
+  setTextRange<T extends INode>(node: T, range: INode): T;
   /** Visit the AST children of a node, punctuation excluded. */
   forEachChild(node: INode, visit: (child: INode) => void): void;
   createSourceFile(
@@ -1886,6 +1942,176 @@ function crossFormatGlobals(ts: ITypeScript, options: CompilerOptions, program: 
   };
 }
 
+/** The node built-in modules, which an import names bare (`fs`) or with the
+ * `node:` scheme. */
+const BUILTIN_MODULES: ReadonlySet<string> = new Set(builtinModules);
+
+/** @return true if `specifier` names a package, or a `#` import of the
+ * importing package's `imports` map, and not a path, a URL or a node
+ * built-in, otherwise false. */
+function isPackageSpecifier(specifier: string): boolean {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) {
+    return false;
+  }
+  return !BUILTIN_MODULES.has(specifier.split("/")[0]);
+}
+
+/** @return `specifier` spelled as an identifier: every character an
+ * identifier cannot hold becomes `_`. */
+function identifierFor(specifier: string): string {
+  const spelled = specifier.replace(/[^A-Za-z0-9_$]/g, "_");
+  return /^[0-9]/.test(spelled) ? `_${spelled}` : spelled;
+}
+
+/**
+ * Make the transformer that binds each default import of a package under an
+ * ES-module emit as `__importDefault` does under a CommonJS one: `import X
+ * from "foo"` becomes an import of the module under a fresh name, followed by
+ * `const X = foo_1 && foo_1.__esModule ? foo_1.default : foo_1;`. An ES
+ * module's default export, and a CommonJS `module.exports` not flagged
+ * `__esModule`, are bound as before.
+ *
+ * Every default binding of an import is rewritten (`import X, { a } from`,
+ * `import X, * as ns from`, `import { default as X } from`), and the other
+ * bindings stay on the import. A re-export of the default (`export { default }
+ * from`, `export { default as X } from`) is rewritten the same way, through a
+ * fresh `const` that is exported under the name written, and the other
+ * re-exports stay on the export. Imports of paths, URLs and node built-ins,
+ * and imports with attributes, are left as written.
+ *
+ * Runs after the compiler's own transforms: import elision is done and JSX is
+ * lowered, so every use of `X` reads the `const`. In an ES-module cycle, a
+ * module evaluated first that reads `X` before this module's body runs throws
+ * a `ReferenceError`.
+ */
+function defaultImportInterop(ts: ITypeScript): TransformerFactory {
+  const f = ts.factory;
+  /** @return true if `name` is `default`, as an identifier or a string literal. */
+  const isDefault = (name: INode): boolean =>
+    (ts.isIdentifier(name) || ts.isStringLiteral(name)) && (name as IStringLiteralNode).text === "default";
+  /** @return the package specifier a declaration imports from, or undefined
+   * where the declaration is left as written. */
+  const packageSpecifierOf = (decl: IImportDeclarationNode | IExportDeclarationNode): IStringLiteralNode | undefined => {
+    const specifier = decl.moduleSpecifier as IStringLiteralNode | undefined;
+    return specifier !== undefined &&
+      ts.isStringLiteral(specifier) &&
+      isPackageSpecifier(specifier.text) &&
+      (decl.attributes ?? decl.assertClause) === undefined
+      ? specifier
+      : undefined;
+  };
+  /** @return the import of `specifier`'s module under a fresh name, with the
+   * other bindings `bindings` names, and the `const` statement binding each of
+   * `locals` to its default. */
+  const bindDefault = (
+    original: INode,
+    modifiers: unknown,
+    specifier: IStringLiteralNode,
+    bindings: INode | undefined,
+    locals: readonly IIdentifierNode[]
+  ): INode[] => {
+    const module = f.createUniqueName(identifierFor(specifier.text));
+    const imported = f.createImportDeclaration(modifiers, f.createImportClause(false, module, bindings), specifier);
+    const value = f.createConditionalExpression(
+      f.createLogicalAnd(module, f.createPropertyAccessExpression(module, "__esModule")),
+      undefined,
+      f.createPropertyAccessExpression(module, "default"),
+      undefined,
+      module
+    );
+    const bound = f.createVariableStatement(
+      undefined,
+      f.createVariableDeclarationList(
+        locals.map(local => f.createVariableDeclaration(local, undefined, undefined, value)),
+        ts.NodeFlags.Const
+      )
+    );
+    /* Positioned as the declaration was, so the source map places both there. */
+    return [ts.setTextRange(imported, original), ts.setTextRange(bound, original)];
+  };
+  /** @return the statements to replace an import with, or undefined to keep it. */
+  const rewriteImport = (decl: IImportDeclarationNode): INode[] | undefined => {
+    const clause = decl.importClause as IImportClauseNode | undefined;
+    const specifier = packageSpecifierOf(decl);
+    if (clause === undefined || clause.isTypeOnly || specifier === undefined) {
+      return undefined;
+    }
+    const named =
+      clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)
+        ? (clause.namedBindings as INamedImportsNode).elements
+        : undefined;
+    const defaults = named?.filter(element => !element.isTypeOnly && isDefault(element.propertyName ?? element.name)) ?? [];
+    const locals = [...(clause.name === undefined ? [] : [clause.name]), ...defaults.map(element => element.name)];
+    if (locals.length === 0) {
+      return undefined;
+    }
+    let bindings = clause.namedBindings;
+    if (named !== undefined) {
+      const kept = named.filter(element => !defaults.includes(element));
+      bindings = kept.length > 0 ? f.createNamedImports(kept) : undefined;
+    }
+    return bindDefault(
+      decl,
+      decl.modifiers,
+      specifier,
+      bindings,
+      locals.map(local => f.createIdentifier(local.text))
+    );
+  };
+  /** @return the statements to replace a re-export with, or undefined to keep it. */
+  const rewriteExport = (decl: IExportDeclarationNode): INode[] | undefined => {
+    const specifier = packageSpecifierOf(decl);
+    if (
+      decl.isTypeOnly ||
+      specifier === undefined ||
+      decl.exportClause === undefined ||
+      !ts.isNamedExports(decl.exportClause as INode)
+    ) {
+      return undefined;
+    }
+    const elements = (decl.exportClause as INamedExportsNode).elements;
+    const defaults = elements.filter(element => !element.isTypeOnly && isDefault(element.propertyName ?? element.name));
+    if (defaults.length === 0) {
+      return undefined;
+    }
+    const locals = defaults.map(() => f.createUniqueName("default"));
+    const exported = f.createExportDeclaration(
+      undefined,
+      false,
+      f.createNamedExports(defaults.map((element, i) => f.createExportSpecifier(false, locals[i], element.name)))
+    );
+    const kept = elements.filter(element => !defaults.includes(element));
+    const rest =
+      kept.length === 0
+        ? []
+        : [ts.setTextRange(f.createExportDeclaration(decl.modifiers, false, f.createNamedExports(kept), specifier), decl as INode)];
+    return [...bindDefault(decl, undefined, specifier, undefined, locals), ts.setTextRange(exported, decl as INode), ...rest];
+  };
+  /** @return the statements to replace `node` with, or undefined to keep it. */
+  const rewrite = (node: INode): INode[] | undefined => {
+    if (ts.isImportDeclaration(node)) {
+      return rewriteImport(node as IImportDeclarationNode);
+    }
+    if (ts.isExportDeclaration(node)) {
+      return rewriteExport(node as IExportDeclarationNode);
+    }
+    return undefined;
+  };
+  return () => sourceFile => {
+    const statements = sourceFile.statements;
+    if (statements === undefined) {
+      return sourceFile;
+    }
+    let changed = false;
+    const next = statements.flatMap(statement => {
+      const replaced = rewrite(statement);
+      changed ||= replaced !== undefined;
+      return replaced ?? [statement];
+    });
+    return changed ? f.updateSourceFile(sourceFile, next) : sourceFile;
+  };
+}
+
 /**
  * @return the layout this compile's specifiers are rewritten in, or undefined
  * where nothing would be rewritten. The extension rewrite is set for an
@@ -2286,10 +2512,15 @@ export function main(argv: string[]): number {
   const declarations =
     graph === undefined ? rewriter : specifierRewriter(ts, resolve, layout, (file, specifier) => graph.forwards(file, specifier));
   const before = [crossFormat?.transformer, rewriter].filter((entry): entry is TransformerFactory => entry !== undefined);
+  const after = emitsEsModules(ts, parsed.options) ? [defaultImportInterop(ts)] : [];
   const transformers =
-    before.length === 0 && declarations === undefined
+    before.length === 0 && after.length === 0 && declarations === undefined
       ? undefined
-      : { ...(before.length > 0 ? { before } : {}), ...(declarations ? { afterDeclarations: [declarations] } : {}) };
+      : {
+          ...(before.length > 0 ? { before } : {}),
+          ...(after.length > 0 ? { after } : {}),
+          ...(declarations ? { afterDeclarations: [declarations] } : {}),
+        };
   /* Correct each emitted file as the emitter hands it over, before it is
    * written. */
   const writeEmitted: WriteFile = (fileName, text, writeByteOrderMark) => {

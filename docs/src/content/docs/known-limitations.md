@@ -38,6 +38,7 @@ Your project can't be converted as it stands if it relies on any of these.
 | [Programs a shell script starts are not tracked](#programs-a-shell-script-starts-are-not-tracked) | A different version of a program a script runs can change results without fabr noticing. |
 | [Optional dependencies required as `*` are dropped](#optional-npm-dependencies-required-only-as--are-left-out-silently) | Such a dependency is missing, with no warning. |
 | [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
+| [A default import can be read too early in an import cycle](#a-default-import-of-a-package-can-be-read-too-early-in-an-import-cycle) | In ES-module output, a cycle that reads a package's default import before its module has started running throws a `ReferenceError`. |
 | [On Windows, processes, file modes and links fall short](#on-windows-processes-file-modes-and-links-fall-short) | A step's leftover processes outlive it; executable modes are lost; incremental builds can need Developer Mode. |
 
 ### Programs a shell script starts are not tracked
@@ -55,6 +56,26 @@ cache.** Fabr reuses results built with the old one.
 release [`NODE`](/reference/js/dependencies/#the-nodejs-version) names, or name each program as a
 command of its own (`@host:protoc`). Otherwise, keep the programs scripts use the same on machines
 that should produce the same results, and delete the cache after changing them.
+
+### A default import of a package can be read too early in an import cycle
+
+In ES-module output, fabr
+[binds a package's default import through a `const`](/reference/js/typescript/#default-imports-of-commonjs-packages-bind-the-value-their-types-describe)
+at the top of the importing module. A `const` has no value until its module starts running. So
+when two of your modules import each other and one calls into the other while it is still loading,
+a default import read in that call throws:
+
+```text
+ReferenceError: Cannot access 'DateTime' before initialization
+```
+
+For example, `a.ts` imports `DateTime` from a package and then imports `b.ts`, and `b.ts` calls a
+function of `a.ts` at its top level that uses `DateTime`. An import binding has its value as soon
+as its package has loaded, and `a.ts` loads the package before `b.ts`, so with `tsc`'s output that
+read would not throw.
+
+**Workaround:** break the cycle, or move the call out of the top level of `b.ts`, for example into
+a function that runs after loading.
 
 ### Optional npm dependencies required only as `*` are left out silently
 

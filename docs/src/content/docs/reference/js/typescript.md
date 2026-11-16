@@ -93,6 +93,7 @@ Anything else that differs from `tsc` is a bug, and we'd like to hear about it.
 | Imports get the file extension their target needs | Output fix | [Import extensions](#imports-get-the-file-extension-their-target-needs) |
 | Imports of your own package are written as relative paths | Output fix | [Own-package imports](#imports-of-your-own-package-are-written-as-relative-paths) |
 | `__dirname` and `import.meta` convert between module systems | Output fix | [Module-system globals](#__dirname-and-importmeta-convert-between-module-systems) |
+| Default imports of CommonJS packages bind the value their types describe | Output fix | [CommonJS default imports](#default-imports-of-commonjs-packages-bind-the-value-their-types-describe) |
 | Source maps name sources by their path in your project | Output fix | [Source maps](#source-maps) |
 | Declaration files never contain build paths | Output fix | [Declaration files](#declaration-files-never-contain-build-paths) |
 | One package can be built in both module formats | Output fix | [Dual packages](#one-package-in-both-module-formats) |
@@ -249,6 +250,40 @@ A variable of your own named `__dirname` isn't touched, and neither is the name 
 `typeof`, so guards such as `typeof __dirname !== "undefined"` keep working. Anything without an
 exact equivalent compiles as it does with `tsc`, including `require`, `module` and `exports` in
 ES-module output and `import.meta.resolve` in CommonJS output.
+
+### Default imports of CommonJS packages bind the value their types describe
+
+**tsc:** writes `import DateTime from "react-datetime"` into ES-module output exactly as you wrote
+it. Your code was type-checked with `esModuleInterop`, which treats the default import of a
+CommonJS package marked `__esModule` as that package's `exports.default`. Packages compiled to
+CommonJS from ES modules, by TypeScript, Babel or webpack, carry that mark. But when Node.js loads
+an ES module, it
+[binds a default import of CommonJS to the whole `module.exports`](https://nodejs.org/api/esm.html#commonjs-namespaces),
+and so do bundlers loading ES-module code. `DateTime` is then
+`{ __esModule: true, default: [class] }`, and using it as the component fails at runtime.
+
+**fabr:** binds each default import of a package in ES-module output the same way `tsc`'s CommonJS
+output does:
+
+```js
+// your source
+import DateTime from "react-datetime";
+
+// ES-module output
+import react_datetime_1 from "react-datetime";
+const DateTime = react_datetime_1 && react_datetime_1.__esModule ? react_datetime_1.default : react_datetime_1;
+```
+
+The check runs when the module loads, so an ES-module package, or a CommonJS package without the
+`__esModule` mark, gets exactly the value it got before. The same applies to the default binding
+in `import DateTime, { a } from`, `import DateTime, * as ns from` and `import { default as DateTime }
+from`, and to `export { default } from` and `export { default as DateTime } from`. Imports of your
+own files, of Node.js built-ins, and imports with attributes (`with { type: "json" }`) are left as
+written, and so are namespace imports and `import()`. CommonJS output is unchanged, since `tsc`
+already applies this rule there.
+
+In a cycle of ES modules, the rewritten binding can be read too early; see
+[Known limitations](/known-limitations/#a-default-import-of-a-package-can-be-read-too-early-in-an-import-cycle).
 
 ### Source maps
 
