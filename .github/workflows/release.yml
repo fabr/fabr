@@ -1,7 +1,8 @@
 name: release
 # Pushing a tag `v<version>` publishes that version: the packages `sync release`
 # lists go to npm, the VS Code extension to the Marketplace, and a GitHub
-# release is made with the version's CHANGELOG.md section as its notes.
+# release is made with the version's CHANGELOG.md section as its notes. Then
+# the documentation site is deployed to GitHub Pages.
 on:
   push:
     tags: ['v*']
@@ -54,6 +55,11 @@ jobs:
         run: ./fabr build eslint_check
       - name: Build the VS Code extension
         run: ./fabr cp fabr_vsix dist
+      - name: Build the documentation site
+        run: ./fabr cp docs_site dist
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist/docs_site
       # Publishes through npm's trusted publishing, with provenance.
       - name: Publish to npm
         run: ./fabr sync release
@@ -68,3 +74,17 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "Fabr $VERSION" \
             --notes-file release-notes.md
+  # Runs only once everything is published, so the site never documents a
+  # version that failed to release.
+  docs:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
