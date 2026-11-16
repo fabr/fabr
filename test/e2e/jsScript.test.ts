@@ -235,6 +235,28 @@ describe("e2e: js_script (runnable) + generate", () => {
     expect(result.stdout).to.equal("hello, Ada!");
   });
 
+  it("compiles TypeScript deps of a JavaScript entry", () => {
+    /* The entry and its JavaScript dep are installed as written; the
+     * TypeScript dep the JavaScript requires is compiled beside them. */
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_script gen_prog { entry = tools/gen.js; deps = Lib.js src/Names.ts; }\n" +
+          "generate gen { run = gen_prog; output = out:**; }\n",
+        "tools/gen.js":
+          'const { greet } = require("../Lib");\nrequire("fs").mkdirSync("out", { recursive: true });\nrequire("fs").writeFileSync("out/msg.txt", greet());\n',
+        "Lib.js": 'const { NAME } = require("./src/Names");\nexports.greet = () => "hello, " + NAME + "!";\n',
+        "src/Names.ts": 'exports.NAME = "Ada";\n',
+      },
+      ["-DJS_TARGET=es2020", "cat", "gen:msg.txt"]
+    );
+    expect(result.status).to.equal(0);
+    expect(result.stdout).to.equal("hello, Ada!");
+  });
+
   it("ships a non-compilable resource dep alongside a TypeScript entry", () => {
     /* A runtime data file in `deps` (a .json tsc reads but never emits) is
      * carried into the TS-entry install at the package root, next to the compiled

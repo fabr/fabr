@@ -4,6 +4,10 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
+## Fabr 0.4.2
+@fabr-build/js
+- Compile dep .ts files even if the main entry is .js.
+
 ## Fabr 0.4.1
 @fabr-build/core
 - Allow '=' within a word of a property value (`args = --port=8080;`) without quoting.

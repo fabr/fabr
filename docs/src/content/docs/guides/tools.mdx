@@ -102,6 +102,9 @@ console.log(pc.green(`Hello, ${process.argv[2] ?? "world"}!`));
 A TypeScript entry is type-checked like any other source, so a script that uses `process` or
 `console` needs `@npm:@types/node` among its `deps`.
 
+TypeScript files among `deps` are compiled too, whichever kind the entry is, so a JavaScript entry
+can `require` a module written in TypeScript. JavaScript files are installed as they are written.
+
 `entry` can instead be a package with a command-line program, which decorates that program with
 the packages in `deps`, such as plugins it loads by name:
 

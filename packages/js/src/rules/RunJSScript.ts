@@ -24,7 +24,8 @@
  * - a script file, installed at its own name and launched under the `NODE`
  *   global. A TypeScript entry is first compiled through js_compile, with the
  *   source files in `deps` and against the packages there, and its emitted
- *   `.js` launched; or
+ *   `.js` launched. A JavaScript entry is installed as written, and so are the
+ *   JavaScript files in `deps`; their TypeScript is compiled beside them; or
  * - a package, built or from a registry, launched by its sole declared bin or
  *   the one a projection names (`entry = @npm:typescript:5.6.3:tsc`), with
  *   `deps` added to its install.
@@ -50,6 +51,8 @@ import {
   TargetContext,
   defineRule,
   ContainedSources,
+  EMPTY_FILESET,
+  Flag,
   PackageSources,
   NoRequirements,
   ResolutionSpec,
@@ -58,6 +61,7 @@ import {
 import { assembleNodeModules } from "../NodeModules";
 import {
   classifySourceByExt,
+  classifySources,
   compileContents,
   formatJSTarget,
   makeNpmRunnable,
@@ -170,11 +174,42 @@ function defineJsRunnable(
         }
 
         /* A JavaScript entry is installed as it is, with packages under
-         * node_modules and loose files at their own paths. */
-        const loose = deps.filter(d => !(d instanceof PackageFileSet));
-        const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose, entrySet);
-        return context.launchedBy(RunnableFileSet.forEntry(install, entryName, argv), NODE_GLOBAL);
+         * node_modules and loose files at their own paths. TypeScript among
+         * the loose files is compiled to JS_TARGET's format, against the
+         * packages and the other loose files, and installed in place of its
+         * sources; the JavaScript stays as written. No root package.json is
+         * written, so node loads the JavaScript by its own rules. */
+        const typescript = FileSet.unionAll(...deps.filter(isLooseFiles).map(typeScriptOf));
+        const rest = deps.map(set => (isLooseFiles(set) ? set.minus(typeScriptOf(set)) : set));
+        const launch = (compiled: FileSet): Computable<RuleResult> => {
+          const install = FileSet.unionAll(
+            FileSet.layout({ node_modules: assembleNodeModules(packages) }),
+            ...rest.filter(set => !(set instanceof PackageFileSet)),
+            compiled,
+            entrySet
+          );
+          return context.launchedBy(RunnableFileSet.forEntry(install, entryName, argv), NODE_GLOBAL);
+        };
+        if (typescript.isEmpty()) {
+          return launch(EMPTY_FILESET);
+        }
+        const jsTarget = parseJSTarget(target);
+        const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: soleModuleFormat(jsTarget.module) }) });
+        return compileContents(context, typescript, rest, { constraints: faceTarget }).then(built =>
+          launch(built.compiled.minus(built.depOutputs))
+        );
       });
     }
   );
+}
+
+/** @return true if `set` is loose files: neither a package nor a flag, otherwise false. */
+function isLooseFiles(set: FileSet): boolean {
+  return !(set instanceof PackageFileSet) && !(set instanceof Flag);
+}
+
+/** @return the TypeScript and JSX sources among `set`, which node cannot load as written. */
+function typeScriptOf(set: FileSet): FileSet {
+  const classified = classifySources(set);
+  return FileSet.unionAll(classified.ts, classified.jsx);
 }
