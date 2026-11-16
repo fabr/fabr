@@ -1548,9 +1548,11 @@ function barePackage<V, C>(
       : fetchVariantOf(registry, req.name, version, req.variant).then(
           files => new PackageFileSet(files, variantName(req.name, req.variant!), registry.format.versionToString(version))
         );
+  /* Named as the package's node in a resolution is (a variant as its package). */
+  const named = namedFrom(registry, req.name, version, origin);
   return Computable.forAll(
     [content, declared(req.name, version)],
-    (pkg, { dependencies, provided }) => new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, origin, provided)
+    (pkg, { dependencies, provided }) => new PackageFileSet(pkg, pkg.packageName, pkg.version, dependencies, named, provided)
   ).catch(unpublished);
 }
 

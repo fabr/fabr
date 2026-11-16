@@ -327,17 +327,22 @@ function measuredFilesOf(action: BuildAction): Computable<IMeasuredFiles> {
 
 /** @return the measured files' paths as the coverage driver takes them: the
  *  run's own relative to the install root, the packages' where `layout`
- *  placed them. Throws where a package's route names none of the layout's. */
+ *  placed them, each once (copies of one package share a place). Throws where
+ *  a package's route does not resolve in the layout, which is a bug. */
 function placeMeasured(measured: IMeasuredFiles, layout: IPackageLayout): string[] {
   return [
-    ...measured.files,
-    ...measured.packages.map(read => {
-      const located = layout.locate(read.slice(0, -1), read[read.length - 1]);
-      if (located === undefined) {
-        throw new FabrError(`internal: no package of the measured run has the route '${read.slice(0, -1).join(" > ")}'`);
-      }
-      return located;
-    }),
+    ...new Set([
+      ...measured.files,
+      ...measured.packages.map(read => {
+        const located = layout.locate(read.slice(0, -1), read[read.length - 1]);
+        if (located === undefined) {
+          throw new FabrError(
+            `internal: coverage measures '${read.slice(0, -1).join(" > ")}', which does not resolve in the test install; this is a bug in fabr`
+          );
+        }
+        return located;
+      }),
+    ]),
   ];
 }
 

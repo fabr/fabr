@@ -24,14 +24,20 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
-  joinDepsPath,
   mapComputable,
   PackageFileSet,
   stringConfig,
   SymlinkFile,
   walkPackages,
 } from "@fabr-build/core";
-import { PNP_DATA_FILE, resolveVirtual, TREE_LINK } from "@fabr-build/js-tools";
+import {
+  type IPnpPackageInfo,
+  type IPnpSerializedState,
+  type PnpDependencyTarget,
+  PNP_DATA_FILE,
+  resolveVirtual,
+  TREE_LINK,
+} from "@fabr-build/js-tools";
 import { assembleNodeModules, INSTANCE_AREA, packageDirectories } from "./NodeModules";
 import { ISelfPackage, pnpManifestOf } from "./PnPManifest";
 
@@ -80,10 +86,12 @@ export interface IPackageLayout {
    */
   nameRead(read: string): ReadName | undefined;
   /**
-   * @return the absolute path of `path` within the package `route` names (its
-   * canonical route, as {@link nameRead} gives it), where the layout places
-   * it: under its instance directory, or at its location over the tree pool,
-   * which may be a virtual one. Undefined where no package has that route.
+   * @return the absolute path of `path` within the package `route` reaches:
+   * the dependency names from the top of what the layout stages, each looked
+   * up as the tool resolves an import from the package before it, through the
+   * PnP table or the `node_modules` links. The package's directory is its
+   * instance directory, or its location over the tree pool, which may be a
+   * virtual one. Undefined where a name along the route resolves to nothing.
    */
   locate(route: ReadonlyArray<string>, path: string): string | undefined;
 }
@@ -118,40 +126,92 @@ export function layoutPackages(
      * virtual location over that tree, as the runtime names a module in it. */
     const located = (pkg: PackageFileSet, tree: string): string =>
       join(dirname(tree), ...posix.relative(TREE_LINK, manifest.mountOf(pkg)).split("/"));
+    /* The pool every tree is in, which the table's locations are relative to
+     * (through TREE_LINK). */
+    let pool: string | undefined;
     return mapComputable(manifest.packages, pkg =>
-      ensureTree(pkg).then((path): [string, PackageFileSet] => [located(pkg, path), pkg])
+      ensureTree(pkg).then((path): [string, PackageFileSet] => {
+        pool = dirname(path);
+        return [located(pkg, path), pkg];
+      })
     ).then(locations => ({
       files,
       trees,
       members,
       nameRead: poolReadNamer(dir, locations, routes),
-      locate: packageLocator(routes, new Map(locations.map(([location, pkg]) => [pkg, location]))),
+      locate: tableLocator(manifest.state, pool),
     }));
   }
   const files = FileSet.layout({ [mount]: [assembleNodeModules(deps), selfLink(self, mount)] });
-  const directories = packageDirectories(deps);
   return Computable.resolve({
     files,
     trees: new Map(),
     members,
-    nameRead: treeReadNamer(dir, mount, directories, routes, members),
-    locate: packageLocator(
-      routes,
-      new Map([...directories].map(([pkg, directory]) => [pkg, join(dir, ...mount.split("/"), ...directory.split("/"))]))
-    ),
+    nameRead: treeReadNamer(dir, mount, packageDirectories(deps), routes, members),
+    locate: treeLocator(files, dir, mount),
   });
 }
 
-/** Make {@link IPackageLayout.locate} over each package's directory on this machine. */
-function packageLocator(
-  routes: ReadonlyMap<PackageFileSet, string[]>,
-  locations: ReadonlyMap<PackageFileSet, string>
-): IPackageLayout["locate"] {
-  const byRoute = new Map([...routes].map(([pkg, route]) => [joinDepsPath(route), pkg]));
+/**
+ * Make {@link IPackageLayout.locate} for a PnP layout: follow the route through
+ * the table's rows, from the top-level row, each name to the row its
+ * dependency entry names, as the runtime resolves an import; the package is at
+ * the last row's location, over the tree pool at `pool`.
+ */
+function tableLocator(state: IPnpSerializedState, pool: string | undefined): IPackageLayout["locate"] {
+  const rows = new Map<string, IPnpPackageInfo>();
+  for (const [name, references] of state.packageRegistryData) {
+    for (const [reference, info] of references) {
+      rows.set(`${name}\0${reference}`, info);
+    }
+  }
+  const dependencies = new Map<IPnpPackageInfo, Map<string, PnpDependencyTarget>>();
+  const dependencyOf = (row: IPnpPackageInfo, name: string): PnpDependencyTarget | undefined => {
+    let byName = dependencies.get(row);
+    if (byName === undefined) {
+      byName = new Map(row.packageDependencies);
+      dependencies.set(row, byName);
+    }
+    return byName.get(name);
+  };
   return (route, path) => {
-    const pkg = byRoute.get(joinDepsPath(route));
-    const location = pkg && locations.get(pkg);
-    return location === undefined ? undefined : join(location, ...path.split("/"));
+    let row = rows.get(`${null}\0${null}`);
+    for (const name of route) {
+      const target = row === undefined ? undefined : dependencyOf(row, name);
+      if (target === undefined || target === null) {
+        return undefined;
+      }
+      const [rowName, reference] = typeof target === "string" ? [name, target] : target;
+      row = rows.get(`${rowName}\0${reference}`);
+    }
+    if (row === undefined || route.length === 0 || pool === undefined) {
+      return undefined;
+    }
+    return join(pool, ...posix.relative(TREE_LINK, row.packageLocation).split("/"), ...path.split("/"));
+  };
+}
+
+/**
+ * Make {@link IPackageLayout.locate} for a `node_modules` layout: follow the
+ * route through the links of `files`, the tree staged at `mount` in `dir`, as
+ * node resolves an import: the first name's link at the top, then each name's
+ * link beside the package reached.
+ */
+function treeLocator(files: FileSet, dir: string, mount: string): IPackageLayout["locate"] {
+  return (route, path) => {
+    let reached: string | undefined;
+    for (const [at, name] of route.entries()) {
+      /* The directory holding a package's dependency links: the
+       * `node_modules` its own directory is in. */
+      const nodeModules = reached === undefined ? mount : reached.slice(0, reached.length - route[at - 1].length - 1);
+      const link = `${nodeModules}/${name}`;
+      const file = files.getFile(link);
+      if (!(file instanceof SymlinkFile)) {
+        return undefined;
+      }
+      reached = posix.join(posix.dirname(link), file.target);
+    }
+    return reached === undefined ? undefined : join(dir, ...reached.split("/"), ...path.split("/"));
   };
 }
 

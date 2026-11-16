@@ -7,6 +7,8 @@ together and share a version number.
 ## Fabr 0.4.2
 @fabr-build/js
 - Compile dep .ts files even if the main entry is .js.
+- Fix pnp coverage still missing some cases.
+- Remove patched registry packages from coverage reports.
 
 ## Fabr 0.4.1
 @fabr-build/core

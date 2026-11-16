@@ -128,10 +128,9 @@ const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report
 const DIAG_TRACE_UNWRITTEN = Diagnostic.Warn<{ file: string; message: string }>("Could not write the trace to {file}: {message}");
 const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
-/* Measured sources the project's tree cannot locate (generated during the
- * build), which the report leaves out. */
+/* Measured files whose source maps name no source, which the report leaves out. */
 const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: string }>(
-  "Left {count} generated source(s) out of the coverage report, having no source path: {examples}"
+  "Left {count} file(s) out of the coverage report, their source maps naming no source: {examples}"
 );
 /* A target declares it fixes an advisory that does not affect the package it
  * is made from (a stale or misspelt id). */
@@ -407,7 +406,9 @@ function runTest(
           : writeTestReport(execution, site, options.reportFile, options.format, reports)
       )
         .then(() => (failures.length === 0 ? applyExpectationUpdates(execution, site, results) : undefined))
-        .then(() => (options.coverageDir === undefined ? undefined : reportCoverage(execution, site, options.coverageDir, results)))
+        .then(() =>
+          options.coverageDir === undefined ? undefined : reportCoverage(model, execution, site, options.coverageDir, results)
+        )
         .then(() => {
           if (failures.length > 0) {
             throw MultiError.of(failures);
@@ -452,14 +453,24 @@ function coverageText({ covered, total }: ICoverageTotal): string {
 
 /**
  * Merge the coverage every test result carries, log its totals, and write it as
- * `<dir>/lcov.info`, naming each source by its path in the project. A record
- * whose source the project's tree cannot locate is left out, with a warning;
- * where no result carries coverage, a warning is logged and nothing written.
+ * `<dir>/lcov.info`, naming each source by its source path: a file of the
+ * project's tree by its path in the project, a file a target generated as
+ * written (`schema_validation:index.ts`). A source that is a file of a
+ * repository's package (`@npm:geoip-lite:2.0.2:lib/geoip.js`, which a target
+ * rebuilt or patched) is not the project's code and is left out, and so, with
+ * a warning, is a file whose source map names no source. Where no result
+ * carries coverage, a warning is logged and nothing written.
  *
  * Written through the source tree, as an expectation update is, so a watching
  * run recognises a write inside the tree as its own.
  */
-function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir: string, results: SourceRef[][]): Computable<void> {
+function reportCoverage(
+  model: BuildModel,
+  execution: ExecutionContext,
+  site: IInvocationSite,
+  dir: string,
+  results: SourceRef[][]
+): Computable<void> {
   return Computable.forAll(
     results.map(sources => getCoverageReports(sources)),
     (...documents: string[][]): Computable<void> | void => {
@@ -473,10 +484,13 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
       const unplaced = [];
       for (const record of mergeCoverage(measured.map(parseLcov)).values()) {
         const located = sources.locate(record.source);
-        if (located === undefined) {
-          unplaced.push(record.source);
-        } else {
+        if (located !== undefined) {
           placed.push({ ...record, source: toPosix(path.relative(sources.root, located)) });
+        } else if (path.isAbsolute(record.source)) {
+          /* The driver names a file whose map names no source by its own path. */
+          unplaced.push(record.source);
+        } else if (!isRepositorySource(model, record.source)) {
+          placed.push(record);
         }
       }
       if (unplaced.length > 0) {
@@ -494,6 +508,18 @@ function reportCoverage(execution: ExecutionContext, site: IInvocationSite, dir:
         .then(() => execution.log.log(DIAG_COVERAGE_WRITTEN, { file: path.join(dir, COVERAGE_REPORT_FILENAME) }));
     }
   );
+}
+
+/** @return true if the source path `source` names a file of a repository's
+ *  package (its leading name is a repository's), otherwise false. */
+function isRepositorySource(model: BuildModel, source: string): boolean {
+  try {
+    const decl = model.getReferencedTarget(source);
+    return decl !== undefined && model.hasRepositoryType(decl.type);
+  } catch {
+    /* A source path that does not parse as a reference names no repository. */
+    return false;
+  }
 }
 
 /**

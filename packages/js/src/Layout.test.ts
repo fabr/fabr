@@ -147,6 +147,21 @@ describe("layoutPackages", () => {
       expect(row(layout.nameRead(located!))).to.deep.equal({ route: ["a", "b"], path: "lib/x.js", pkg: "b" });
       expect(layout.locate(["b"], "index.js"), "a route the walk does not take").to.equal(undefined);
     });
+
+    it("locates each copy of one package wired one way, and a scoped name along a route, by following the links", async () => {
+      const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
+      const dep = pkg("@scope/dep");
+      const left = new PackageFileSet(content, "@scope/shared", "1.0.0", dependenciesOn(dep));
+      const right = new PackageFileSet(content, "@scope/shared", "1.0.0", dependenciesOn(dep));
+      const layout = await laid([pkg("l", "l", [left]), pkg("r", "r", [right])], NODE_MODULES);
+      const instance = path.join(DIR, "node_modules", ...packageDirectories([left]).get(left)!.split("/"), "index.js");
+      expect(layout.locate(["l", "@scope/shared"], "index.js")).to.equal(instance);
+      expect(layout.locate(["r", "@scope/shared"], "index.js")).to.equal(instance);
+      expect(layout.locate(["r", "@scope/shared", "@scope/dep"], "index.js")).to.equal(
+        path.join(DIR, "node_modules", ...packageDirectories([dep]).get(dep)!.split("/"), "index.js")
+      );
+      expect(layout.locate(["l", "@scope/dep"], "index.js"), "no such edge").to.equal(undefined);
+    });
   });
 
   describe("under pnp", () => {
@@ -207,6 +222,20 @@ describe("layoutPackages", () => {
         const named = layout.nameRead(located);
         expect(named !== undefined && "route" in named && named.package).to.equal(route[0] === "l" ? left : right);
       }
+    });
+
+    it("locates each copy of one package wired one way, by its own route, at the one location", async () => {
+      /* Two objects of one node, one row of the table between them. */
+      const content = new Map<string, IFile>([["index.js", MemoryFile.from("// shared")]]);
+      const dep = pkg("dep");
+      const left = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(dep));
+      const right = new PackageFileSet(content, "shared", "1.0.0", dependenciesOn(dep));
+      const layout = await laid([pkg("l", "l", [left]), pkg("r", "r", [right])], PNP);
+      const tree = path.join(POOL, left.toManifestHash(), "index.js");
+      expect(layout.locate(["l", "shared"], "index.js")).to.equal(tree);
+      expect(layout.locate(["r", "shared"], "index.js")).to.equal(tree);
+      expect(layout.locate(["r", "shared", "dep"], "index.js")).to.equal(path.join(POOL, dep.toManifestHash(), "index.js"));
+      expect(layout.locate(["l", "dep"], "index.js"), "no such edge").to.equal(undefined);
     });
   });
 });

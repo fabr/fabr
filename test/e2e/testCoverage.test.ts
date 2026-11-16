@@ -140,6 +140,23 @@ fs.writeFileSync(options.output, out.join("\\n") + "\\n");
     ]);
   });
 
+  it("keeps a source a target generated under its source path", () => {
+    const project = {
+      ...PROJECT,
+      "PROJECT.fabr":
+        PROJECT["PROJECT.fabr"] +
+        "js_script gen_tool { entry = ./gen.js; }\n" +
+        "generate gen { run = gen_tool > made.ts; }\n" +
+        "js_package made_thing { srcs = src:**/*.ts gen:made.ts; tests = src:**/*.test.ts; deps = lib; }\n",
+      "gen.js": 'console.log("exports.made = 1;");\n',
+    };
+    const result = runFabr(project, ["-DJS_TARGET=es2020", "test", "--coverage", "made_thing"], [LCOV]);
+    expect(result.status, result.stderr).to.equal(0);
+    const sources = [...(result.files?.[LCOV] ?? "").matchAll(/SF:(.*)/g)].map(match => match[1]);
+    expect(sources).to.deep.equal(["gen:made.ts", "lib_src/lib.ts", "src/thing.ts"]);
+    expect(result.stderr).to.not.contain("out of the coverage report");
+  });
+
   it("measures nothing without --coverage", () => {
     const result = runFabr(PROJECT, ["-DJS_TARGET=es2020", "test", "thing"], [LCOV]);
     expect(result.status, result.stderr).to.equal(0);

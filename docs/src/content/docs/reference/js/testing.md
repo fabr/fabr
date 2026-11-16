@@ -15,17 +15,17 @@ running that framework's own command.
 
 ## The three frameworks
 
-| | `node` (default) | `jest` | `vitest` |
-|---|---|---|---|
-| Runs your tests with | Node.js's `node:test` | jest's own test framework and libraries (jest 29 or 30) | the vitest you declare (4.1 or later) |
-| Test API | `describe`, `it` and hooks as globals; no built-in assertions | jest's globals: `describe`, `it`, `expect`, `jest` | imported from `"vitest"` |
-| You add to `test_deps` | an assertion library, if you want one | `@types/jest`; `jsdom` for DOM tests | `vitest`; `jsdom` for DOM tests |
-| Tests are compiled to | CommonJS | CommonJS | ES modules |
-| DOM tests (jsdom) | no | yes | yes |
-| Module mocking | `node:test`'s `mock` | `jest.mock`, `__mocks__` directories | `vi.mock` |
-| Stylesheet and image imports in tested code | work | work | work |
-| Needs, as the [Node.js version](#the-nodejs-version) | 23.4 or later for snapshots | 22.15 or later | 22.15 or later |
-| Configuration file | none | `jest.config.js` is not read | `vitest.config.ts` is not read |
+|                                                      | `node` (default)                                              | `jest`                                                  | `vitest`                              |
+| ---------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------- |
+| Runs your tests with                                 | Node.js's `node:test`                                         | jest's own test framework and libraries (jest 29 or 30) | the vitest you declare (4.1 or later) |
+| Test API                                             | `describe`, `it` and hooks as globals; no built-in assertions | jest's globals: `describe`, `it`, `expect`, `jest`      | imported from `"vitest"`              |
+| You add to `test_deps`                               | an assertion library, if you want one                         | `@types/jest`; `jsdom` for DOM tests                    | `vitest`; `jsdom` for DOM tests       |
+| Tests are compiled to                                | CommonJS                                                      | CommonJS                                                | ES modules                            |
+| DOM tests (jsdom)                                    | no                                                            | yes                                                     | yes                                   |
+| Module mocking                                       | `node:test`'s `mock`                                          | `jest.mock`, `__mocks__` directories                    | `vi.mock`                             |
+| Stylesheet and image imports in tested code          | work                                                          | work                                                    | work                                  |
+| Needs, as the [Node.js version](#the-nodejs-version) | 23.4 or later for snapshots                                   | 22.15 or later                                          | 22.15 or later                        |
+| Configuration file                                   | none                                                          | `jest.config.js` is not read                            | `vitest.config.ts` is not read        |
 
 Choose a framework for the whole project with the `JS_TEST_FRAMEWORK` setting, or for one target
 with its `test_framework` property:
@@ -66,15 +66,15 @@ becomes part of the built package, and `test_deps` are not added to its `package
 For tests that don't belong to a package, such as an end-to-end suite, declare a `js_test`. It
 takes the same settings under shorter names:
 
-| `js_package` | `js_test` | What it is |
-|---|---|---|
-| `tests` | `tests` | The test files. |
-| `deps` and `test_deps` | `deps` | Packages and supporting sources the tests use. |
-| `compile_deps` | `compile_deps` | Packages the tests are compiled against whose [flags](#dom-tests) don't change how they run. |
-| `test_framework` | `framework` | `node`, `jest` or `vitest`. |
-| `test_env` | `env` | Environment variables for the test processes. |
-| `test_resources` | `resources` | Files the tests read at run time. |
-| `test_expectations` | `expectations` | Snapshot files. |
+| `js_package`           | `js_test`      | What it is                                                                                   |
+| ---------------------- | -------------- | -------------------------------------------------------------------------------------------- |
+| `tests`                | `tests`        | The test files.                                                                              |
+| `deps` and `test_deps` | `deps`         | Packages and supporting sources the tests use.                                               |
+| `compile_deps`         | `compile_deps` | Packages the tests are compiled against whose [flags](#dom-tests) don't change how they run. |
+| `test_framework`       | `framework`    | `node`, `jest` or `vitest`.                                                                  |
+| `test_env`             | `env`          | Environment variables for the test processes.                                                |
+| `test_resources`       | `resources`    | Files the tests read at run time.                                                            |
+| `test_expectations`    | `expectations` | Snapshot files.                                                                              |
 
 ```
 js_test e2e {
@@ -189,8 +189,8 @@ each test process is the root of that tree. With `srcs = src:**/*.ts` and
 `test_resources = src:fixtures/**`, a test finds `src/fixtures/users.json` either way:
 
 ```ts
-fs.readFileSync("fixtures/users.json");                        // relative to the working directory
-fs.readFileSync(path.join(__dirname, "fixtures/users.json"));  // relative to a test in src/
+fs.readFileSync("fixtures/users.json"); // relative to the working directory
+fs.readFileSync(path.join(__dirname, "fixtures/users.json")); // relative to a test in src/
 ```
 
 A file that isn't declared isn't in that tree, so a path relative to the test or to the working
@@ -342,13 +342,16 @@ for all the targets tested, such as `Coverage: lines 91.23% (104/114), functions
 branches 85.47% (100/117)`, and writes an lcov report to `coverage/lcov.info`, or to
 `<dir>/lcov.info` with `--coverage=<dir>`, saying where it wrote it. The report names each source
 by its path in your project, which is what Codecov, Coveralls, SonarQube and editor coverage
-gutters expect.
+gutters expect. A source another target generated is named by its target and the file's name
+within it, as you would refer to it in a build file (`schema_validation:index.ts`), since it has no
+path in your project.
 
 What is measured is the target's own sources, other than its tests, and every package built in
 your project that the tests run with: a library tested only through another target's tests gets
 credit for them, and a file the tests never load is reported as not run at all. Packages from a
-registry aren't measured. Testing several targets together reports their coverage as one, a source
-counted once however many targets measured it.
+registry aren't measured, and neither is a registry package's code that a target in your project
+rebuilds or patches (`srcs = @npm:geoip-lite:2.0.2:lib/*.js;`). Testing several targets together
+reports their coverage as one, a source counted once however many targets measured it.
 
 Coverage comes from Node.js's own V8 coverage, so nothing is instrumented and the tests run as
 they otherwise would. Lines, functions and branches are counted as istanbul counts them (jest's
@@ -360,9 +363,9 @@ default and nyc's), with some differences:
 - **A parameter's default value isn't counted as a branch.** V8 doesn't record whether a default
   was used.
 
-A source that isn't a file in your project, such as one generated by another target, is left out
-of the report, with the warning `Left N generated source(s) out of the coverage report, having no
-source path`, and doesn't count towards the totals.
+A measured file whose source map names no source is left out of the report, with the warning
+`Left N file(s) out of the coverage report, their source maps naming no source`, and doesn't count
+towards the totals.
 
 A run with `--coverage` is a different build from one without it: it is cached separately, and
 the code under test is compiled with source maps even in a `release` build. The tools fabr runs,
@@ -417,7 +420,7 @@ What to know:
 
 - **Snapshots need Node.js 23.4 or later** as the [`NODE`](/reference/js/dependencies/#the-nodejs-version)
   release. With an earlier one, `fabr test -u` fails with `Recorded snapshots need node 23.4 or
-  later (this is 22.15.0), so there is nothing to update`.
+later (this is 22.15.0), so there is nothing to update`.
 - **`--test-only` isn't supported, so `it.only` and `describe.only` have no effect.** Node.js
   honours `only` when it is started with that flag, and fabr has no way to pass it, so the other
   tests still run. Use `it.skip`, or `{ skip: true }`, on the tests you want left out.
@@ -468,21 +471,21 @@ The jest framework needs Node.js 22.15 or later as the
 
 No jest configuration is read: not `jest.config.js`, and not the `jest` key of a `package.json`.
 
-| jest option | In fabr |
-|---|---|
-| `testMatch`, `testRegex`, `roots` | The target's `tests` pattern. |
-| `preset: "ts-jest"`, `transform` | Not needed: fabr compiles the tests with TypeScript before they run. Other transformers can't be added. |
-| `testEnvironment` | `node`, or `jsdom` with the [`dom` flag](#dom-tests). Per file, the `@jest-environment` comment. Custom environment modules aren't loaded. |
-| `testEnvironmentOptions` | Per file only, with the `@jest-environment-options` comment. |
-| `setupFilesAfterEnv` | One file, by name: [`setupTests`](#a-setup-file). |
-| `setupFiles` | No equivalent. Use `setupTests`, which runs after the framework is installed. |
-| `moduleNameMapper` for stylesheets and images | Built in; see [stylesheets and other assets](#stylesheets-and-other-assets). |
-| `moduleNameMapper` for path aliases | No equivalent. Imports resolve as described in [Module resolution](/reference/js/module-resolution/). |
-| `testTimeout` | Fixed at 120 seconds; set it per test, or call `jest.setTimeout` in `setupTests`. |
-| `clearMocks`, `resetMocks`, `restoreMocks` | No equivalent. Call `jest.clearAllMocks()` and the others from an `afterEach` in `setupTests`. |
-| `globalSetup`, `globalTeardown`, `reporters`, `resolver`, `runner`, `globals` | Not supported. |
-| `collectCoverage` | `fabr test --coverage`; see [Coverage](#coverage). |
-| `coverageThreshold`, `coverageReporters` and the other coverage options | Not supported. The report is always lcov. |
+| jest option                                                                   | In fabr                                                                                                                                    |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `testMatch`, `testRegex`, `roots`                                             | The target's `tests` pattern.                                                                                                              |
+| `preset: "ts-jest"`, `transform`                                              | Not needed: fabr compiles the tests with TypeScript before they run. Other transformers can't be added.                                    |
+| `testEnvironment`                                                             | `node`, or `jsdom` with the [`dom` flag](#dom-tests). Per file, the `@jest-environment` comment. Custom environment modules aren't loaded. |
+| `testEnvironmentOptions`                                                      | Per file only, with the `@jest-environment-options` comment.                                                                               |
+| `setupFilesAfterEnv`                                                          | One file, by name: [`setupTests`](#a-setup-file).                                                                                          |
+| `setupFiles`                                                                  | No equivalent. Use `setupTests`, which runs after the framework is installed.                                                              |
+| `moduleNameMapper` for stylesheets and images                                 | Built in; see [stylesheets and other assets](#stylesheets-and-other-assets).                                                               |
+| `moduleNameMapper` for path aliases                                           | No equivalent. Imports resolve as described in [Module resolution](/reference/js/module-resolution/).                                      |
+| `testTimeout`                                                                 | Fixed at 120 seconds; set it per test, or call `jest.setTimeout` in `setupTests`.                                                          |
+| `clearMocks`, `resetMocks`, `restoreMocks`                                    | No equivalent. Call `jest.clearAllMocks()` and the others from an `afterEach` in `setupTests`.                                             |
+| `globalSetup`, `globalTeardown`, `reporters`, `resolver`, `runner`, `globals` | Not supported.                                                                                                                             |
+| `collectCoverage`                                                             | `fabr test --coverage`; see [Coverage](#coverage).                                                                                         |
+| `coverageThreshold`, `coverageReporters` and the other coverage options       | Not supported. The report is always lcov.                                                                                                  |
 
 ### What works
 
@@ -636,7 +639,7 @@ and runs your program once for each test file, with the compiled tests as its wo
   `{"files": […], "lookups": […]}`: `files` the files it loaded, read or probed for, by their
   paths relative to the working directory, and `lookups` each package it looked up by a bare
   specifier, as `{"from": <the file that asked>, "name": <the package>, "to": <the file that
-  answered>}`, `to` left out where nothing did. A runner that can't say what was read, as when a
+answered>}`, `to` left out where nothing did. A runner that can't say what was read, as when a
   test started another process, or that doesn't support the option, writes no file, and its test
   files run again on every change.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
@@ -654,23 +657,23 @@ the runner starts are measured as long as that variable is passed on.
 
 ## Troubleshooting
 
-| What you see | Cause | What to do |
-|---|---|---|
-| `Cannot test 'x': no rule matches target type 'js_package'` | `test_framework` or `JS_TEST_FRAMEWORK` isn't `node`, `jest` or `vitest` | Correct the value; the message lists the accepted ones. |
-| `This test file registered no tests` | Under jest or vitest: a helper or setup file matched by `tests`, or a test file that takes `describe`/`it` from `node:test` | Narrow the `tests` pattern (see [Every file in `tests` is run as a test](#every-file-in-tests-is-run-as-a-test)), or use the framework's own API. |
-| `Cannot find module 'x' from '…/x.test.js'`, at a `jest.mock` | The test mocks a package its target doesn't declare, one your code reaches only through another package | Add the package to `test_deps`; see [What differs from jest](#what-differs-from-jest). |
-| `the following packages are required only without a version lower bound ('*')` | A test dependency's own dependencies name a package without a minimum version | Add the `@npm:…?` lines the message prints to `test_deps` or your catalog. |
-| `Cannot find name 'describe'` or `'expect'` when compiling | jest: `@types/jest` isn't in `test_deps`. vitest: the API isn't imported. `node`: `@types/node` isn't in `deps`, or `expect` is used without an assertion library | Add the package or the import. |
-| `Cannot find name 'document'` when compiling | The target doesn't have the `dom` flag | Add `dom` to `deps` or `test_deps`; see [DOM tests](#dom-tests). |
-| `The fabr test runner provides no 'jsdom' environment` | The target has the `dom` flag and uses the `node` framework | Set `test_framework` to `jest` or `vitest`. |
-| `These tests need a DOM environment … but 'jsdom' is not among its dependencies` | The `dom` flag without the `jsdom` package | Add `@npm:jsdom:<version>` to `test_deps`. |
-| `This test has no recorded snapshot`, or `No recorded snapshot for this test` | A new snapshot, or a `.snap` file that isn't declared | Run `fabr test -u`, and check the file is matched by `test_expectations`. |
-| `EACCES: permission denied, open '…/__snapshots__/x.test.ts.snap'` under `fabr test -u`, or `.snap` files in the built package | The `.snap` files are matched by `srcs`, not `test_expectations` | Match them with `test_expectations` only. |
-| `Recorded snapshots need node 23.4 or later` | `node` framework snapshots, with `NODE` set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 23.4 or later. |
-| `The jest compatibility runner needs node 22.15 or later`, or `The vitest runner needs node 22.15 or later` | `NODE` is set to an older release | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 22.15 or later. |
-| `No test's name matches the pattern '…'` | `fabr test -t` with a pattern that no test's full name matches | Check the pattern against the `describe` and test names, joined by spaces. |
-| `Test target has more than one setupTests script` | Two `setupTests` files at the root of the source tree, such as a `.ts` and a `.js` | Keep one. |
-| `The jest compatibility runner supports jest 29 and 30, but JEST is pinned to …` | `JEST` names another major version | Set `JEST` to a jest 29 or 30 release. |
-| `fabr runs vitest 4.1 or later, but the target's vitest is …` | An older vitest in `test_deps` | Use vitest 4.1 or later. |
-| `TypeError: Cannot read properties of undefined (reading 'length')` at `new ModuleRunner`, under vitest 4.1 | Vite 6.0.0 was selected | Add a later `vite`, such as `@npm:vite:6.4.0`, to `test_deps`. |
-| A test passes under jest or vitest but times out, or reads an undefined variable, under fabr | The test relies on `PATH`, `NODE_ENV`, `CI`, `TZ` or another inherited variable | Declare it in [`test_env`](#environment-variables). |
+| What you see                                                                                                                   | Cause                                                                                                                                                             | What to do                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cannot test 'x': no rule matches target type 'js_package'`                                                                    | `test_framework` or `JS_TEST_FRAMEWORK` isn't `node`, `jest` or `vitest`                                                                                          | Correct the value; the message lists the accepted ones.                                                                                           |
+| `This test file registered no tests`                                                                                           | Under jest or vitest: a helper or setup file matched by `tests`, or a test file that takes `describe`/`it` from `node:test`                                       | Narrow the `tests` pattern (see [Every file in `tests` is run as a test](#every-file-in-tests-is-run-as-a-test)), or use the framework's own API. |
+| `Cannot find module 'x' from '…/x.test.js'`, at a `jest.mock`                                                                  | The test mocks a package its target doesn't declare, one your code reaches only through another package                                                           | Add the package to `test_deps`; see [What differs from jest](#what-differs-from-jest).                                                            |
+| `the following packages are required only without a version lower bound ('*')`                                                 | A test dependency's own dependencies name a package without a minimum version                                                                                     | Add the `@npm:…?` lines the message prints to `test_deps` or your catalog.                                                                        |
+| `Cannot find name 'describe'` or `'expect'` when compiling                                                                     | jest: `@types/jest` isn't in `test_deps`. vitest: the API isn't imported. `node`: `@types/node` isn't in `deps`, or `expect` is used without an assertion library | Add the package or the import.                                                                                                                    |
+| `Cannot find name 'document'` when compiling                                                                                   | The target doesn't have the `dom` flag                                                                                                                            | Add `dom` to `deps` or `test_deps`; see [DOM tests](#dom-tests).                                                                                  |
+| `The fabr test runner provides no 'jsdom' environment`                                                                         | The target has the `dom` flag and uses the `node` framework                                                                                                       | Set `test_framework` to `jest` or `vitest`.                                                                                                       |
+| `These tests need a DOM environment … but 'jsdom' is not among its dependencies`                                               | The `dom` flag without the `jsdom` package                                                                                                                        | Add `@npm:jsdom:<version>` to `test_deps`.                                                                                                        |
+| `This test has no recorded snapshot`, or `No recorded snapshot for this test`                                                  | A new snapshot, or a `.snap` file that isn't declared                                                                                                             | Run `fabr test -u`, and check the file is matched by `test_expectations`.                                                                         |
+| `EACCES: permission denied, open '…/__snapshots__/x.test.ts.snap'` under `fabr test -u`, or `.snap` files in the built package | The `.snap` files are matched by `srcs`, not `test_expectations`                                                                                                  | Match them with `test_expectations` only.                                                                                                         |
+| `Recorded snapshots need node 23.4 or later`                                                                                   | `node` framework snapshots, with `NODE` set to an older release                                                                                                   | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 23.4 or later.                                                            |
+| `The jest compatibility runner needs node 22.15 or later`, or `The vitest runner needs node 22.15 or later`                    | `NODE` is set to an older release                                                                                                                                 | Set [`NODE`](/reference/js/dependencies/#the-nodejs-version) to Node.js 22.15 or later.                                                           |
+| `No test's name matches the pattern '…'`                                                                                       | `fabr test -t` with a pattern that no test's full name matches                                                                                                    | Check the pattern against the `describe` and test names, joined by spaces.                                                                        |
+| `Test target has more than one setupTests script`                                                                              | Two `setupTests` files at the root of the source tree, such as a `.ts` and a `.js`                                                                                | Keep one.                                                                                                                                         |
+| `The jest compatibility runner supports jest 29 and 30, but JEST is pinned to …`                                               | `JEST` names another major version                                                                                                                                | Set `JEST` to a jest 29 or 30 release.                                                                                                            |
+| `fabr runs vitest 4.1 or later, but the target's vitest is …`                                                                  | An older vitest in `test_deps`                                                                                                                                    | Use vitest 4.1 or later.                                                                                                                          |
+| `TypeError: Cannot read properties of undefined (reading 'length')` at `new ModuleRunner`, under vitest 4.1                    | Vite 6.0.0 was selected                                                                                                                                           | Add a later `vite`, such as `@npm:vite:6.4.0`, to `test_deps`.                                                                                    |
+| A test passes under jest or vitest but times out, or reads an undefined variable, under fabr                                   | The test relies on `PATH`, `NODE_ENV`, `CI`, `TZ` or another inherited variable                                                                                   | Declare it in [`test_env`](#environment-variables).                                                                                               |

@@ -70,7 +70,7 @@ import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
-import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION } from "../model/Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
 import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
 import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "./Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -4952,6 +4952,20 @@ describe("a reference to a target", () => {
       ["pkg/data.txt", "@reg:pkg:1.2.0:pkg/data.txt"],
     ]);
     expect((pkg as FileSet).sourcePathPrefix).to.equal("@reg:pkg:1.2.0:");
+  });
+
+  it("gives the files of a registry's package read as files the references that resolve to them", async () => {
+    const log = new LogFormatter(LogLevel.Info, () => undefined);
+    const model = toBuildModel(
+      [parseBuildString(EMPTY_FILESET, "TEST.fabr", "targetdef test_registry { }\ntest_registry @reg { }\n", log)],
+      log,
+      testContributions
+    );
+    const config = model.getConfig(FILES_OVERRIDE, execution);
+    const sources = await config.materialize(writtenOnCommandLine("@reg:pkg:1.2.0"));
+    expect(sources.flatMap(set => [...(set as FileSet)].map(([file]) => [file, (set as FileSet).sourcePathOf(file)]))).to.deep.equal([
+      ["pkg/data.txt", "@reg:pkg:1.2.0:pkg/data.txt"],
+    ]);
   });
 
   it("answers a registry's reference under doc with what its version publishes, and refuses one it publishes nothing for", async () => {
