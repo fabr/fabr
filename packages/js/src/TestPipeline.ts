@@ -58,6 +58,7 @@
 import {
   BUILD_OVERRIDE,
   builtInProject,
+  formatOf,
   Computable,
   Constraints,
   COVERAGE,
@@ -710,10 +711,12 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
 /**
  * Stage what a measured run adds to the install, and make the coverage driver's
  * command line, run from the install root, and the files it measures: every
- * compiled script of the compile but the tests and the setup script, by its
- * name in the install, and of every package built in the project, as the
- * package's route and the script's path within it, which the step places
- * under the layout it stages.
+ * compiled script of the compile but the tests, the setup script and what the
+ * build derived from another file (a css module's shim), by its name in the
+ * install, and of every package built in the project but those
+ * made from a registry's package (a `patched` one, whose provenance holds the
+ * registry's resolution), as the package's route and the script's path within
+ * it, which the step places under the layout it stages.
  */
 function measuredRun(
   { driver, packages }: { driver: RunnableFileSet; packages: PackageFileSet[] },
@@ -722,19 +725,19 @@ function measuredRun(
 ): { links: Record<string, FileSet>; argv: RunnableArgument[]; measured: IMeasuredFiles } {
   const files = [...compiled]
     .map(([name]) => name)
-    .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name))
+    .filter(name => COMPILED_SCRIPT.test(name) && !testInfrastructure.has(name) && compiled.derivedFromOf(name) === undefined)
     .map(name => `${COMPILE_OUT_DIR}/${name}`)
     .sort();
   const routes = new Map<PackageFileSet, string[]>();
   walkPackages(packages, (pkg, route) => {
-    if (!routes.has(pkg) && builtInProject(pkg.origin)) {
+    if (!routes.has(pkg) && builtInProject(pkg.origin) && formatOf(pkg.origin) === undefined) {
       routes.set(pkg, route);
     }
   });
   const installed = [...routes].flatMap(([pkg, route]) =>
     [...pkg]
       .map(([name]) => name)
-      .filter(name => COMPILED_SCRIPT.test(name))
+      .filter(name => COMPILED_SCRIPT.test(name) && pkg.derivedFromOf(name) === undefined)
       .map(name => [...route, name])
   );
   return {

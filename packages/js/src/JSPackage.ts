@@ -27,6 +27,7 @@ import { posix } from "path";
 import {
   BUILD_OVERRIDE,
   Constraints,
+  derivedFrom,
   FabrError,
   SubTargetInputs,
   CANONICAL,
@@ -554,6 +555,28 @@ function outputStem(name: string): string {
 }
 
 /**
+ * Mark each of `compiled`'s files that the compile made from one of
+ * `generated`, the sources the css step generated, as derived from what that
+ * source was derived from: the stylesheet behind a css module's shim.
+ */
+function withDerivedOutputs(compiled: FileSet, generated: FileSet): FileSet {
+  const derived = [...generated].flatMap(([name]): Array<[string, string]> => {
+    const from = generated.derivedFromOf(name);
+    return from === undefined ? [] : [[outputStem(name), from]];
+  });
+  if (derived.length === 0) {
+    return compiled;
+  }
+  const index = new Map(derived.map(([stem], at) => [stem, at]));
+  const byFrom = compiled.partition(name => String(index.get(outputStem(name)) ?? "none"));
+  return FileSet.unionAll(
+    ...Object.entries(byFrom).map(([at, files]) =>
+      at === "none" ? files : files.withStep(derivedFrom(derived[Number(at)][1], "css_postcss"))
+    )
+  );
+}
+
+/**
  * Select the compiler's output for source deps ({@link sourceDepsOf}): each
  * output whose stem ({@link outputStem}) is a source dep's file's and none of
  * the target's own compile inputs'. A package leaves these out; a test install
@@ -686,7 +709,7 @@ export function compileContents(
             resources: FileSet.unionAll(content, augmented.copy),
           });
     return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(built => {
-      const emitted = keepSourceJs ? withoutTranspiledJs(built, augmented.js) : built;
+      const emitted = withDerivedOutputs(keepSourceJs ? withoutTranspiledJs(built, augmented.js) : built, compileInputs);
       return {
         sources: augmented,
         compiled: emitted,

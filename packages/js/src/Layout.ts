@@ -295,7 +295,7 @@ function treeReadNamer(
   routes: ReadonlyMap<PackageFileSet, string[]>,
   members: ReadonlyArray<PackageFileSet>
 ): IPackageLayout["nameRead"] {
-  const byDirectory = [...directories].map(([pkg, directory]): [string, PackageFileSet] => [`${mount}/${directory}/`, pkg]);
+  const byDirectory = firstByKey([...directories].map(([pkg, directory]): [string, PackageFileSet] => [`${mount}/${directory}`, pkg]));
   return read => {
     const name = workName(dir, read);
     if (name === undefined) {
@@ -304,9 +304,9 @@ function treeReadNamer(
     if (!name.startsWith(`${mount}/`)) {
       return { file: name };
     }
-    const owner = byDirectory.find(([prefix]) => name.startsWith(prefix) || `${name}/` === prefix);
+    const owner = enclosing(byDirectory, name, posix.dirname);
     if (owner !== undefined) {
-      return within(routes, owner[1], name.slice(owner[0].length));
+      return within(routes, owner[1], name.slice(owner[0].length + 1));
     }
     const top = topLevelName(name.slice(mount.length + 1));
     if (top === undefined) {
@@ -336,39 +336,60 @@ function poolReadNamer(
   locations: ReadonlyArray<[string, PackageFileSet]>,
   routes: ReadonlyMap<PackageFileSet, string[]>
 ): IPackageLayout["nameRead"] {
-  const owning = (path: string): [string, PackageFileSet] | undefined =>
-    locations.find(([location]) => path === location || path.startsWith(location + sep));
+  const byLocation = firstByKey(locations);
+  const byTree = firstByKey(locations.map(([location, pkg]): [string, PackageFileSet] => [resolveVirtual(location), pkg]));
+  const inPackage = (owner: [string, PackageFileSet], path: string): ReadName | undefined =>
+    within(
+      routes,
+      owner[1],
+      path
+        .slice(owner[0].length + 1)
+        .split(sep)
+        .join("/")
+    );
   return read => {
     const name = workName(dir, read);
     if (name !== undefined) {
       return { file: name };
     }
-    const owner = owning(read);
+    const owner = enclosing(byLocation, read, dirname);
     if (owner !== undefined) {
-      return within(
-        routes,
-        owner[1],
-        read
-          .slice(owner[0].length + 1)
-          .split(sep)
-          .join("/")
-      );
+      return inPackage(owner, read);
     }
     const physical = resolveVirtual(read);
-    const tree = locations.find(
-      ([location]) => physical === resolveVirtual(location) || physical.startsWith(resolveVirtual(location) + sep)
-    );
-    return tree === undefined
-      ? undefined
-      : within(
-          routes,
-          tree[1],
-          physical
-            .slice(resolveVirtual(tree[0]).length + 1)
-            .split(sep)
-            .join("/")
-        );
+    const tree = enclosing(byTree, physical, dirname);
+    return tree === undefined ? undefined : inPackage(tree, physical);
   };
+}
+
+/** @return a map from each key of `entries` to the value of its first entry. */
+function firstByKey<T>(entries: ReadonlyArray<[string, T]>): Map<string, T> {
+  const map = new Map<string, T>();
+  for (const [key, value] of entries) {
+    if (!map.has(key)) {
+      map.set(key, value);
+    }
+  }
+  return map;
+}
+
+/**
+ * @return the key of `map` that is `path` or the nearest directory above it,
+ * with its value; undefined where none is. `parent` takes a path to the
+ * directory it is in, and returns a path unchanged at its root.
+ */
+function enclosing<T>(map: ReadonlyMap<string, T>, path: string, parent: (path: string) => string): [string, T] | undefined {
+  for (let at = path; ;) {
+    const value = map.get(at);
+    if (value !== undefined) {
+      return [at, value];
+    }
+    const up = parent(at);
+    if (up === at) {
+      return undefined;
+    }
+    at = up;
+  }
 }
 
 /** Name `path` within `pkg` by the package's route; undefined where `pkg` has none. */
