@@ -652,8 +652,10 @@ answered>}`, `to` left out where nothing did. A runner that can't say what was r
   report is an error.
 
 The runner starts with the same [empty environment](#environment-variables) as the tests. Under
-`--coverage` its environment also carries `NODE_V8_COVERAGE`, so tests run by any Node.js process
-the runner starts are measured as long as that variable is passed on.
+`--coverage` its environment also carries `FABR_COVERAGE_DIR` and a `NODE_OPTIONS` that loads
+fabr's coverage recorder, added to any `NODE_OPTIONS` your `test_env` sets. Tests run by any
+Node.js process the runner or a test starts are measured, a `NODE_OPTIONS` of its own included,
+as long as `FABR_COVERAGE_DIR` is passed on.
 
 ## Troubleshooting
 

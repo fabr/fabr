@@ -20,8 +20,8 @@
 /* The coverage driver converts real V8 coverage: a TypeScript fixture compiled
  * with maps naming sources `fabr:./…` and, unlike js_compile's, no sources
  * embedded (so the driver is shown to read none), run in a node process that
- * writes V8 coverage, then converted by the driver's bin, launched as fabr
- * launches it. */
+ * loads the module the driver prepared and records its coverage, then
+ * converted by the driver's bin, launched as fabr launches it. */
 
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -29,9 +29,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as ts from "typescript";
-import { pathToFileURL } from "node:url";
 import { virtualLocation } from "../pnp/VirtualPath";
-import type { ICoverageOptions } from "./Options";
+import { physicalPaths } from "./Collect";
+import { COVERAGE_DIR_VARIABLE, type ICoverageOptions } from "./Options";
 
 const MATH = `// A comment line
 export interface Shape {
@@ -159,29 +159,32 @@ describe("the coverage driver, over real V8 coverage", () => {
     file => fs.existsSync(file)
   )!;
 
+  /** Run the driver with `options` as its options document. */
+  function drive(options: ICoverageOptions): void {
+    fs.writeFileSync(path.join(root, "coverage.json"), JSON.stringify(options));
+    const run = spawnSync(process.execPath, [driver, "--manifest=coverage.json"], { cwd: root });
+    assert.equal(run.status, 0, String(run.stderr));
+  }
+
   /**
-   * Run the fixture's test under V8 coverage and convert what it recorded of
-   * `measured`. With `virtual`, every process records `out/math.js` as loaded
-   * through a PnP virtual location over `out/` instead.
+   * Prepare a run measuring `measured`, run the fixture's test in a process
+   * loading the prepared module, and convert what it recorded.
    */
-  function measure(measured = ["out/math.js", "out/unused.js"], virtual?: string): Map<string, ILcovRecord> {
+  function measure(measured = ["out/math.js", "out/unused.js"], test = TEST): Map<string, ILcovRecord> {
     compile("math", MATH);
     compile("unused", NEVER_LOADED);
-    fs.writeFileSync(path.join(root, "test.js"), TEST);
-    const raw = path.join(root, "raw");
-    const run = spawnSync(process.execPath, ["test.js"], { cwd: root, env: { NODE_V8_COVERAGE: raw } });
+    fs.writeFileSync(path.join(root, "test.js"), test);
+    drive({ kind: "prepare", measured, preload: "preload.cjs", table: "table.json" });
+    const run = spawnSync(process.execPath, ["test.js"], {
+      cwd: root,
+      env: {
+        NODE_OPTIONS: `--require ${JSON.stringify(path.join(root, "preload.cjs"))}`,
+        [COVERAGE_DIR_VARIABLE]: path.join(root, "raw", "0"),
+      },
+    });
     assert.equal(run.status, 0, String(run.stderr));
-    if (virtual !== undefined) {
-      const physical = pathToFileURL(fs.realpathSync(path.join(root, "out", "math.js"))).href;
-      for (const name of fs.readdirSync(raw)) {
-        const text = fs.readFileSync(path.join(raw, name), "utf8");
-        fs.writeFileSync(path.join(raw, name), text.split(JSON.stringify(physical)).join(JSON.stringify(pathToFileURL(virtual).href)));
-      }
-    }
-    const options: ICoverageOptions = { raw: "raw", measured, output: "lcov.info" };
-    fs.writeFileSync(path.join(root, "coverage.json"), JSON.stringify(options));
-    const converted = spawnSync(process.execPath, [driver, "--manifest=coverage.json"], { cwd: root });
-    assert.equal(converted.status, 0, String(converted.stderr));
+    const names = [...new Set(Object.values(JSON.parse(fs.readFileSync(path.join(root, "table.json"), "utf8")) as Record<string, string>))];
+    drive({ kind: "convert", raw: ["raw", "kept"], measured: names, output: "lcov.info" });
     return parseLcov(fs.readFileSync(path.join(root, "lcov.info"), "utf8"));
   }
 
@@ -190,11 +193,42 @@ describe("the coverage driver, over real V8 coverage", () => {
     assert.deepEqual([...records.keys()], ["./lib/math.ts", "./lib/unused.ts"]);
   });
 
-  it("counts a file loaded and measured through a virtual location as the one file beneath it", () => {
-    const virtual = path.join(virtualLocation(path.join(fs.realpathSync(root), "out"), "0123abcd"), "math.js");
-    const records = measure([virtual, "out/math.js", "out/unused.js"], virtual);
-    assert.deepEqual([...records.keys()], ["./lib/math.ts", "./lib/unused.ts"]);
+  it("measures a file named through a virtual location as the one file beneath it, under its least name", () => {
+    const virtual = path.relative(root, path.join(virtualLocation(path.join(root, "out"), "0123abcd"), "math.js"));
+    const records = measure([virtual, "out/math.js", "out/unused.js"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "table.json"), "utf8")), {
+      [path.join(root, "out", "math.js")]: [virtual, "out/math.js"].sort()[0],
+      [path.join(root, "out", "unused.js")]: "out/unused.js",
+    });
     assert.equal(records.get("./lib/math.ts")!.functions.get("add"), 1);
+  });
+
+  it("names a file loaded through a virtual location by the file beneath it", () => {
+    fs.mkdirSync(path.join(root, "out"), { recursive: true });
+    const virtual = path.join(virtualLocation(path.join(root, "out"), "0123abcd"), "math.js");
+    assert.equal(physicalPaths()(virtual), path.join(root, "out", "math.js"));
+  });
+
+  it("records only the measured files, each under its name", () => {
+    measure(["out/math.js"]);
+    const recorded = fs.readdirSync(path.join(root, "raw", "0"));
+    assert.equal(recorded.length, 1);
+    const { result } = JSON.parse(fs.readFileSync(path.join(root, "raw", "0", recorded[0]), "utf8")) as { result: Array<{ url: string }> };
+    assert.deepEqual(
+      result.map(script => script.url),
+      ["out/math.js"]
+    );
+  });
+
+  it("measures a process the test starts with a NODE_OPTIONS of its own", () => {
+    const starter = `${TEST}require("child_process").execFileSync(process.execPath, ["-e", "require('./out/unused.js').neverLoaded(1)"], {
+  cwd: __dirname,
+  env: { ...process.env, NODE_OPTIONS: "--no-warnings" },
+});
+`;
+    const unused = measure(undefined, starter).get("./lib/unused.ts")!;
+    assert.equal(unused.functions.get("neverLoaded"), 1);
+    assert.equal(fs.readdirSync(path.join(root, "raw", "0")).length, 2);
   });
 
   it("counts statements, not lines of text", () => {

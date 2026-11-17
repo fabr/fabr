@@ -17,22 +17,53 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* The options document the test pipeline writes for the coverage driver. */
+/* The options documents the test pipeline writes for the coverage driver. */
 
-/** The coverage driver's options. Every path is absolute or relative to the
- * driver's working directory. */
-export interface ICoverageOptions {
-  /** The directory the run's processes wrote their V8 coverage into. */
-  raw: string;
-  /** The compiled files measured, each naming its source map in a
-   * `sourceMappingURL` comment (a file naming none is left out), and each
-   * possibly through a PnP virtual location. A file no process loaded is
-   * reported as not run. */
+/**
+ * The environment variable naming the directory a measured test process
+ * writes its coverage into, as one document per process, which the preload
+ * the driver prepares ({@link ICoveragePrepareOptions}) reads.
+ */
+export const COVERAGE_DIR_VARIABLE = "FABR_COVERAGE_DIR";
+
+/**
+ * Prepare a measured run: write the module every test process loads first
+ * (`--require`), which records the process's coverage of the measured files
+ * into the directory {@link COVERAGE_DIR_VARIABLE} names, and the table that
+ * module names the measured files by. Every path is absolute or relative to
+ * the driver's working directory.
+ */
+export interface ICoveragePrepareOptions {
+  kind: "prepare";
+  /** The compiled files measured, each possibly through a PnP virtual
+   * location, relative to the driver's working directory. */
+  measured: string[];
+  /** Where the module is written. */
+  preload: string;
+  /** Where the table of the measured files is written, as a JSON object: each
+   * measured file's physical path, by the least of `measured` that leads to it,
+   * which is the name its coverage is recorded under. */
+  table: string;
+}
+
+/**
+ * Convert the coverage a measured run's processes recorded into one lcov
+ * document over the sources of `measured`. Every path is absolute or relative
+ * to the driver's working directory.
+ */
+export interface ICoverageConvertOptions {
+  kind: "convert";
+  /** The directories holding the recorded coverage documents, at any depth. */
+  raw: string[];
+  /** The compiled files converted, by the names their coverage is recorded
+   * under ({@link ICoveragePrepareOptions.table}), each read at its physical
+   * path and naming its source map
+   * in a `sourceMappingURL` comment (a file naming none is left out). A file no
+   * process loaded is reported as not run. */
   measured: string[];
   /** Where the lcov document is written. */
   output: string;
-  /** true to convert only the measured files the raw coverage includes and
-   * leave out the rest: one test file's share of a run, merged with the others
-   * afterwards. */
-  loaded?: boolean;
 }
+
+/** The coverage driver's options document. */
+export type ICoverageOptions = ICoveragePrepareOptions | ICoverageConvertOptions;

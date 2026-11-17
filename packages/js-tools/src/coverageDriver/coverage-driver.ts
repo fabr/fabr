@@ -18,28 +18,33 @@
  */
 
 /**
- * The coverage driver: turns the raw V8 coverage a test run left behind into
- * one lcov document over the sources of the compiled files it measures.
+ * The coverage driver, in two modes, each given an options document
+ * ({@link ICoverageOptions}):
  *
- * Each compiled file is parsed (acorn) and handed with its V8 counts and its
- * source map to `ast-v8-to-istanbul`, which takes istanbul's statements,
- * functions and branches from the parse and their counts from V8, and maps
- * them to the original sources. No original source is read. A measured file
- * no process loaded is converted as a single range run zero times, so its
- * code is reported as not run.
+ * - `prepare` writes the module a measured run's test processes load first,
+ *   which records each process's coverage of the measured files
+ *   (`Collect.ts`), and the table naming each measured file it records.
+ * - `convert` turns what the processes recorded into one lcov document over
+ *   the sources of the compiled files it is given. Each compiled file is
+ *   parsed (acorn) and handed with its V8 counts, summed over every process,
+ *   and its source map to `ast-v8-to-istanbul`, which takes istanbul's
+ *   statements, functions and branches from the parse and their counts from
+ *   V8, and maps them to the original sources. No original source is read. A
+ *   measured file no process loaded is converted as a single range run zero
+ *   times, so its code is reported as not run.
  *
  * Usage: node coverage-driver.js --manifest=<options document>
  *
- * Its libraries come from its own install and are loaded in {@link main}, so
- * the exported helpers can be imported without them.
+ * Its libraries come from its own install and are loaded in {@link convert},
+ * so the exported helpers can be imported without them.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveVirtual } from "../pnp/VirtualPath";
+import { pathToFileURL } from "node:url";
 import { parseManifestPath } from "../support/Main";
-import type { ICoverageOptions } from "./Options";
+import { physicalPaths } from "./Collect";
+import type { ICoverageConvertOptions, ICoverageOptions, ICoveragePrepareOptions } from "./Options";
 import { ICoverageRecord, IFileCoverageData, lcovOf, mergeRecord, recordOf, sourceOf } from "./Lcov";
 
 /* As much of V8's coverage format as the driver reads. */
@@ -137,24 +142,6 @@ function sourceMapOf(file: string, code: string): { map: unknown; dir: string } 
   return fs.existsSync(mapFile) ? { map: JSON.parse(fs.readFileSync(mapFile, "utf8")), dir: path.dirname(mapFile) } : undefined;
 }
 
-/** @return the real path of the file `file` names, through a PnP virtual
- * location where it is written through one; `file` itself where it does not
- * exist. */
-function physicalPath(file: string): string {
-  try {
-    return fs.realpathSync(resolveVirtual(file));
-  } catch {
-    return file;
-  }
-}
-
-/** @return `script` named by the physical path of the file it covers, so
- * that the processes loading one file through two locations (a package's
- * virtual locations over its one tree) count it as one script. */
-function physicalScript(script: IScriptCoverage): IScriptCoverage {
-  return script.url.startsWith("file:") ? { ...script, url: pathToFileURL(physicalPath(fileURLToPath(script.url))).href } : script;
-}
-
 /** Parse `code` as a script, or as a module where that fails. */
 function parse(acorn: IAcorn, code: string): INode {
   const options = { ecmaVersion: "latest", locations: true, allowHashBang: true };
@@ -165,41 +152,70 @@ function parse(acorn: IAcorn, code: string): INode {
   }
 }
 
-/**
- * Convert the raw coverage the options document names (`--manifest=<path>`)
- * into one lcov document, written to its `output`. A measured file with no
- * source map is left out, and so, with `loaded`, is one no process loaded. The
- * records of one source from several compiled files are summed.
- */
+/** Run the driver in the mode its options document (`--manifest=<path>`) names. */
 export async function main(argv: string[]): Promise<void> {
+  const options = JSON.parse(fs.readFileSync(parseManifestPath(argv, "coverage-driver"), "utf8")) as ICoverageOptions;
+  if (options.kind === "prepare") {
+    prepare(options);
+  } else {
+    await convert(options);
+  }
+}
+
+/** Write the preload module and the table of measured files that `options` names. */
+function prepare(options: ICoveragePrepareOptions): void {
+  const physical = physicalPaths();
+  const names = new Map<string, string>();
+  for (const name of [...options.measured].sort().reverse()) {
+    names.set(physical(path.resolve(name)), name);
+  }
+  const table = path.resolve(options.table);
+  fs.writeFileSync(table, JSON.stringify(Object.fromEntries([...names].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))));
+  fs.writeFileSync(
+    path.resolve(options.preload),
+    `require(${JSON.stringify(path.join(__dirname, "Collect.js"))}).collectCoverage(${JSON.stringify(table)}, __filename);\n`
+  );
+}
+
+/** @return every coverage document under `directories`, at any depth, each read for the scripts of `measured` alone. */
+function recordedCoverage(directories: string[], measured: ReadonlySet<string>): Array<{ result: IScriptCoverage[] }> {
+  return directories
+    .filter(directory => fs.existsSync(directory))
+    .flatMap(directory =>
+      (fs.readdirSync(directory, { recursive: true }) as string[])
+        .filter(name => name.endsWith(".json"))
+        .sort()
+        .map(name => path.join(directory, name))
+    )
+    .map(file => {
+      const { result } = JSON.parse(fs.readFileSync(file, "utf8")) as { result: IScriptCoverage[] };
+      return { result: result.filter(script => measured.has(script.url)) };
+    });
+}
+
+/**
+ * Convert what the run's processes recorded under `options.raw` into one lcov
+ * document over the sources of `options.measured`, written to its `output`. A
+ * measured file with no source map is left out. The records of one source
+ * from several compiled files are summed.
+ */
+async function convert(options: ICoverageConvertOptions): Promise<void> {
   /* eslint-disable @typescript-eslint/no-var-requires */
   const acorn = require("acorn") as IAcorn;
   const { mergeProcessCovs } = require("@bcoe/v8-coverage") as IV8Coverage;
   /* eslint-enable @typescript-eslint/no-var-requires */
-  const convert = ((await importModule(pathToFileURL(require.resolve("ast-v8-to-istanbul")).href)) as { default: Convert }).default;
+  const convertScript = ((await importModule(pathToFileURL(require.resolve("ast-v8-to-istanbul")).href)) as { default: Convert })
+    .default;
 
-  const options = JSON.parse(fs.readFileSync(parseManifestPath(argv, "coverage-driver"), "utf8")) as ICoverageOptions;
-  const rawDir = path.resolve(options.raw);
-  const processes = fs.existsSync(rawDir)
-    ? fs
-        .readdirSync(rawDir)
-        .filter(name => name.endsWith(".json"))
-        .map(name => JSON.parse(fs.readFileSync(path.join(rawDir, name), "utf8")) as { result: IScriptCoverage[] })
-    : [];
-  /* Sum the counts of a script several processes loaded before converting
-   * anything. A script and a measured file are each named by the physical
-   * path of the file, whether node loaded it by its real path or through a
-   * virtual location. */
-  const merged = mergeProcessCovs(processes.map(({ result }) => ({ result: result.map(physicalScript) })));
-  const byFile = new Map(
-    merged.result.filter(script => script.url.startsWith("file:")).map(script => [fileURLToPath(script.url), script])
-  );
+  const measured = new Set(options.measured);
+  /* Sum the counts of a script every process loaded before converting anything. */
+  const merged = mergeProcessCovs(recordedCoverage(options.raw.map(directory => path.resolve(directory)), measured));
+  const byName = new Map(merged.result.map(script => [script.url, script]));
 
+  const physical = physicalPaths();
   const records = new Map<string, ICoverageRecord>();
-  for (const file of new Set(options.measured.map(measured => physicalPath(path.resolve(measured))))) {
-    if (options.loaded === true && !byFile.has(file)) {
-      continue;
-    }
+  for (const name of [...measured].sort()) {
+    const file = physical(path.resolve(name));
     const code = fs.readFileSync(file, "utf8");
     const sourceMap = sourceMapOf(file, code);
     if (sourceMap === undefined) {
@@ -207,11 +223,13 @@ export async function main(argv: string[]): Promise<void> {
     }
     const ast = parse(acorn, code);
     startStaticMembersAtKey(ast);
-    const coverage = byFile.get(file) ?? {
+    const coverage = {
       url: pathToFileURL(file).href,
-      functions: [{ functionName: "", isBlockCoverage: true, ranges: [{ startOffset: 0, endOffset: code.length, count: 0 }] }],
+      functions: byName.get(name)?.functions ?? [
+        { functionName: "", isBlockCoverage: true, ranges: [{ startOffset: 0, endOffset: code.length, count: 0 }] },
+      ],
     };
-    const converted = await convert({ code, ast, coverage, sourceMap: sourceMap.map, ignoreNode: uncountableBranch });
+    const converted = await convertScript({ code, ast, coverage, sourceMap: sourceMap.map, ignoreNode: uncountableBranch });
     for (const data of Object.values(converted)) {
       const record = recordOf(sourceOf(data.path, sourceMap.dir), data);
       const held = records.get(record.source);

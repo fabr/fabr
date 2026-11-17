@@ -25,7 +25,7 @@
  */
 
 import * as fs from "fs";
-import { join, posix } from "path";
+import { join } from "path";
 import {
   ActionContext,
   BuildAction,
@@ -41,7 +41,7 @@ import {
   FileSet,
   fileSetInput,
   findExecutable,
-  getResultFileSet,
+  getResultFileSets,
   IBuildActionDefinition,
   IChangedFiles,
   IFile,
@@ -73,7 +73,15 @@ import {
   toTestReport,
   writeFileSet,
 } from "@fabr-build/core";
-import { type ICoverageOptions, IReadsDocument, MANIFEST_FLAG, toReadsDocument } from "@fabr-build/js-tools";
+import {
+  COVERAGE_DIR_VARIABLE,
+  type ICoverageConvertOptions,
+  type ICoverageOptions,
+  type ICoveragePrepareOptions,
+  IReadsDocument,
+  MANIFEST_FLAG,
+  toReadsDocument,
+} from "@fabr-build/js-tools";
 import { COMPILE_OUT_DIR } from "./rules/BuildJSCompile";
 import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from "./Layout";
 
@@ -87,13 +95,13 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  *   its task ends as failed, and it is cached.
  * - Where an invocation failed outright (crashed, or wrote no usable report),
  *   the step rejects and nothing is cached.
- * - The step keeps each test file's report, reads and, in a measured run, lcov
- *   as its incremental state, and keys the entry on the deps rows the files
+ * - The step keeps each test file's report, reads and, in a measured run, the
+ *   coverage its processes recorded as its incremental state, and keys the entry on the deps rows the files
  *   read ({@link selectionOf}).
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 11, run: runTests, stage: stageTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 12, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -190,36 +198,48 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
               declared,
               placeMeasured(measuredFiles, layout)
             );
-          /* Each file's outcome is tallied as its invocation ends, from the
-           * report it wrote. */
-          const tally = new RunTally(rerun.length, report.progress);
-          const directories = new DirectoryRows();
-          return Computable.forAll(
-            /* All issued at once; each execution queues for a slot of the
-             * process funnel. An invocation never rejects here, so a failed
-             * file cannot stop the others: concludeRun judges the outcomes. */
-            rerun.map(file => {
-              const index = testFiles.indexOf(file);
-              return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout, directories)
-                .then(run =>
-                  coverage === undefined || "error" in run
-                    ? run
-                    : coverage.lcovOfFile(index).then(lcov => (lcov === undefined ? run : { ...run, coverage: lcov }))
-                )
-                .then(run => tally.add(run));
-            }),
-            (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
-          ).then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest).then(() => latest)));
+          return (coverage === undefined ? Computable.resolve(undefined) : coverage.prepare()).then(() => {
+            /* Each file's outcome is tallied as its invocation ends, from the
+             * report it wrote. */
+            const tally = new RunTally(rerun.length, report.progress);
+            const directories = new DirectoryRows();
+            return Computable.forAll(
+              /* All issued at once; each execution queues for a slot of the
+               * process funnel. An invocation never rejects here, so a failed
+               * file cannot stop the others: concludeRun judges the outcomes. */
+              rerun.map(file => {
+                const index = testFiles.indexOf(file);
+                return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout, directories).then(
+                  run => tally.add(run)
+                );
+              }),
+              (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
+            ).then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest, testFiles).then(() => latest)));
+          });
         })
         .then(latest =>
-          getResultFileSet(workDir, outputs).then(result => ({
+          getResultFileSets(workDir, [outputs, `${COVERAGE_RAW_DIR}:*/*.json`]).then(([result, recorded]) => ({
             result,
-            incrementalState: keptStateOf(latest),
+            incrementalState: keptStateOf(latest, recordedByTestFile(recorded, testFiles)),
             ...selectionOf(latest),
           }))
         );
     }
   );
+}
+
+/** @return the coverage documents this run recorded (named `<test file index>/<document>`), by test file. */
+function recordedByTestFile(recorded: FileSet, testFiles: string[]): Map<string, FileSet> {
+  const byFile = new Map<string, Map<string, IFile>>();
+  for (const [name, file] of recorded) {
+    const slash = name.indexOf("/");
+    const testFile = testFiles[Number(name.slice(0, slash))];
+    if (!byFile.has(testFile)) {
+      byFile.set(testFile, new Map());
+    }
+    byFile.get(testFile)!.set(name.slice(slash + 1), file);
+  }
+  return new Map([...byFile].map(([testFile, files]) => [testFile, new FileSet(files)]));
 }
 
 /**
@@ -236,21 +256,34 @@ function selectionOf(latest: ReadonlyArray<ILatestRun>): { discoveredDeps?: Disc
   return { discoveredDeps: new Map([["deps", rows.map(row => splitDepsPath(row))]]) };
 }
 
-/** Where a measured run's test processes write their V8 coverage, a directory per test file. */
+/** Where a measured run's test processes record their coverage, a directory per test file, by its index. */
 const COVERAGE_RAW_DIR = ".fabr-coverage-raw";
+/** Where a measured run stages the coverage kept for the test files it does not run, a directory per test file. */
+const COVERAGE_KEPT_DIR = ".fabr-coverage-kept";
+/** What the coverage driver prepares: the module the test processes load first, and the table naming the measured files. */
+const COVERAGE_PRELOAD_FILE = ".fabr-coverage-preload.cjs";
+const COVERAGE_TABLE_FILE = ".fabr-coverage-table.json";
 
 /** Where the files a measured run measures are named, among the action's inputs. */
 const COVERAGE_INPUT = "coverage";
 const COVERAGE_MEASURED_FILE = ".fabr-coverage-measured.json";
 
+/** How many measured files the coverage driver converts in one process. Each process reads all of
+ * the run's recorded coverage. */
+const FILES_PER_CONVERSION = 1000;
+
 /**
- * The coverage a measured run collects, per test file: each file's processes
- * write V8 coverage into a directory of its own, converted when the file ends
- * into the file's lcov — the measured files it loaded — which is kept with the
- * file's run, and merged with the others' (and with an entry for each measured
- * file nothing loaded) into the run's report.
+ * The coverage a measured run collects. The driver first prepares the module
+ * every test process loads, which records the process's coverage of the
+ * measured files into the directory of its test file; the documents each test
+ * file's processes record are kept with its run. Once every test file has
+ * run, the driver converts all of them, this run's and the kept ones, into
+ * the run's report, each measured file once, split over several processes.
  */
 class TestCoverage {
+  /** The names the measured files' coverage is recorded under, once prepared. */
+  private names: string[] = [];
+
   constructor(
     private readonly ctx: ActionContext,
     private readonly report: ITaskReport,
@@ -259,38 +292,65 @@ class TestCoverage {
     private readonly measured: string[]
   ) {}
 
-  /** @return the environment test file `index`'s processes run in. */
+  /** Have the driver write the module the test processes load, and the table naming the measured files. */
+  public prepare(): Computable<void> {
+    const options: ICoveragePrepareOptions = {
+      kind: "prepare",
+      measured: this.measured,
+      preload: COVERAGE_PRELOAD_FILE,
+      table: COVERAGE_TABLE_FILE,
+    };
+    return this.drive("prepare", options).then(() => {
+      const table = parseJson(fs.readFileSync(join(this.ctx.workDir, COVERAGE_TABLE_FILE)), COVERAGE_TABLE_FILE, toJsonObject);
+      this.names = [...new Set(toStringList(Object.values(table)))].sort();
+    });
+  }
+
+  /** @return the environment test file `index`'s processes run in: the
+   * declared one, loading the prepared module and naming where it records. */
   public environmentOf(index: number): Record<string, string> {
-    return { ...this.env, NODE_V8_COVERAGE: join(this.ctx.workDir, COVERAGE_RAW_DIR, String(index)) };
+    const preload = `--require ${JSON.stringify(join(this.ctx.workDir, COVERAGE_PRELOAD_FILE))}`;
+    return {
+      ...this.env,
+      NODE_OPTIONS: [this.env.NODE_OPTIONS, preload].filter(Boolean).join(" "),
+      [COVERAGE_DIR_VARIABLE]: join(this.ctx.workDir, COVERAGE_RAW_DIR, String(index)),
+    };
   }
 
-  /** @return test file `index`'s lcov: the measured files its processes
-   * loaded; undefined where they wrote no coverage, so none is kept. */
-  public lcovOfFile(index: number): Computable<IFile | undefined> {
-    const raw = posix.join(COVERAGE_RAW_DIR, String(index));
-    return fs.existsSync(join(this.ctx.workDir, raw)) ? this.drive(`${index}`, { raw, loaded: true }) : Computable.resolve(undefined);
-  }
-
-  /** Write the run's lcov document: every test file's lcov, and an entry for
-   * each measured file none of them loaded. */
-  public merge(latest: ReadonlyArray<ILatestRun>): Computable<void> {
+  /**
+   * Write the run's lcov document: stage the coverage kept for each test file
+   * of `latest` that did not run (index by `testFiles`), and convert it with
+   * this run's, the measured files split into shares of
+   * {@link FILES_PER_CONVERSION}, a driver process each.
+   */
+  public merge(latest: ReadonlyArray<ILatestRun>, testFiles: string[]): Computable<void> {
     return Computable.forAll(
-      [
-        this.drive("unloaded", { raw: posix.join(COVERAGE_RAW_DIR, "none") }).then(lcov => lcov.readString()),
-        ...latest.map(run => (run.coverage === undefined ? Computable.resolve("") : run.coverage.readString())),
-      ],
-      (...documents) => {
-        fs.writeFileSync(join(this.ctx.workDir, COVERAGE_REPORT_FILENAME), lcovOf(mergeCoverage(documents.map(parseLcov)).values()));
+      latest.flatMap(run =>
+        run.coverage === undefined
+          ? []
+          : [writeFileSet(join(this.ctx.workDir, COVERAGE_KEPT_DIR, String(testFiles.indexOf(run.file))), run.coverage)]
+      ),
+      () => {
+        const count = Math.max(1, Math.ceil(this.names.length / FILES_PER_CONVERSION));
+        const shards = Array.from({ length: count }, (_, shard) => this.names.filter((_name, at) => at % count === shard));
+        return Computable.forAll(
+          shards.map((measured, shard) => {
+            const output = `.fabr-coverage.${shard}.info`;
+            const options: ICoverageConvertOptions = { kind: "convert", raw: [COVERAGE_RAW_DIR, COVERAGE_KEPT_DIR], measured, output };
+            return this.drive(String(shard), options).then(() => fs.readFileSync(join(this.ctx.workDir, output), "utf8"));
+          }),
+          (...documents) => {
+            fs.writeFileSync(join(this.ctx.workDir, COVERAGE_REPORT_FILENAME), lcovOf(mergeCoverage(documents.map(parseLcov)).values()));
+          }
+        );
       }
     );
   }
 
-  /** Run the coverage driver with `options` over the measured files, and read back the lcov it wrote. */
-  private drive(name: string, options: { raw: string; loaded?: boolean }): Computable<IFile> {
+  /** Run the coverage driver with `options`, written as its options document `.fabr-coverage.<name>.json`. */
+  private drive(name: string, options: ICoverageOptions): Computable<void> {
     const document = `.fabr-coverage.${name}.json`;
-    const output = `.fabr-coverage.${name}.info`;
-    const written: ICoverageOptions = { ...options, measured: this.measured, output };
-    fs.writeFileSync(join(this.ctx.workDir, document), JSON.stringify(written));
+    fs.writeFileSync(join(this.ctx.workDir, document), JSON.stringify(options));
     return execute(
       this.ctx.processLimit,
       findExecutable(this.argv[0], this.ctx.workDir),
@@ -298,7 +358,7 @@ class TestCoverage {
       this.ctx.workDir,
       this.env,
       this.report
-    ).then(() => MemoryFile.from(fs.readFileSync(join(this.ctx.workDir, output), "utf8")));
+    ).then(() => undefined);
   }
 }
 
@@ -353,17 +413,15 @@ export interface IKeptRun {
   deps?: ReadonlySet<string>;
   /** What the run read, by install name; absent where its runner did not say. */
   reads?: ReadonlySet<string>;
-  /** The run's lcov, in a measured run. */
-  coverage?: IFile;
+  /** The coverage documents the run's processes recorded, in a measured run. */
+  coverage?: FileSet;
 }
 
 /** A test file's latest run: this run's, or the one kept. */
 type ILatestRun = IKeptRun & { file: string };
 
-/** Name where a test file's lcov is kept in the incremental state. */
-function keptCoverageName(file: string): string {
-  return `coverage/${file}.info`;
-}
+/** The directory of the incremental state keeping each test file's coverage documents, in a directory named as the test file. */
+const KEPT_COVERAGE_DIR = "coverage";
 
 /** The file of the incremental state that keeps each test file's last run. */
 const KEPT_RUNS_FILE = "runs.json";
@@ -419,24 +477,42 @@ function keptRunsOf(state: FileSet | undefined): Computable<Map<string, IKeptRun
   if (state === undefined || file === undefined) {
     return Computable.resolve(undefined);
   }
+  const coverage = keptCoverageOf(state);
   return readJsonFile(file, toKeptRunsDocument).then(
     document =>
       new Map(
         document.runs.map((run): [string, IKeptRun] => {
-          const coverage = state.getFile(keptCoverageName(run.file));
+          const recorded = coverage.get(run.file);
           return [
             run.file,
             {
               report: run.report,
               ...(run.reads === undefined ? {} : { reads: new Set(run.reads.map(index => document.names[index])) }),
               ...(run.deps === undefined ? {} : { deps: new Set(run.deps.map(index => document.names[index])) }),
-              ...(coverage === undefined ? {} : { coverage }),
+              ...(recorded === undefined ? {} : { coverage: recorded }),
             },
           ];
         })
       ),
     () => undefined
   );
+}
+
+/** @return the coverage documents `state` keeps, by test file. */
+function keptCoverageOf(state: FileSet): Map<string, FileSet> {
+  const byFile = new Map<string, Map<string, IFile>>();
+  for (const [name, file] of state) {
+    const slash = name.lastIndexOf("/");
+    if (!name.startsWith(`${KEPT_COVERAGE_DIR}/`) || slash <= KEPT_COVERAGE_DIR.length) {
+      continue;
+    }
+    const testFile = name.slice(KEPT_COVERAGE_DIR.length + 1, slash);
+    if (!byFile.has(testFile)) {
+      byFile.set(testFile, new Map());
+    }
+    byFile.get(testFile)!.set(name.slice(slash + 1), file);
+  }
+  return new Map([...byFile].map(([testFile, files]) => [testFile, new FileSet(files)]));
 }
 
 /** The test files a run runs, and the kept runs it takes for the others. */
@@ -757,12 +833,13 @@ function concludeRun(
 }
 
 /** @return the incremental state keeping `latest`: the kept-runs document,
- * and each run's lcov. */
-function keptStateOf(latest: ReadonlyArray<ILatestRun>): FileSet {
+ * and each run's coverage documents, `recorded` for a test file this run ran
+ * and the kept ones for the others. */
+function keptStateOf(latest: ReadonlyArray<ILatestRun>, recorded: ReadonlyMap<string, FileSet>): FileSet {
   const files = new Map<string, IFile>([[KEPT_RUNS_FILE, MemoryFile.from(keptRunsDocument(latest))]]);
   for (const run of latest) {
-    if (run.coverage !== undefined) {
-      files.set(keptCoverageName(run.file), run.coverage);
+    for (const [name, file] of recorded.get(run.file) ?? run.coverage ?? []) {
+      files.set(`${KEPT_COVERAGE_DIR}/${run.file}/${name}`, file);
     }
   }
   return new FileSet(files);

@@ -241,7 +241,8 @@ describe("filesToRun", () => {
 
   it("runs again, in a measured run, a file whose coverage is not kept", () => {
     expect(filesToRun(files, changes([]), kept, true).rerun).to.deep.equal(files);
-    const measured = new Map([...kept].map(([file, run]) => [file, { ...run, coverage: MemoryFile.from("TN:\n") }]));
+    const recorded = FileSet.layout({ "coverage-1-0.json": MemoryFile.from('{"result":[]}') });
+    const measured = new Map([...kept].map(([file, run]) => [file, { ...run, coverage: recorded }]));
     expect(filesToRun(files, changes(["build/a.js"]), measured, true).rerun).to.deep.equal(["a.test.js"]);
   });
 

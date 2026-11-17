@@ -18,6 +18,8 @@
  */
 
 import { expect } from "chai";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
@@ -30,8 +32,9 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
  * its own runner: it keeps the suite off the network (the real driver's
  * libraries are an npm download) and checks fabr's half of the arrangement —
  * what is measured, that the test processes record, and what becomes of the
- * report. It writes one line per measured file, run if the raw V8 data names
- * that file.
+ * report. The module it prepares records the measured files a process loaded
+ * (from `require.cache`), and it converts one line per measured file, run if
+ * any process recorded it.
  */
 jest.setTimeout(90000);
 
@@ -45,22 +48,35 @@ fs.writeFileSync(report, JSON.stringify({ results: { tool: { name: "fixture" }, 
   tests: [{ name: "loads", status: "passed", duration: 1 }] } }));
 `;
 
-  const CONVERTER = `const fs = require("fs"), path = require("path"), { fileURLToPath } = require("url");
+  const CONVERTER = `const fs = require("fs"), path = require("path");
 const manifest = process.argv.find(a => a.startsWith("--manifest=")).slice("--manifest=".length);
 const options = JSON.parse(fs.readFileSync(manifest, "utf8"));
 const real = file => { try { return fs.realpathSync(file); } catch { return file; } };
-const loaded = new Set((fs.existsSync(options.raw) ? fs.readdirSync(options.raw) : [])
-  .flatMap(f => JSON.parse(fs.readFileSync(path.join(options.raw, f), "utf8")).result)
-  .filter(script => script.url.startsWith("file:"))
-  .map(script => real(fileURLToPath(script.url))));
-const out = [];
-for (const measured of options.measured) {
-  const map = JSON.parse(fs.readFileSync(measured + ".map", "utf8"));
-  const ran = loaded.has(real(path.resolve(measured))) ? 1 : 0;
-  if (options.loaded && !ran) continue;
-  out.push("TN:", "SF:" + map.sources[0].slice("fabr:".length), "DA:1," + ran, "end_of_record");
+if (options.kind === "prepare") {
+  const table = path.resolve(options.table);
+  fs.writeFileSync(table, JSON.stringify(Object.fromEntries([...options.measured].sort().reverse().map(f => [real(path.resolve(f)), f]))));
+  fs.writeFileSync(options.preload, \`const fs = require("fs"), path = require("path");
+process.on("exit", () => {
+  const names = new Map(Object.entries(JSON.parse(fs.readFileSync(\${JSON.stringify(table)}, "utf8"))));
+  const real = file => { try { return fs.realpathSync(file); } catch { return file; } };
+  const result = Object.keys(require.cache).map(real).filter(f => names.has(f)).map(f => ({ url: names.get(f), functions: [] }));
+  const dir = process.env.FABR_COVERAGE_DIR;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "coverage-" + process.pid + ".json"), JSON.stringify({ result }));
+});
+\`);
+} else {
+  const loaded = new Set(options.raw.filter(d => fs.existsSync(d))
+    .flatMap(d => fs.readdirSync(d, { recursive: true }).filter(f => f.endsWith(".json")).map(f => path.join(d, f)))
+    .flatMap(f => JSON.parse(fs.readFileSync(f, "utf8")).result)
+    .map(script => script.url));
+  const out = [];
+  for (const measured of options.measured) {
+    const map = JSON.parse(fs.readFileSync(real(path.resolve(measured)) + ".map", "utf8"));
+    out.push("TN:", "SF:" + map.sources[0].slice("fabr:".length), "DA:1," + (loaded.has(measured) ? 1 : 0), "end_of_record");
+  }
+  fs.writeFileSync(options.output, out.join("\\n") + "\\n");
 }
-fs.writeFileSync(options.output, out.join("\\n") + "\\n");
 `;
 
   const PROJECT = {
@@ -155,6 +171,56 @@ fs.writeFileSync(options.output, out.join("\\n") + "\\n");
     const sources = [...(result.files?.[LCOV] ?? "").matchAll(/SF:(.*)/g)].map(match => match[1]);
     expect(sources).to.deep.equal(["gen:made.ts", "lib_src/lib.ts", "src/thing.ts"]);
     expect(result.stderr).to.not.contain("out of the coverage report");
+  });
+
+  it("reports the coverage kept for the test files a measured run does not run again", () => {
+    /* The node runner, which says what each test file read. Each test records
+     * that it ran in a file outside the project; the sources are unique to
+     * this run, so the first is a miss. */
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-coverage-")), "ran");
+    const ran = (): string[] => {
+      const lines = fs.existsSync(marker) ? fs.readFileSync(marker, "utf8").split("\n").filter(Boolean).sort() : [];
+      fs.rmSync(marker, { force: true });
+      return lines;
+    };
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = (a: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        "js_script fixture_coverage { deps = coverage_driver:**; entry = coverage_driver:convert.js; }\n" +
+        "JS_COVERAGE_DRIVER = fixture_coverage;\n" +
+        `js_package pair { srcs = src:**/*.ts; tests = src:**/*.test.ts; test_env = { MARKER = '${marker}'; } }\n`,
+      "coverage_driver/convert.js": CONVERTER,
+      "src/a.ts": `exports.a = "${a}";\n`,
+      "src/b.ts": `exports.b = "${unique}";\n`,
+      "src/a.test.ts":
+        'require("./a");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/b.test.ts":
+        'require("./b");\nrequire("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
+    });
+    const records = (lcov: string): string[][] =>
+      lcov
+        .split("end_of_record")
+        .filter(record => record.includes("SF:"))
+        .map(record => [/SF:(.*)/.exec(record)![1], ...[...record.matchAll(/DA:(.*)/g)].map(match => match[1])]);
+
+    const first = runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "--coverage", "pair"], [LCOV]);
+    expect(first.status, first.stderr).to.equal(0);
+    expect(ran()).to.deep.equal(["a", "b"]);
+    expect(records(first.files?.[LCOV] ?? "")).to.deep.equal([
+      ["src/a.ts", "1,1"],
+      ["src/b.ts", "1,1"],
+    ]);
+
+    const edited = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "--coverage", "pair"], [LCOV]);
+    expect(edited.status, edited.stderr).to.equal(0);
+    expect(ran(), "only the test that loads the edited source").to.deep.equal(["a"]);
+    expect(records(edited.files?.[LCOV] ?? ""), "b's coverage is its kept run's").to.deep.equal([
+      ["src/a.ts", "1,1"],
+      ["src/b.ts", "1,1"],
+    ]);
   });
 
   it("measures nothing without --coverage", () => {
