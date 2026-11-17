@@ -83,7 +83,7 @@ function getBaseCacheDir(): string {
 
 /**
  * Get the constraints describing the host machine, which the driver gives every
- * configuration: `HOST`, its platform triple (`arm64-apple-macosx15.0`).
+ * configuration: `HOST`, its platform triple (`aarch64-apple-macosx15.0`).
  */
 export function getHostProperties(): Record<string, string> {
   return {

@@ -83,6 +83,16 @@ describe("tripleToNpm", () => {
 });
 
 describe("hostTriple", () => {
+  it("spells the CPU alike on every platform, an arm64 machine as aarch64", () => {
+    const cpu = new Map([
+      ["x64", "x86_64"],
+      ["arm64", "aarch64"],
+    ]).get(process.arch);
+    if (cpu !== undefined) {
+      expect(hostTriple().split("-")[0]).to.equal(cpu);
+    }
+  });
+
   it("produces a triple that projects back to the running platform", () => {
     const triple = hostTriple();
     const npm = tripleToNpm(triple);

@@ -5,12 +5,19 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 together and share a version number.
 
 ## Fabr 0.4.2
+@fabr-build/core
+- `HOST` spells an ARM64 CPU `aarch64` on every platform, macOS included (`aarch64-apple-macosx15.0`,
+  was `arm64-apple-macosx15.0`), so one guard matches the CPU whatever the OS. Rewrite a guard on
+  `arm64-*` as `aarch64-*`.
+
 @fabr-build/js
 - Compile dep .ts files even if the main entry is .js.
 - Fix pnp coverage still missing some cases.
 - Remove patched registry packages from coverage reports.
 - Handle broken transpiled cjs imports from esm output better.
 - Improve test performance.
+- Measure coverage with much less work: each test process records only the measured files'
+  counts, and they are converted to lcov once at the end of the run instead of once per test file.
 
 ## Fabr 0.4.1
 @fabr-build/core

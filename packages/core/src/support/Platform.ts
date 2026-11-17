@@ -102,25 +102,25 @@ export function hostTriple(): string {
   const arch = process.arch;
   switch (process.platform) {
     case "darwin":
-      return `${nodeArchToTriple(arch, false)}-apple-macosx${darwinToMacOS(os.release())}`;
+      return `${nodeArchToTriple(arch)}-apple-macosx${darwinToMacOS(os.release())}`;
     case "linux":
-      return `${nodeArchToTriple(arch, true)}-linux-${detectLinuxLibc()}`;
+      return `${nodeArchToTriple(arch)}-linux-${detectLinuxLibc()}`;
     case "win32":
-      return `${nodeArchToTriple(arch, true)}-pc-windows-msvc`;
+      return `${nodeArchToTriple(arch)}-pc-windows-msvc`;
     default:
       return `${arch}-${process.platform}`;
   }
 }
 
-/** Map a node arch to a triple's arch field: arm64 is `aarch64` where `gnuStyle`, else `arm64` (Apple's). */
-function nodeArchToTriple(arch: string, gnuStyle: boolean): string {
+/** Map a node arch to a triple's arch field, spelled alike on every platform: arm64 is `aarch64`. */
+function nodeArchToTriple(arch: string): string {
   switch (arch) {
     case "x64":
       return "x86_64";
     case "ia32":
       return "i686";
     case "arm64":
-      return gnuStyle ? "aarch64" : "arm64";
+      return "aarch64";
     case "arm":
       return "armv7";
     default:

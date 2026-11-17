@@ -29,7 +29,7 @@ default TEST_NAME_PATTERN = "";
 default COVERAGE = off;
 
 # The platform being built for, as a clang/LLVM target triple such as
-# `arm64-apple-macosx15.0` or `x86_64-linux-gnu`. Defaults to `HOST`, the
+# `aarch64-apple-macosx15.0` or `x86_64-linux-gnu`. Defaults to `HOST`, the
 # machine fabr is running on. Set it to cross-compile: for a whole run with
 # `-DTARGET=…`, or for one dependency with `mylib<TARGET=…>`. Platform-specific
 # packages are selected by it.

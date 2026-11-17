@@ -28,7 +28,7 @@ export const BUILD_OPERATION = "BUILD_OPERATION";
 
 /**
  * The constraint naming the platform fabr runs on, as a clang/LLVM triple
- * (`arm64-apple-macosx15.0`, `x86_64-linux-gnu`). Set by the driver, and not
+ * (`aarch64-apple-macosx15.0`, `x86_64-linux-gnu`). Set by the driver, and not
  * meant to be overridden.
  */
 export const HOST = "HOST";

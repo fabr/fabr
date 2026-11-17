@@ -358,7 +358,7 @@ stream (`2> log` silences stderr), and `2>&1` includes stderr in the value.
 <TabItem label="JavaScript">
 
 ```
-deps = core<TARGET=arm64-apple-macosx15.0>;      # core, built for another platform
+deps = core<TARGET=aarch64-apple-macosx15.0>;      # core, built for another platform
 srcs = mylib<JS_TARGET=es2022-esm>:*.js;         # mylib's .js files, built as ES modules
 deps = other<BUILD_TYPE=release, JS_TARGET=es2022-esm>;
 ```
@@ -367,7 +367,7 @@ deps = other<BUILD_TYPE=release, JS_TARGET=es2022-esm>;
 <TabItem label="Java">
 
 ```
-deps = core<TARGET=arm64-apple-macosx15.0>;      # core, built for another platform
+deps = core<TARGET=aarch64-apple-macosx15.0>;      # core, built for another platform
 resources = mylib<JVM_TARGET=jvm11>:*.jar;       # mylib's jar, built for Java 11
 deps = other<BUILD_TYPE=release, JVM_TARGET=jvm17>;
 ```
@@ -754,7 +754,7 @@ sources, the macOS ones and `fsevents`.
 jar_package watcher {
   srcs = src/main/java:**/*.java;
   deps<TARGET=x86_64-linux-*> = @mvn:io.netty:netty-transport-native-epoll/linux-x86_64:4.1.111.Final;
-  deps<TARGET=arm64-apple-*> = @mvn:io.netty:netty-transport-native-kqueue/osx-aarch_64:4.1.111.Final;
+  deps<TARGET=aarch64-apple-*> = @mvn:io.netty:netty-transport-native-kqueue/osx-aarch_64:4.1.111.Final;
 }
 ```
 
@@ -801,7 +801,7 @@ js_package watcher {
 ```
 jar_package watcher {
   srcs = src/main/java:**/*.java;
-  <TARGET=arm64-apple-*> {
+  <TARGET=aarch64-apple-*> {
     resources = src/macos/resources:**;
     deps = @mvn:io.netty:netty-transport-native-kqueue/osx-aarch_64:4.1.111.Final;
   }
