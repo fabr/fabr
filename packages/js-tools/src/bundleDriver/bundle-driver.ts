@@ -617,10 +617,21 @@ function metafileInputNamer(
   };
 }
 
-/** Write esbuild's metafile beside the outputs, each input named by `inputName` and each output relative to `outdir`. */
+/**
+ * Write esbuild's metafile beside the outputs, each input named by `inputName`
+ * and each output relative to `outdir`. Throws where a path in it still names
+ * the step's staging directory: a fabr bug.
+ */
 function writeMetafile(outdir: string, metafile: IMetafile, inputName: (staged: string) => string): void {
-  const renamed = renameMetafilePaths(metafile, outdir, inputName);
-  fs.writeFileSync(path.resolve(process.cwd(), outdir, BUNDLE_METAFILE), JSON.stringify(renamed, null, 2) + "\n");
+  const root = process.cwd();
+  const text = JSON.stringify(renameMetafilePaths(metafile, outdir, inputName, root), null, 2) + "\n";
+  const staging = JSON.stringify(toPosix(root)).slice(1, -1);
+  if (text.includes(staging)) {
+    throw new Error(
+      `bundle-driver: the metafile would name a path in this build's staging directory ('${staging}'). This is a fabr bug.`
+    );
+  }
+  fs.writeFileSync(path.resolve(root, outdir, BUNDLE_METAFILE), text);
 }
 
 /**

@@ -18,6 +18,7 @@ together and share a version number.
 - Improve test performance.
 - Measure coverage with much less work: each test process records only the measured files'
   counts, and they are converted to lcov once at the end of the run instead of once per test file.
+- Fix bundle's `metafile.json` containing absolute staging paths.
 
 ## Fabr 0.4.1
 @fabr-build/core

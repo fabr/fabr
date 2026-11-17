@@ -59,7 +59,8 @@ describe("renameMetafilePaths", () => {
         },
       },
       "bundle-out",
-      inputName
+      inputName,
+      "/work"
     );
     expect(Object.keys(renamed.inputs)).to.deep.equal(["./app/src/index.tsx", "./app/src/Route.tsx"]);
     expect(renamed.inputs["./app/src/index.tsx"].imports).to.deep.equal([
@@ -87,9 +88,33 @@ describe("renameMetafilePaths", () => {
         },
       },
       "out",
-      inputName
+      inputName,
+      "/work"
     );
     expect(Object.keys(renamed.inputs)).to.deep.equal(["@npm:ms:2.1.3:index.js"]);
     expect(renamed.outputs["a.js"].inputs).to.deep.equal({ "@npm:ms:2.1.3:index.js": { bytesInOutput: 4 } });
+  });
+
+  it("names an external import of a staged file, as esbuild records an injected module's, as an input", () => {
+    const renamed = renameMetafilePaths(
+      {
+        inputs: {
+          "src/index.js": {
+            imports: [
+              { path: "/work/.fabr-node-globals.js", kind: "import-statement", external: true },
+              { path: "react", kind: "import-statement", external: true },
+            ],
+          },
+        },
+        outputs: {},
+      },
+      "out",
+      inputName,
+      "/work"
+    );
+    expect(renamed.inputs["./app/src/index.tsx"].imports).to.deep.equal([
+      { path: ".fabr-node-globals.js", kind: "import-statement", external: true },
+      { path: "react", kind: "import-statement", external: true },
+    ]);
   });
 });

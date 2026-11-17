@@ -54,16 +54,29 @@ export interface IMetafile {
 
 /**
  * Rename the paths in esbuild's metafile, which name files relative to the
- * step's working directory: each input by `inputName` (the reference that
- * resolves to it, else the path as esbuild wrote it), and each output relative
- * to `outdir`. An external import keeps its specifier. Two inputs given one name
- * (two wirings of one file) are one input, the first kept, and an output's
- * bytes from them are summed.
+ * step's working directory, `root`: each input by `inputName` (the reference
+ * that resolves to it, else the path as esbuild wrote it), and each output
+ * relative to `outdir`. An external import keeps its specifier, bar one esbuild
+ * records by the absolute path of a staged file (an import of an injected
+ * module), which is named as an input. Two inputs given one name (two wirings
+ * of one file) are one input, the first kept, and an output's bytes from them
+ * are summed.
  */
-export function renameMetafilePaths(metafile: IMetafile, outdir: string, inputName: (staged: string) => string): IMetafile {
+export function renameMetafilePaths(
+  metafile: IMetafile,
+  outdir: string,
+  inputName: (staged: string) => string,
+  root: string
+): IMetafile {
   const outputName = (staged: string): string => path.posix.relative(toPosix(outdir), staged);
   const importsNamed = (imports: IMetafileImport[] | undefined, name: (staged: string) => string): IMetafileImport[] | undefined =>
-    imports?.map(imported => (imported.external === true ? imported : { ...imported, path: name(imported.path) }));
+    imports?.map(imported =>
+      imported.external !== true
+        ? { ...imported, path: name(imported.path) }
+        : path.isAbsolute(imported.path)
+          ? { ...imported, path: inputName(toPosix(path.relative(root, imported.path))) }
+          : imported
+    );
   const inputs: Record<string, IMetafileInput> = Object.create(null);
   for (const [staged, input] of Object.entries(metafile.inputs)) {
     const name = inputName(staged);
