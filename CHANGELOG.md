@@ -11,6 +11,7 @@ together and share a version number.
   `arm64-*` as `aarch64-*`.
 
 @fabr-build/js
+- Enable layout/pnp for programs.
 - Compile dep .ts files even if the main entry is .js.
 - Fix pnp coverage still missing some cases.
 - Remove patched registry packages from coverage reports.

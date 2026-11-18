@@ -58,6 +58,10 @@ import { toPosix } from "../support/Paths";
 /** The PnP table's file name (Yarn's), as fabr stages it and the drivers load it. */
 export const PNP_DATA_FILE = ".pnp.data.json";
 
+/** The name of the preload beside a table that installs the PnP runtime in a
+ *  node process ({@link installFromPreload}). */
+export const PNP_PRELOAD = ".fabr-pnp.cjs";
+
 /** A package's row: where its files are, and each name it may resolve, bound
  * to the locator of the row that answers it. */
 interface IPnpRow {

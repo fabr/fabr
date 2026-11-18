@@ -113,6 +113,29 @@ describe("RunnableFileSet.toCommandLine", () => {
 });
 
 describe("RunnableFileSet arguments naming install files", () => {
+  it("keeps an install file's leading ./ wherever the install is placed, and anchors it where one is given", () => {
+    const runnable = new RunnableFileSet(
+      new Map(),
+      [],
+      NODE,
+      "",
+      new FileSet(new Map<string, IFile>([["run.js", new SymlinkFile("run.js")]])),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      ["--require", { installFile: "./preload.cjs" }]
+    );
+    expect(toArgv(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "--require", "./preload.cjs", "run.js"]);
+    expect(toArgv(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([
+      "/opt/node/bin/node",
+      "--require",
+      "./tool/preload.cjs",
+      "tool/run.js",
+    ]);
+    expect(toArgv(runnable.toCommandLine(), "/staged")[2]).to.equal(path.resolve("/staged", "preload.cjs"));
+  });
+
   it("names an install file wherever the install is reached, the program's own options before its entry", async () => {
     const java = RunnableFileSet.forEntry(new Map([["bin/java", MemoryFile.from("java")]]), "bin/java");
     const pool = { ensureTree: () => Computable.resolve("unused") };

@@ -224,10 +224,11 @@ default flag esnext { }
 default flag dom { }
 
 #
-# How the packages the target's tests load are laid out. `layout/pnp` runs them
-# through a PnP table over fabr's cache, with no `node_modules` tree staged;
-# `layout/node_modules`, the default, stages the tree. Code that finds files by
-# walking `node_modules` rather than by importing needs the tree.
+# How the packages a target's tests, or a `js_script`'s program, load are laid
+# out. `layout/pnp` runs them through a PnP table over fabr's cache, with no
+# `node_modules` tree staged; `layout/node_modules`, the default, stages the
+# tree. Code that finds files by walking `node_modules` rather than by importing
+# needs the tree.
 #
 default flag layout/pnp { }
 default flag layout/node_modules { }
@@ -650,6 +651,14 @@ default js_script POSTCSS_DRIVER {
 #
 default js_script JS_COVERAGE_DRIVER {
     entry = @fabr-build/js-tools:fabr-coverage;
+}
+
+#
+# Internal: the program a `layout/pnp` program loads before its entry, which
+# resolves its modules through its PnP table.
+#
+default js_script JS_PNP_RUNTIME {
+    entry = @fabr-build/js-tools:fabr-pnp-runtime;
 }
 
 #

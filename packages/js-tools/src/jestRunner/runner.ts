@@ -38,9 +38,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
 import { buildReport, endAfterReport, reportPathOf } from "../testRunner/Report";
-import { recordReads, withPnpTable, writeReads } from "../testRunner/Reads";
-import { installPnpRuntime } from "../pnp/Runtime";
-import { childPreloads, parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
+import { recordReads } from "../testRunner/Reads";
+import { childPreloads, loadPnpPreload, parseRunnerArgs, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { assertSupportedHost, requireEnvironment } from "./Tools";
 import { describeThrown, runTestFile } from "./child";
 import type { IChildRequest, IChildResult, IChildTestResult } from "./child";
@@ -58,9 +57,7 @@ export function main(argv: string[]): void {
   /* Check the host once, before any child. */
   assertSupportedHost();
   /* Before anything resolves from the test install (jsdom among it). */
-  if (options.pnp !== undefined) {
-    installPnpRuntime(options.pnp);
-  }
+  loadPnpPreload(options);
   requireEnvironment(options.env);
   /* So a stack frame names the source line, through the compiler's and the
    * hoist's maps, for a file run in this process; a child gets
@@ -82,15 +79,13 @@ export function main(argv: string[]): void {
 
   const requests = options.files.map(request);
   /* A single file runs here, so what it reads is this process's own; several
-   * run in children that load what childPreloads makes of the options. */
-  const readHere = options.reads !== undefined && requests.length === 1 ? recordReads() : undefined;
-  const children = requests.length === 1 ? undefined : childPreloads(options);
-  (children === undefined ? runHere(requests[0]) : runAll(requests, child, children.preloads))
+   * run in children. Either way the node processes started load what
+   * childPreloads makes of the options. */
+  const children = childPreloads(options);
+  const readHere = options.reads !== undefined && requests.length === 1 ? recordReads(children.recorder) : undefined;
+  (requests.length === 1 ? runHere(requests[0]) : runAll(requests, child))
     .then(results => {
-      if (options.reads !== undefined && readHere !== undefined) {
-        writeReads(options.reads, withPnpTable(readHere(), options.pnp));
-      }
-      children?.finish();
+      children.finish(readHere === undefined ? [] : [readHere()]);
       const report = buildReport(results.flatMap(toTestResults), start, Date.now());
       fs.writeFileSync(options.report, JSON.stringify(report, undefined, 2));
       const failed = report.results.summary.failed;
@@ -116,13 +111,13 @@ interface ICompletedFile {
  * time.
  * @return the outcomes, in the order of `requests`.
  */
-async function runAll(requests: IChildRequest[], childModule: string, preloads: string[]): Promise<ICompletedFile[]> {
+async function runAll(requests: IChildRequest[], childModule: string): Promise<ICompletedFile[]> {
   const limit = Math.max(1, Math.min(availableParallelism(), requests.length));
   const queue = [...requests];
   const done: ICompletedFile[] = [];
   const workers = Array.from({ length: limit }, async () => {
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      done.push(await runOne(next, childModule, preloads));
+      done.push(await runOne(next, childModule));
     }
   });
   await Promise.all(workers);
@@ -167,7 +162,7 @@ function runHere(request: IChildRequest): Promise<ICompletedFile[]> {
   });
 }
 
-function runOne(request: IChildRequest, childModule: string, preloads: string[]): Promise<ICompletedFile> {
+function runOne(request: IChildRequest, childModule: string): Promise<ICompletedFile> {
   return new Promise<ICompletedFile>(resolve => {
     /* Pipe stderr, which holds the only reason a file that dies before
      * reporting gives. `--enable-source-maps`, so a stack frame names the
@@ -175,7 +170,7 @@ function runOne(request: IChildRequest, childModule: string, preloads: string[])
     const child = fork(childModule, [], {
       cwd: request.root,
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      execArgv: [...process.execArgv, "--enable-source-maps", ...preloads.flatMap(preload => ["--require", preload])],
+      execArgv: [...process.execArgv, "--enable-source-maps"],
     });
     let stderr = "";
     let result: IChildResult | undefined;

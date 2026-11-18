@@ -25,9 +25,14 @@ import {
   FabrError,
   FileSet,
   mapComputable,
+  MemoryFile,
   PackageFileSet,
+  RunnableArgument,
+  RunnableFileSet,
   stringConfig,
   SymlinkFile,
+  TargetContext,
+  TREE_MOUNT,
   walkPackages,
 } from "@fabr-build/core";
 import {
@@ -35,11 +40,12 @@ import {
   type IPnpSerializedState,
   type PnpDependencyTarget,
   PNP_DATA_FILE,
+  PNP_PRELOAD,
   resolveVirtual,
   TREE_LINK,
 } from "@fabr-build/js-tools";
 import { assembleNodeModules, INSTANCE_AREA, packageDirectories } from "./NodeModules";
-import { ISelfPackage, pnpManifestOf } from "./PnPManifest";
+import { ISelfPackage, pnpManifestOf, unpluggedPackages } from "./PnPManifest";
 
 /**
  * The `layout` config tokens: how a step's tool reaches its packages. Each rule
@@ -103,44 +109,51 @@ export type ReadName = { file: string } | { route: string[]; path: string; packa
  * Lay out the action's `deps` as its `layout` config says, for the step working
  * in `dir`: a `node_modules` tree at `mount` (with a link from the sources'
  * own package name to the sources, where the action's config names one), or a
- * PnP table over the tree pool, each package's tree made with `ensureTree`
- * first. An install the action links in ({@link BuildAction.links}) is left out
- * of either. Throws where the `layout` config is neither token or `deps` is not
- * a list.
+ * PnP table over the tree pool, each of its trees made with `ensureTree`
+ * first. With `unplug`, a PnP table locates the packages to unplug
+ * ({@link unpluggedPackages}) in one tree of their own, for a step that runs
+ * the packages' code. An install the action links in ({@link BuildAction.links})
+ * is left out of either. Throws where the `layout` config is neither token or
+ * `deps` is not a list.
  */
 export function layoutPackages(
   action: BuildAction,
   dir: string,
   ensureTree: (files: FileSet) => Computable<string>,
-  mount = "node_modules"
+  mount = "node_modules",
+  unplug = false
 ): Computable<IPackageLayout> {
   const deps = depsInput(action);
   const self = selfPackage(action);
   const routes = routesOf(deps);
   const members = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
   if (layoutConfig(action) === PNP) {
-    const manifest = pnpManifestOf(deps, self, linkPattern(action));
-    const files = FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile() });
-    const trees = new Map(manifest.packages.map((pkg): [string, PackageFileSet] => [manifest.mountOf(pkg), pkg]));
-    /* Each package's location on this machine: its tree in the pool, or its
-     * virtual location over that tree, as the runtime names a module in it. */
-    const located = (pkg: PackageFileSet, tree: string): string =>
-      join(dirname(tree), ...posix.relative(TREE_LINK, manifest.mountOf(pkg)).split("/"));
-    /* The pool every tree is in, which the table's locations are relative to
-     * (through TREE_LINK). */
-    let pool: string | undefined;
-    return mapComputable(manifest.packages, pkg =>
-      ensureTree(pkg).then((path): [string, PackageFileSet] => {
-        pool = dirname(path);
-        return [located(pkg, path), pkg];
-      })
-    ).then(locations => ({
-      files,
-      trees,
-      members,
-      nameRead: poolReadNamer(dir, locations, routes),
-      locate: tableLocator(manifest.state, pool),
-    }));
+    return (unplug ? unpluggedPackages(deps) : Computable.resolve<ReadonlySet<string>>(new Set())).then(unplugged => {
+      const manifest = pnpManifestOf(deps, self, linkPattern(action), unplugged);
+      const files = FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile() });
+      const trees = new Map(manifest.packages.map((pkg): [string, PackageFileSet] => [manifest.mountOf(pkg), pkg]));
+      return mapComputable(manifest.trees, ensureTree).then(paths => {
+        /* The pool every tree is in, which the table's locations are relative
+         * to (through TREE_LINK). */
+        const pool = paths.length === 0 ? undefined : dirname(paths[0]);
+        /* Each package's location on this machine, as the runtime names a
+         * module in it: within its tree in the pool, or virtual over it. */
+        const locations =
+          pool === undefined
+            ? []
+            : manifest.packages.map((pkg): [string, PackageFileSet] => [
+                join(pool, ...posix.relative(TREE_LINK, manifest.mountOf(pkg)).split("/")),
+                pkg,
+              ]);
+        return {
+          files,
+          trees,
+          members,
+          nameRead: poolReadNamer(dir, locations, routes),
+          locate: tableLocator(manifest.state, pool),
+        };
+      });
+    });
   }
   const files = FileSet.layout({ [mount]: [assembleNodeModules(deps), selfLink(self, mount)] });
   return Computable.resolve({
@@ -213,6 +226,103 @@ function treeLocator(files: FileSet, dir: string, mount: string): IPackageLayout
     }
     return reached === undefined ? undefined : join(dir, ...reached.split("/"), ...path.split("/"));
   };
+}
+
+/** A program's packages as its install holds them ({@link layoutProgram}). */
+export interface IProgramLayout {
+  /** What the install holds for them: a `node_modules` tree, or the PnP table
+   *  and the preload beside it. */
+  readonly files: FileSet;
+  /** Get the directory `pkg`'s files are reached at, relative to the install root. */
+  locationOf(pkg: PackageFileSet): string;
+  /** What node is given before the entry: under PnP, the preload. */
+  readonly interpreterArgs: RunnableArgument[];
+}
+
+/** The global naming the program whose bin a PnP install's preload requires. */
+const PNP_RUNTIME_GLOBAL = "JS_PNP_RUNTIME";
+
+/** What a PnP install's preload says where its install has no tree pool beside it. */
+const PNP_STAGING_ERROR =
+  "A layout/pnp program runs only as a program of its own (fabr run, serve, or a one-stage generate): " +
+  "it is staged here with no tree pool beside it";
+
+/** A PnP install's preload ({@link PNP_PRELOAD}) and what it needs. */
+export interface IPnpPreload {
+  /** The preload, to stage beside the install's PnP table. */
+  readonly file: MemoryFile;
+  /** The runtime it loads, which must be a tree of the pool where it runs. */
+  readonly runtime: RunnableFileSet;
+}
+
+/**
+ * Make the preload of a PnP install: node is given it with `--require`, and it
+ * loads the runtime `JS_PNP_RUNTIME` names from its tree in the pool, through
+ * the pool's link beside the install, and installs it for the table beside the
+ * preload, for this process and every node process it starts
+ * (js-tools' `installFromPreload`). It refuses to run where there is no pool
+ * beside it.
+ */
+export function pnpPreloadOf(context: TargetContext): Computable<IPnpPreload> {
+  return context.getGlobalRunnable(PNP_RUNTIME_GLOBAL).then(runtime => {
+    /* The runtime's bin, as its install names it: a runnable launched by nothing. */
+    const [bin] = new RunnableFileSet(runtime, [], undefined, runtime.root, runtime.surface).toCommandLine();
+    if (typeof bin !== "object" || !("installFile" in bin)) {
+      throw new FabrError(`${PNP_RUNTIME_GLOBAL} must be a program of its own install`);
+    }
+    const file = MemoryFile.from(
+      [
+        `"use strict";`,
+        `const path = require("path");`,
+        `const pool = path.join(__dirname, ${JSON.stringify(TREE_MOUNT)});`,
+        `if (!require("fs").existsSync(pool)) {`,
+        `  throw new Error(${JSON.stringify(PNP_STAGING_ERROR)} + " (" + __dirname + ")");`,
+        `}`,
+        `require(path.join(pool, ${JSON.stringify(`${runtime.toManifestHash()}/${bin.installFile}`)})).installFromPreload(__filename);`,
+        ``,
+      ].join("\n")
+    );
+    return { file, runtime };
+  });
+}
+
+/**
+ * Lay out a program's `packages` (those of `deps`, and a package entry among
+ * them) as `layout` says:
+ *
+ * - `node_modules`: a tree at `node_modules`, each package reached at
+ *   `node_modules/<name>`.
+ * - `pnp`: the PnP table at the install root and, beside it, the preload
+ *   ({@link pnpPreloadOf}) that node is given with `--require`. Each package,
+ *   and the runtime, is a tree written to the pool here, reached through the
+ *   pool's link beside the install, so the program runs only where it is
+ *   staged with that link beside it. The packages to unplug
+ *   ({@link unpluggedPackages}) are trees of their own.
+ */
+export function layoutProgram(context: TargetContext, packages: PackageFileSet[], layout: NodeLayout): Computable<IProgramLayout> {
+  if (layout === NODE_MODULES) {
+    return Computable.resolve({
+      files: FileSet.layout({ node_modules: assembleNodeModules(packages) }),
+      locationOf: pkg => `node_modules/${pkg.packageName}`,
+      interpreterArgs: [],
+    });
+  }
+  return Computable.forAll(
+    [
+      unpluggedPackages(packages).then(unplugged => {
+        const manifest = pnpManifestOf(packages, undefined, undefined, unplugged);
+        return mapComputable(manifest.trees, tree => context.ensureTree(tree)).then(() => manifest);
+      }),
+      pnpPreloadOf(context),
+    ] as const,
+    (manifest, preload) =>
+      context.ensureTree(preload.runtime).then((): IProgramLayout => ({
+        files: FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile(), [PNP_PRELOAD]: preload.file }),
+        locationOf: pkg => manifest.mountOf(pkg).replace(/\/$/, ""),
+        /* `./`, so node reads it as a file rather than a package name. */
+        interpreterArgs: ["--require", { installFile: `./${PNP_PRELOAD}` }],
+      }))
+  );
 }
 
 /** Read the action's `layout` config, one of the {@link NodeLayout} tokens. */

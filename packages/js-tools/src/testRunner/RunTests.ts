@@ -30,7 +30,8 @@ import { run } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readsRecordedIn, withPnpTable, writeReads } from "./Reads";
+import { PNP_PRELOAD } from "../pnp/PnPResolver";
+import { IRecordedReads, readsRecordedIn, withPnpTable, writeReads } from "./Reads";
 import type { ITestResult } from "@fabr-build/core";
 import { buildReport, describeSnapshotFailure, IFailureDescription, reportPathOf, TEST_REPORT_FILENAME } from "./Report";
 
@@ -66,8 +67,9 @@ export interface IRunnerOptions {
   setup: string[];
   /** Where to write the reads document (see Reads.ts), if asked for. */
   reads?: string;
-  /** The PnP table the test processes resolve modules through, where the
-   * installation has one in place of a `node_modules` tree (see pnp/Runtime.ts). */
+  /** The PnP table the run's node processes resolve modules through, where
+   * the installation has one in place of a `node_modules` tree: listed among
+   * the reads, since each process loaded it before recording began. */
   pnp?: string;
   /** The test files to run. */
   files: string[];
@@ -266,44 +268,50 @@ function resolveSetup(entry: string): string {
 }
 
 /**
- * Make the modules a runner's test processes load first, for the options that
- * need one: installing the PnP runtime (`--pnp`), then recording what each
- * process reads (`--reads`). They are generated into a temporary directory,
- * where each process also leaves its reads.
- *
- * `preloads` are the generated modules' paths, empty where neither option is
- * given. Call `finish` once the processes have exited: it writes the reads
- * document, if asked for, and removes the directory.
+ * Load the PnP runtime's preload beside the table `--pnp` names, where it
+ * names one ({@link PNP_PRELOAD}): this process, and every node process it
+ * starts, resolves through the table from here on. Call it before anything
+ * loads from the test installation.
  */
-export function childPreloads(options: IRunnerOptions): { preloads: string[]; finish(): void } {
-  if (options.reads === undefined && options.pnp === undefined) {
-    return { preloads: [], finish: () => undefined };
+export function loadPnpPreload(options: IRunnerOptions): void {
+  if (options.pnp !== undefined) {
+    require(path.join(path.dirname(options.pnp), PNP_PRELOAD));
+  }
+}
+
+/**
+ * Make the preload that records what each node process of the run reads
+ * (`--reads`), generated into a temporary directory where each process also
+ * leaves its reads, and add it to this process's `NODE_OPTIONS`, so the
+ * runner's test processes and every node process a test starts load it
+ * ({@link recordReads}). Under `layout/pnp` the PnP runtime's own preload is
+ * on `NODE_OPTIONS` already ({@link loadPnpPreload}), ahead of it, so the
+ * recorder resolves through the table too.
+ *
+ * `recorder` is the preload's path, absent where no reads are asked for. Call
+ * `finish` once the processes have exited, with this process's own recording
+ * where it ran a test file itself: it writes the reads document and removes
+ * the directory.
+ */
+export function childPreloads(options: IRunnerOptions): {
+  recorder?: string;
+  finish(here?: ReadonlyArray<IRecordedReads | undefined>): void;
+} {
+  const reads = options.reads;
+  if (reads === undefined) {
+    return { finish: () => undefined };
   }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-children-"));
-  const preloads: string[] = [];
-  const generate = (name: string, text: string): void => {
-    preloads.push(path.join(directory, name));
-    fs.writeFileSync(path.join(directory, name), text);
-  };
-  /* The PnP runtime first, so the recorder itself resolves through it. */
-  if (options.pnp !== undefined) {
-    generate(
-      "pnp.cjs",
-      `require(${JSON.stringify(path.join(__dirname, "..", "pnp", "Runtime.js"))}).installPnpRuntime(${JSON.stringify(options.pnp)});\n`
-    );
-  }
-  if (options.reads !== undefined) {
-    generate(
-      "record.cjs",
-      `require(${JSON.stringify(path.join(__dirname, "Reads.js"))}).recordReadsInto(${JSON.stringify(directory)});\n`
-    );
-  }
+  const recorder = path.join(directory, "record.cjs");
+  fs.writeFileSync(
+    recorder,
+    `require(${JSON.stringify(path.join(__dirname, "Reads.js"))}).recordReadsInto(${JSON.stringify(directory)}, ${JSON.stringify(recorder)});\n`
+  );
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--require ${JSON.stringify(recorder)}`].filter(Boolean).join(" ");
   return {
-    preloads,
-    finish: () => {
-      if (options.reads !== undefined) {
-        writeReads(options.reads, withPnpTable(readsRecordedIn(directory), options.pnp));
-      }
+    recorder,
+    finish: (here = []) => {
+      writeReads(reads, withPnpTable(readsRecordedIn(directory, here), options.pnp));
       fs.rmSync(directory, { recursive: true, force: true });
     },
   };
@@ -312,8 +320,9 @@ export function childPreloads(options: IRunnerOptions): { preloads: string[]; fi
 /**
  * Run the invocation's test files under node:test, each in its own child
  * process, and write the report (and the reads document, where asked for).
- * Every child loads, in order: childPreloads' modules, `preloads` (absolute
- * paths, the flavour's own) and the invocation's setup entries. Sets
+ * Every child loads, in order: what `NODE_OPTIONS` names (the PnP runtime and
+ * the recorder), `preloads` (absolute paths, the flavour's own) and the
+ * invocation's setup entries. Sets
  * `process.exitCode` once the run ends: 1 if any test failed, otherwise 0.
  */
 export function runTestFiles(options: IRunnerOptions, preloads: string[]): void {
@@ -326,7 +335,7 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
     timeout: TEST_TIMEOUT_MS,
     /* Setup entries load after the flavour's preloads, so the globals they
      * use are already installed (jest's `setupFilesAfterEnv` order). */
-    ...preloadOptions([...children.preloads, ...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
+    ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
     ...namePatternOption(options.namePattern),
     ...forceExitOption(),
   });

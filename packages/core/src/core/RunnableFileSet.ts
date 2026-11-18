@@ -51,7 +51,10 @@ function placedIn(base: string, arg: RunnableArgument): RunnableArgument {
     return arg;
   }
   if ("installFile" in arg) {
-    return { installFile: path.posix.join(base, arg.installFile) };
+    /* A leading `./` says the argument is a path, not a name to search for,
+     * wherever it is placed. */
+    const placed = path.posix.join(base, arg.installFile);
+    return { installFile: arg.installFile.startsWith("./") ? `./${placed}` : placed };
   }
   return { join: arg.join, parts: arg.parts.map(part => placedIn(base, part)) };
 }

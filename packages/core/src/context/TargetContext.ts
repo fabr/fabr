@@ -688,6 +688,13 @@ export abstract class TargetContext {
     return this.context.resolveTarget(name, this.stack, overrides);
   }
 
+  /** Write `files` to the cache's tree pool, where a runnable's install
+   *  reaches it through the pool's link beside the launch directory.
+   *  @return the tree's path in the pool. */
+  public ensureTree(files: FileSet): Computable<string> {
+    return this.execution.buildCache.ensureTree(files);
+  }
+
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry. */
   public launchedBy(

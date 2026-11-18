@@ -14,7 +14,8 @@
     "fabr-test-runner": "build/bin/fabr-test-runner.js",
     "fabr-jest-runner": "build/bin/fabr-jest-runner.js",
     "fabr-vitest-runner": "build/bin/fabr-vitest-runner.js",
-    "fabr-coverage": "build/bin/fabr-coverage.js"
+    "fabr-coverage": "build/bin/fabr-coverage.js",
+    "fabr-pnp-runtime": "build/bin/fabr-pnp-runtime.js"
   },
   "dependencies": {
     "@bcoe/v8-coverage": "1.0.2",

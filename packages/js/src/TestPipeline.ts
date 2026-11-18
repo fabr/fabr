@@ -47,9 +47,12 @@
  * - `--setup`: something every test process loads before any test file, in
  *   the order given: a `./` path within the installation, else a module name.
  *   Fabr passes the target's setup script ({@link SETUP_STEM}).
- * - `--pnp`: the PnP table the test processes resolve packages through, where
- *   the installation has one in place of `node_modules` (the `layout/pnp` flag;
- *   js-tools' `pnp/Runtime.ts`).
+ * - `--pnp`: the PnP table the run's node processes resolve packages through,
+ *   where the installation has one in place of `node_modules` (the `layout/pnp`
+ *   flag). Beside it is the PnP runtime's preload ({@link pnpPreloadOf}); the
+ *   runner loads it before anything else, which installs the runtime in the
+ *   runner and every node process it starts, and lists the table among its
+ *   reads.
  * - `--reads`: where to write what the test processes loaded or read (js-tools'
  *   `testRunner/Reads.ts`), from which the test step decides what a change
  *   reaches.
@@ -94,7 +97,8 @@ import {
   walkPackages,
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
-import { PNP_DATA_FILE, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
+import { PNP_DATA_FILE, PNP_PRELOAD, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
+import { pnpPreloadOf } from "./Layout";
 import { createTestRunAction, type IMeasuredFiles } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
@@ -118,6 +122,9 @@ import {
 const GLOBALS_TYPES_FILE = "test-globals.d.ts";
 /** Where the runner's install is staged in the test installation. */
 const RUNNER_STAGE_DIR = ".fabr-testrunner";
+/** Where the PnP runtime the preload loads is linked into a `layout/pnp`
+ *  installation; the preload reaches it through the pool. */
+const PNP_RUNTIME_STAGE_DIR = ".fabr-pnp-runtime";
 /** Where the runner's globals types mount in the test compile: an `@types`
  * package, which the compile includes automatically. */
 const GLOBALS_TYPES_MOUNT = "@types/fabr-test-globals/index.d.ts";
@@ -616,7 +623,8 @@ interface ITestRun {
  * setup scripts.
  */
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
-  return run.compiled.then(compiledTree => {
+  const preload = run.layout === "pnp" ? pnpPreloadOf(context) : Computable.resolve(undefined);
+  return Computable.forAll([run.compiled, preload] as const, (compiledTree, pnpPreload) => {
     /* Empty where the declared tests compiled to no runnable file: an error. */
     const testFiles = selectCompiledTestFiles(compiledTree, run.testStems);
     const setupFile = selectCompiledSetupFile(compiledTree);
@@ -641,9 +649,11 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
     const pnp = run.layout === "pnp";
     /* The run's own files; the step lays out the packages (the action's
-     * `deps`) as `layout` says. */
+     * `deps`) as `layout` says, under `pnp` a table at the root, beside which
+     * the PnP runtime's preload goes for the runner to load. */
     const files = FileSet.layout({
       "package.json": packageJson,
+      ...(pnpPreload === undefined ? {} : { [PNP_PRELOAD]: pnpPreload.file }),
       /* Resources and records join the compiled tree, the working directory, so
        * a test's `./x` finds them as in the source tree. */
       [COMPILE_OUT_DIR]: [runtime, run.testResources, run.expectations],
@@ -691,9 +701,14 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
      * keeps the compiled tree's names, which reshapeTestResult compares in. */
     const writable = FileSet.layout({ [COMPILE_OUT_DIR]: [records] });
     return createTestRunAction({
-      /* The runner's install, and a measured run's driver's, are trees of the
-       * pool linked into the installation, each one line of the key. */
-      links: { [RUNNER_STAGE_DIR]: run.runner, ...(coverage?.links ?? {}) },
+      /* The runner's install, a measured run's driver's and the PnP runtime the
+       * preload loads from the pool are trees of the pool linked into the
+       * installation, each one line of the key. */
+      links: {
+        [RUNNER_STAGE_DIR]: run.runner,
+        ...(coverage?.links ?? {}),
+        ...(pnpPreload === undefined ? {} : { [PNP_RUNTIME_STAGE_DIR]: pnpPreload.runtime }),
+      },
       files,
       packages: run.packages,
       layout: run.layout,

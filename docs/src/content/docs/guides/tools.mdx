@@ -116,6 +116,47 @@ js_script docs_tool { entry = @npm:astro:7.1.1; deps = @npm:@astrojs/starlight:0
 The program runs on the Node.js release fabr downloads, not the `node` on your `PATH`; see
 [The Node.js version](/reference/js/dependencies/#the-nodejs-version).
 
+#### Running without a `node_modules` directory
+
+A program's install holds a `node_modules` directory of its packages, laid out as pnpm lays one
+out, which fabr writes wherever the program is staged to run. For a program with a large dependency
+tree, such as a server, that is tens of thousands of files. With the `layout/pnp` flag in its `deps`, the program instead resolves its
+packages through a [Yarn PnP](https://yarnpkg.com/features/pnp)-style table over fabr's cache, and
+no `node_modules` is written:
+
+```
+js_script server {
+  entry = src/server.ts;
+  deps = layout/pnp @npm:express:5.1.0 @npm:@types/node:22.10.0;
+}
+```
+
+The table answers `require`, `import` and `require.resolve`, and a Node.js process the program
+starts on one of its own scripts resolves through it too. A tool that supports Yarn PnP finds it through `pnpapi` and
+`process.versions.pnp`, as it would in a Yarn project. Each package lies in its own directory in
+fabr's cache, which is what `__dirname` and stack traces show.
+
+A package that holds a native addon (a `.node` file), or whose `package.json` sets
+`preferUnplugged`, is laid out differently, as Yarn unplugs a package: fabr puts it in a
+`node_modules` directory in its cache, beside the others of them it depends on. An addon whose
+binary loads a library from such a package by a relative path, as `sharp`'s
+`@img/sharp-<platform>` binary loads `@img/sharp-libvips-<platform>`, finds it there.
+
+A program needs `node_modules` (the default, or `layout/node_modules` to say so explicitly) if it,
+or a package it uses:
+
+- finds a package by looking in `node_modules` itself, such as reading
+  `node_modules/x/package.json` or walking up from its own directory to a sibling package;
+- instruments other packages by recognising `node_modules/<name>/` in their paths, as `dd-trace`
+  and other `require-in-the-middle` instrumentation do: under the flag their hooks silently never
+  apply;
+- starts Node.js with a cleared environment, which loses the setting that carries the table to it,
+  or hands a path inside a package to a program that isn't Node.js.
+
+A `layout/pnp` program runs only as a program of its own: under `fabr run`, as a `serve` target's
+`tool`, or as the only command of a `generate` target. As one stage of a pipeline it fails with
+`A layout/pnp program runs only as a program of its own`; drop the flag for that use.
+
 ### Running a package's program
 
 To run an npm package's program without declaring anything, as you would with `npx`, name the

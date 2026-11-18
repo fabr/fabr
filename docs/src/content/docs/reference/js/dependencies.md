@@ -509,9 +509,10 @@ file. They are resolved separately from your targets' dependencies, so the versi
 that compiles your code doesn't have to agree with a `typescript` your code imports.
 
 Fabr's own wrappers around these tools (its TypeScript compiler driver, the bundler and stylesheet
-drivers, the test runners) are installed with fabr, in `@fabr-build/js-tools`, and aren't
-downloaded. Each is a target with a setting's name — `TSC_DRIVER`, `JS_BUNDLER`, `SASS_DRIVER`,
-`POSTCSS_DRIVER`, `JS_COVERAGE_DRIVER` and the [test runners](/reference/js/testing/#using-your-own-test-runner)
+drivers, the test runners, and the runtime a [`layout/pnp` program](/guides/tools/#running-without-a-node_modules-directory)
+loads) are installed with fabr, in `@fabr-build/js-tools`, and aren't downloaded. Each is a target
+with a setting's name — `TSC_DRIVER`, `JS_BUNDLER`, `SASS_DRIVER`, `POSTCSS_DRIVER`,
+`JS_COVERAGE_DRIVER`, `JS_PNP_RUNTIME` and the [test runners](/reference/js/testing/#using-your-own-test-runner)
 — which you replace by declaring that name in your build file (`TSC_DRIVER = my_driver;`).
 
 | Setting | Default | Used for |

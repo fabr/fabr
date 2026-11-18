@@ -38,8 +38,7 @@ import { pathToFileURL } from "node:url";
 import type { ITestResult } from "@fabr-build/core";
 import { parseJson, toJsonObject } from "../support/Json";
 import { buildReport, endAfterReport } from "../testRunner/Report";
-import { childPreloads, IRunnerOptions, parseRunnerArgs } from "../testRunner/RunTests";
-import { installPnpRuntime } from "../pnp/Runtime";
+import { childPreloads, IRunnerOptions, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
 import { IReportedError, IReportedModule, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
 
 /** The first vitest that can load tests through node's own loader. */
@@ -94,11 +93,7 @@ async function runTests(options: IRunnerOptions, root: string): Promise<ITestRes
     },
   };
   const children = childPreloads(options);
-  const vitest = await startVitest(
-    "test",
-    [],
-    vitestOptions(options, root, [path.join(__dirname, "preload.js")], reporter, children.preloads)
-  );
+  const vitest = await startVitest("test", [], vitestOptions(options, root, [path.join(__dirname, "preload.js")], reporter));
   await vitest.close();
   children.finish();
   return results;
@@ -110,9 +105,7 @@ async function runTests(options: IRunnerOptions, root: string): Promise<ITestRes
  */
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
-  if (options.pnp !== undefined) {
-    installPnpRuntime(options.pnp);
-  }
+  loadPnpPreload(options);
   const start = Date.now();
   runTests(options, process.cwd())
     .then(results => {

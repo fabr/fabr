@@ -413,3 +413,133 @@ describe("e2e: fabr run", () => {
     expect(result.stdout).to.equal("hi --fail");
   });
 });
+
+describe("e2e: js_script under layout/pnp", () => {
+  /* A program reading its packages through the table: what it resolved, and
+   * what it can see of a node_modules tree, written to stdout. */
+  const PROGRAM =
+    'const fs = require("fs"), path = require("path");\n' +
+    "const report = {\n" +
+    '  greeting: require("lib").greeting,\n' +
+    '  resolved: require.resolve("lib"),\n' +
+    '  tree: fs.existsSync(path.join(__dirname, "node_modules")),\n' +
+    "  pnp: process.versions.pnp,\n" +
+    '  api: typeof require("pnpapi").resolveRequest,\n' +
+    "};\n" +
+    "process.stdout.write(JSON.stringify(report));\n";
+
+  const project = (program: string, extra: Record<string, string> = {}): Record<string, string> => ({
+    ...STUB_TSC,
+    "PROJECT.fabr":
+      "plugin @fabr-build/js;\n\n" +
+      STUB_TSC_CONFIG +
+      "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+      "js_script prog { entry = src:prog.js; deps = lib layout/pnp; }\n" +
+      (extra["PROJECT.fabr"] ?? ""),
+    "libsrc/index.ts": 'exports.greeting = "hello";\n',
+    "src/prog.js": program,
+    ...Object.fromEntries(Object.entries(extra).filter(([name]) => name !== "PROJECT.fabr")),
+  });
+
+  it("resolves the program's packages through a PnP table, with no node_modules tree", () => {
+    const result = runFabr(project(PROGRAM), ["-DJS_TARGET=es2020", "run", "prog"]);
+    expect(result.status, result.stderr).to.equal(0);
+    const report = JSON.parse(result.stdout);
+    expect(report.greeting).to.equal("hello");
+    expect(report.resolved, "a tree in the pool").to.match(/[\\/](?:tree|\.fabr-tree)[\\/][0-9a-f]{64}[\\/]index\.js$/);
+    expect(report.tree).to.equal(false);
+    expect(report.pnp).to.equal("3");
+    expect(report.api).to.equal("function");
+  });
+
+  it("resolves the packages of a node process the program starts through the same table", () => {
+    const parent =
+      'const { execFileSync } = require("child_process");\n' +
+      'process.stdout.write(execFileSync(process.execPath, [require("path").join(__dirname, "child.js")]));\n';
+    const result = runFabr(
+      project(parent, {
+        "PROJECT.fabr": "js_script parent { entry = src:prog.js; deps = lib layout/pnp src:child.js; }\n",
+        "src/child.js": 'process.stdout.write(require("lib").greeting);\n',
+      }),
+      ["-DJS_TARGET=es2020", "run", "parent"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello");
+  });
+
+  it("runs a package entry from its tree in the pool, its dependencies resolved through the table", () => {
+    const result = runFabr(
+      project("", {
+        "PROJECT.fabr":
+          "js_package greeter { srcs = greetersrc:**/*.ts; deps = lib; }\n" +
+          "js_script greeter_prog { entry = greeter; deps = layout/pnp; }\n" +
+          "generate greet { run = greeter_prog; output = out:**; }\n",
+        "greetersrc/bin/cli.ts":
+          'const fs = require("fs");\nfs.mkdirSync("out", { recursive: true });\n' +
+          'fs.writeFileSync("out/greeting.txt", require("lib").greeting + " from " + (/[\\\\/](tree|\\.fabr-tree)[\\\\/][0-9a-f]{64}[\\\\/]bin$/.test(__dirname) ? "the pool" : __dirname));\n',
+      }),
+      ["-DJS_TARGET=es2020", "cat", "greet:greeting.txt"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello from the pool");
+  });
+
+  it("runs as a serve target's tool, at its install's root", () => {
+    const result = runFabr(
+      project('process.stdout.write(require("lib").greeting + " " + require("fs").readFileSync("page.txt", "utf8"));\n', {
+        "PROJECT.fabr": "serve site { tool = prog; files = content:**; }\n",
+        "content/page.txt": "page",
+      }),
+      ["-DJS_TARGET=es2020", "run", "site"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("hello page");
+  });
+
+  it("lays out packages holding native addons side by side under node_modules, where one requires the other", () => {
+    /* Where the addon package lies, and what lies beside it there. */
+    const program =
+      'const fs = require("fs"), path = require("path");\n' +
+      'const root = require("addon").root;\n' +
+      "process.stdout.write(JSON.stringify({\n" +
+      "  root,\n" +
+      '  addon: fs.existsSync(path.join(root, "lib", "addon.node")),\n' +
+      '  sibling: fs.existsSync(path.join(root, "..", "vips", "lib", "libvips.txt")),\n' +
+      '  lib: require.resolve("lib"),\n' +
+      "}));\n";
+    const result = runFabr(
+      project(program, {
+        "PROJECT.fabr":
+          "js_package vips { srcs = vipssrc:**/*.ts; resources = vipsres:**; }\n" +
+          "js_package addon { srcs = addonsrc:**/*.ts; resources = addonres:**; deps = vips; }\n" +
+          "js_script native { entry = src:prog.js; deps = addon lib layout/pnp; }\n",
+        "vipssrc/index.ts": "exports.vips = true;\n",
+        "vipsres/lib/libvips.txt": "vips",
+        "vipsres/lib/libvips.node": "not really an addon either",
+        "addonsrc/index.ts":
+          'const fs = require("fs"), path = require("path");\n' +
+          'let root = __dirname;\nwhile (!fs.existsSync(path.join(root, "package.json"))) root = path.dirname(root);\n' +
+          "exports.root = root;\n",
+        "addonres/lib/addon.node": "not really an addon",
+      }),
+      ["-DJS_TARGET=es2020", "run", "native"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    const report = JSON.parse(result.stdout);
+    expect(report.root).to.match(/[\\/][0-9a-f]{64}[\\/]node_modules[\\/]addon$/);
+    expect(report.addon).to.equal(true);
+    expect(report.sibling).to.equal(true);
+    expect(report.lib, "a package with no addon stays a tree of its own").to.match(/[\\/][0-9a-f]{64}[\\/]index\.js$/);
+  });
+
+  it("refuses to run staged inside another install, as a pipeline's stage is", () => {
+    const result = runFabr(
+      project('process.stdout.write("ran");\n', {
+        "PROJECT.fabr": "generate piped { run = prog | prog; output = out:**; }\n",
+      }),
+      ["-DJS_TARGET=es2020", "build", "piped"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("A layout/pnp program runs only as a program of its own");
+  });
+});

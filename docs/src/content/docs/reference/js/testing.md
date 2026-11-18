@@ -134,8 +134,10 @@ Some things differ from running a test framework's own command:
 - **Only the test files a change can reach run again.** Each test file's run records what it
   loaded and read; after a change, a file runs again if it read something that changed, or failed
   last time, and the rest keep their previous results, their coverage included under `--coverage`.
-  Adding or deleting a file runs every test file of the target again. A test file that starts a
-  process or a worker thread runs again on every change, since what those read can't be
+  Adding or deleting a file runs every test file of the target again. What a Node.js process a
+  test starts reads is recorded with the test file. A test file that starts any other program (a
+  shell command, say), a Node.js process with an environment that leaves out the test's
+  `NODE_OPTIONS`, or a worker thread runs again on every change, since what those read can't be
   recorded.
 - **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
   `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
@@ -179,7 +181,10 @@ js_package mylib {
 ```
 
 Because there is no `PATH`, a test that starts another program must name it by absolute path, for
-example `process.execPath` for Node.js itself.
+example `process.execPath` for Node.js itself. `NODE_OPTIONS` also carries the modules fabr's
+runner loads into every Node.js process of the run, after any value `test_env` gives it; a
+Node.js process a test starts inherits them, unless the test gives it an environment of its own
+without them.
 
 ### Files the tests read
 
@@ -230,15 +235,14 @@ js_package app {
 
 Under `layout/pnp`, a package is only found by being imported or required. Code that finds a
 file by looking in `node_modules` itself (reading `node_modules/x/package.json` directly, or
-walking up from its own directory to a sibling package) finds nothing, as does a program a test
-starts. The same goes for a native addon whose binary is linked against a library in a sibling
-package by a relative path (`sharp`, whose `@img/sharp-<platform>` binary looks for
-`@img/sharp-libvips-<platform>` beside it): each package is its own directory in fabr's cache, so
-the library is not where the binary expects it and the addon fails to load. A package with peer
-dependencies is loaded from a path of its own for each set of peers it
-is given, which exists only for imports, so the package reading one of its own files through `fs`
-(`fs.readFileSync(path.join(__dirname, "template.html"))`) finds nothing there either.
-`layout/node_modules` asks for the tree explicitly.
+walking up from its own directory to a sibling package) finds nothing. A Node.js process a test
+starts resolves through the same table, unless it is given an environment that leaves out the
+test's `NODE_OPTIONS`. Packages that hold a native addon (a `.node` file), or
+whose `package.json` sets `preferUnplugged`, are laid out side by side in a `node_modules`
+directory with the others of them they depend on, so an addon that loads a library from such a
+package (`sharp`'s, from `@img/sharp-libvips-<platform>`) finds it.
+`layout/node_modules` asks for the tree explicitly. A [`js_script`](/guides/tools/#running-without-a-node_modules-directory)
+program takes the same flag.
 
 ### DOM tests
 
@@ -634,14 +638,17 @@ and runs your program once for each test file, with the compiled tests as its wo
 - **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.
 - **`--pnp`** names the PnP table the test processes resolve packages through, where the
   install has one in place of `node_modules` (see [How tests find their
-  packages](#how-tests-find-their-packages)).
+  packages](#how-tests-find-their-packages)). Beside the table is `.fabr-pnp.cjs`, a module that,
+  once required, makes the process that loads it, and every Node.js process that process starts,
+  resolve packages through the table. A runner given `--pnp` requires it before it loads anything
+  from the install, and lists the table among its reads.
 - **`--reads`** asks the runner to write what the test process read, as a JSON document
   `{"files": […], "lookups": […]}`: `files` the files it loaded, read or probed for, by their
   paths relative to the working directory, and `lookups` each package it looked up by a bare
   specifier, as `{"from": <the file that asked>, "name": <the package>, "to": <the file that
 answered>}`, `to` left out where nothing did. A runner that can't say what was read, as when a
-  test started another process, or that doesn't support the option, writes no file, and its test
-  files run again on every change.
+  test started a program other than Node.js, or that doesn't support the option, writes no file,
+  and its test files run again on every change.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.

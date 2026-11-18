@@ -23,9 +23,10 @@
  * `package.json` nearest each, every file it read or probed through `fs` (a
  * probe that found a directory named with a trailing `/`), and every package
  * it looked up by a bare specifier, found or not. A directory listing is not
- * recorded. Where the process started another process or a worker thread,
- * whose reads are not recorded, no document is written, and the test step
- * runs the file again on every change.
+ * recorded. A node process it starts records too, into the same directory
+ * ({@link recordReadsInto}); where it started any other process or a worker
+ * thread, whose reads are not recorded, its reads are unknown, and the test
+ * step runs the file again on every change.
  */
 
 import * as fs from "node:fs";
@@ -72,6 +73,10 @@ const OPENERS = ["openSync", "open"] as const;
 /** The `child_process` functions that start a process. */
 const SPAWNERS = ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"] as const;
 
+/** The environment variable naming the document a recording child writes
+ *  ({@link recordReadsInto}), which the process that started it lists. */
+const READS_TOKEN = "FABR_READS_TOKEN";
+
 /** What a process has read so far. */
 interface IRecording {
   /** The absolute path of each module loaded. */
@@ -81,7 +86,9 @@ interface IRecording {
   /** Each lookup by the file that asked and the package name, to the absolute
    *  path that answered, or null where nothing did. */
   lookups: Map<string, string | null>;
-  /** True once the process has started another process or a worker thread. */
+  /** The token of each node process it started that records too ({@link READS_TOKEN}). */
+  children: string[];
+  /** True once the process has started a process that does not record, or a worker thread. */
   untracked: boolean;
 }
 
@@ -89,24 +96,33 @@ interface IRecording {
 export interface IRecordedReads {
   files: string[];
   lookups: ILookup[];
+  /** The token of each node process it started, whose reads are recorded apart. */
+  children: string[];
 }
 
 /**
  * Start recording what this process reads, and return how to collect it: the
  * absolute paths of every module loaded, from start-up on, of every file read
- * or probed through `fs` since, by its real path, and every package looked up
- * by a bare specifier; or undefined where the process has since started
- * another process or a worker thread.
+ * or probed through `fs` since, by its real path, every package looked up by a
+ * bare specifier, and the node processes it started; or undefined where the
+ * process has since started any other process or a worker thread.
+ *
+ * A node process it starts (by `fork`, or by running `process.execPath` or
+ * `node` with no shell) records too where its environment's `NODE_OPTIONS`
+ * loads `recorder` (a preload calling {@link recordReadsInto}), as an
+ * inherited environment does: it is given a {@link READS_TOKEN} its document
+ * is named by. Any other process leaves the reads unknown, as every process
+ * does where there is no `recorder`.
  *
  * Must be called before any module imports `node:fs`, `node:fs/promises`,
  * `node:child_process` or `node:worker_threads` as an ES module: such an
  * import's named bindings are copied when it is first made, so one made
  * earlier keeps the unwrapped functions and its reads go unrecorded.
  */
-export function recordReads(): () => IRecordedReads | undefined {
-  const current: IRecording = { loaded: new Set(), read: new Set(), lookups: new Map(), untracked: false };
+export function recordReads(recorder?: string): () => IRecordedReads | undefined {
+  const current: IRecording = { loaded: new Set(), read: new Set(), lookups: new Map(), children: [], untracked: false };
   wrapReaders(current.read);
-  wrapStarters(current);
+  wrapStarters(current, recorder);
   wrapLoaders(current.loaded);
   wrapLookups(current.lookups);
   const cache = createRequire(__filename).cache;
@@ -152,7 +168,11 @@ export function recordReads(): () => IRecordedReads | undefined {
       const [from, name] = key.split("\0");
       return to === null ? { from, name } : { from, name, to };
     });
-    return { files: [...modules, ...nearest, ...[...current.read].map(realPathOf).map(markDirectory)], lookups };
+    return {
+      files: [...modules, ...nearest, ...[...current.read].map(realPathOf).map(markDirectory)],
+      lookups,
+      children: [...current.children],
+    };
   };
 }
 
@@ -280,15 +300,30 @@ function wrapReaders(read: Set<string>): void {
   wrap(files.promises, "open", ([target, flags]) => opensForReading(flags) && note(target));
 }
 
-/** Mark `current` untracked once the process starts another process or a worker thread. */
-function wrapStarters(current: IRecording): void {
-  const untrack = (): void => {
-    current.untracked = true;
-  };
+/**
+ * Wrap the functions that start a process: a node process whose environment
+ * loads `recorder` is started with a token of its own, listed in
+ * `current.children`; any other process, and a worker thread, marks `current`
+ * untracked.
+ */
+function wrapStarters(current: IRecording, recorder: string | undefined): void {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const processes = require("node:child_process") as Record<string, unknown>;
   for (const name of SPAWNERS) {
-    wrap(processes, name, untrack);
+    const start = processes[name];
+    if (typeof start !== "function") {
+      continue;
+    }
+    processes[name] = Object.assign(function (this: unknown, ...args: unknown[]): unknown {
+      const env = environmentOf(name, args);
+      if (recorder === undefined || !startsNode(name, args) || !(env.NODE_OPTIONS ?? "").includes(JSON.stringify(recorder))) {
+        current.untracked = true;
+        return (start as AnyFunction).apply(this, args);
+      }
+      const token = `${process.pid}-${current.children.length}`;
+      current.children.push(token);
+      return (start as AnyFunction).apply(this, withEnvironment(name, args, { ...env, [READS_TOKEN]: token }));
+    }, start);
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const threads = require("node:worker_threads") as { Worker: new (...args: unknown[]) => unknown };
@@ -296,9 +331,68 @@ function wrapStarters(current: IRecording): void {
   threads.Worker = class extends (Worker as new (...args: unknown[]) => object) {
     constructor(...args: unknown[]) {
       super(...args);
-      untrack();
+      current.untracked = true;
     }
   } as typeof threads.Worker;
+}
+
+/** @return the index of the options among a starter's `args`: after the
+ *  argument list where one is given, else after the command. */
+function optionsIndex(name: string, args: unknown[]): number {
+  if (name === "exec" || name === "execSync") {
+    return 1;
+  }
+  /* A missing argument list (`undefined` or `null`) still takes its place. */
+  return Array.isArray(args[1]) || (args[1] == null && args.length > 2) ? 2 : 1;
+}
+
+/** @return true if the starter `name` called with `args` starts node itself,
+ *  with no shell between, otherwise false. */
+function startsNode(name: string, args: unknown[]): boolean {
+  if (name === "fork") {
+    return true;
+  }
+  if (name === "exec" || name === "execSync") {
+    return false;
+  }
+  const options = args[optionsIndex(name, args)];
+  if (options !== null && typeof options === "object" && (options as { shell?: unknown }).shell) {
+    return false;
+  }
+  const command = args[0];
+  return (
+    typeof command === "string" &&
+    (command === process.execPath || path.basename(command) === "node" || path.basename(command) === "node.exe")
+  );
+}
+
+/** @return the options among a starter's `args`, where there is an object of them. */
+function optionsOf(name: string, args: unknown[]): { env?: NodeJS.ProcessEnv } | undefined {
+  const given = args[optionsIndex(name, args)];
+  return given !== null && typeof given === "object" ? (given as { env?: NodeJS.ProcessEnv }) : undefined;
+}
+
+/** @return the environment a starter called with `args` gives its process: its
+ *  options' `env`, else this process's own. */
+function environmentOf(name: string, args: unknown[]): NodeJS.ProcessEnv {
+  return optionsOf(name, args)?.env ?? process.env;
+}
+
+/** @return `args` with the process given `env`, in its options where it has
+ *  some, else in options of its own, placed before any callback. A missing
+ *  argument list is given an empty one. */
+function withEnvironment(name: string, args: unknown[], env: NodeJS.ProcessEnv): unknown[] {
+  const options = optionsOf(name, args);
+  const changed = [...args];
+  if (options !== undefined) {
+    changed[optionsIndex(name, args)] = { ...options, env };
+    return changed;
+  }
+  if (!Array.isArray(changed[1])) {
+    changed.splice(1, changed[1] == null && changed.length > 1 ? 1 : 0, []);
+  }
+  changed.splice(2, changed[2] == null && changed.length > 2 ? 1 : 0, { env });
+  return changed;
 }
 
 /** Record into `loaded` each module as it loads, CommonJS or ES. The module
@@ -329,43 +423,82 @@ function wrapLoaders(loaded: Set<string>): void {
 }
 
 /**
- * Record what this process reads into `directory`, as a file named for its pid
- * written when it exits or receives SIGTERM, for {@link readsRecordedIn} to
- * collect. Call it from a `--require` preload, so that it runs before anything
- * the process imports (see {@link recordReads}).
+ * Record what this process reads into `directory`, as a file named for the
+ * token it was started with ({@link READS_TOKEN}), or else its pid, written
+ * when it exits or receives SIGTERM, for {@link readsRecordedIn} to collect.
+ * Call it from a `--require` preload, so that it runs before anything the
+ * process imports (see {@link recordReads}); `recorder` is that preload, which
+ * the node processes it starts record through too.
  */
-export function recordReadsInto(directory: string): void {
-  const reads = recordReads();
-  const write = (): void => fs.writeFileSync(path.join(directory, `${process.pid}.json`), JSON.stringify(reads() ?? null));
+export function recordReadsInto(directory: string, recorder?: string): void {
+  const name = process.env[READS_TOKEN] ?? String(process.pid);
+  delete process.env[READS_TOKEN];
+  const reads = recordReads(recorder);
+  /* A process that outlives the run finds the directory gone: its reads are
+   * unknown already, as the document it was listed under never appears. */
+  const write = (): void => {
+    try {
+      fs.writeFileSync(path.join(directory, `${name}.json`), JSON.stringify(reads() ?? null));
+    } catch {
+      /* The run has ended. */
+    }
+  };
   process.on("exit", write);
-  /* A pool that ends its workers by signal (vitest's) runs no exit handler. */
+  /* A signal runs no exit handler, and a pool may end its workers by one
+   * (vitest's). Where nothing else handles it, the signal is raised again
+   * once written, so the process ends as it would have; otherwise that
+   * handler decides, and the document is written again at exit. */
   process.once("SIGTERM", () => {
-    process.off("exit", write);
     write();
-    process.exit(128 + 15);
+    if (process.listenerCount("SIGTERM") === 0) {
+      process.off("exit", write);
+      process.kill(process.pid, "SIGTERM");
+    }
   });
 }
 
-/** @return what the processes recording into `directory` read, or undefined
- * where any of them started another process or a worker thread. */
-export function readsRecordedIn(directory: string): IRecordedReads | undefined {
-  const each = fs
-    .readdirSync(directory)
-    .filter(name => name.endsWith(".json"))
-    .map(name => toRecordedReads(JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"))));
-  return each.some(reads => reads === undefined)
-    ? undefined
-    : { files: each.flatMap(reads => reads?.files ?? []), lookups: each.flatMap(reads => reads?.lookups ?? []) };
+/**
+ * @return what `here` read (this process's own recording, where it has one:
+ * undefined where it is unknown) and what the processes recording into
+ * `directory` read, or undefined where
+ * any of them started a process that does not record or a worker thread, or
+ * a node process one of them started wrote nothing (it outlived the run, or
+ * was stopped before it could).
+ */
+export function readsRecordedIn(directory: string, here: ReadonlyArray<IRecordedReads | undefined> = []): IRecordedReads | undefined {
+  const documents = new Map(
+    fs
+      .readdirSync(directory)
+      .filter(name => name.endsWith(".json"))
+      .map((name): [string, IRecordedReads | undefined] => [
+        name.slice(0, -".json".length),
+        toRecordedReads(JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"))),
+      ])
+  );
+  const each = [...here, ...documents.values()];
+  const complete = (reads: IRecordedReads | undefined): reads is IRecordedReads =>
+    reads !== undefined && reads.children.every(child => documents.get(child) !== undefined);
+  if (!each.every(complete)) {
+    return undefined;
+  }
+  const all = each as IRecordedReads[];
+  return { files: all.flatMap(reads => reads.files), lookups: all.flatMap(reads => reads.lookups), children: [] };
 }
 
-/** Convert one process's recorded reads: a reads document, or `null` where it
- * started another process or a worker thread (converted to undefined). */
+/** Convert one process's recorded reads: a reads document and the tokens of
+ * the node processes it started, or `null` where it started a process that
+ * does not record or a worker thread (converted to undefined). */
 function toRecordedReads(json: unknown): IRecordedReads | undefined {
   if (json === null) {
     return undefined;
   }
   const document = toReadsDocument(json);
-  return { files: [...document.files], lookups: [...document.lookups] };
+  const children = (json as { children?: unknown }).children;
+  return {
+    files: [...document.files],
+    lookups: [...document.lookups],
+    children: Array.isArray(children) ? children.filter((child): child is string => typeof child === "string") : [],
+  };
 }
 
 /** @return `reads` with the PnP table the processes resolved through added,

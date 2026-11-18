@@ -136,7 +136,7 @@ function stageInstall(
 ): Computable<IPackageLayout> {
   const files = fileSetInput(action, "files");
   const writable = fileSetInput(action, "writable");
-  return layoutPackages(action, dir, ensureTree).then(layout => {
+  return layoutPackages(action, dir, ensureTree, undefined, true).then(layout => {
     /* Stage under one admission, released before any test process asks for a
      * slot of its own. */
     const staged = FileSet.unionAll(files, layout.files);

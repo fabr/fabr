@@ -53,14 +53,20 @@ function toPromise<T>(computable: Computable<T>): Promise<T> {
 }
 
 /** Lay the packages out for a step in {@link DIR}, each tree ensured at its pool path. */
-function laid(deps: FileSet[], layout: string, self?: { name: string; location: string }, mount?: string): Promise<IPackageLayout> {
+function laid(
+  deps: FileSet[],
+  layout: string,
+  self?: { name: string; location: string },
+  mount?: string,
+  unplug?: boolean
+): Promise<IPackageLayout> {
   const action = new BuildAction(
     STEP,
     {},
     { layout, ...(self ? { selfName: self.name, selfLocation: self.location } : {}) },
     { discoverable: { deps } }
   );
-  return toPromise(layoutPackages(action, DIR, tree => Computable.resolve(path.join(POOL, tree.toManifestHash())), mount));
+  return toPromise(layoutPackages(action, DIR, tree => Computable.resolve(path.join(POOL, tree.toManifestHash())), mount, unplug));
 }
 
 const row = (name: ReturnType<IPackageLayout["nameRead"]>): unknown =>
@@ -236,6 +242,29 @@ describe("layoutPackages", () => {
       expect(layout.locate(["r", "shared"], "index.js")).to.equal(tree);
       expect(layout.locate(["r", "shared", "dep"], "index.js")).to.equal(path.join(POOL, dep.toManifestHash(), "index.js"));
       expect(layout.locate(["l", "dep"], "index.js"), "no such edge").to.equal(undefined);
+    });
+
+    it("locates and names a package to unplug within the unplugged tree, where unplugging is asked for", async () => {
+      const addon = new PackageFileSet(
+        new Map<string, IFile>([["lib/x.node", MemoryFile.from("addon")]]),
+        "addon",
+        "1.0.0",
+        dependenciesOn(b)
+      );
+      const top = pkg("top", "top", [addon]);
+      const plain = await laid([top], PNP);
+      expect(plain.locate(["top", "addon"], "lib/x.node")).to.equal(path.join(POOL, addon.toManifestHash(), "lib", "x.node"));
+      const layout = await laid([top], PNP, undefined, undefined, true);
+      const located = layout.locate(["top", "addon"], "lib/x.node")!;
+      const unplugged = path.dirname(path.dirname(path.dirname(path.dirname(located))));
+      expect(located).to.equal(path.join(unplugged, "node_modules", "addon", "lib", "x.node"));
+      expect(layout.locate(["top", "addon", "b"], "index.js"), "what an addon reaches").to.equal(
+        path.join(POOL, b.toManifestHash(), "index.js")
+      );
+      expect(layout.locate(["top"], "index.js"), "a package with no addon").to.equal(
+        path.join(POOL, top.toManifestHash(), "index.js")
+      );
+      expect(row(layout.nameRead(located))).to.deep.equal({ route: ["top", "addon"], path: "lib/x.node", pkg: "addon" });
     });
   });
 });

@@ -53,6 +53,7 @@ import {
   toJsonObject,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
+import type { IProgramLayout } from "./Layout";
 import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
 import { type ExportsValue, resolveExports } from "@fabr-build/js-tools";
 
@@ -894,10 +895,10 @@ export const NODE_GLOBAL = "NODE";
 
 /**
  * Make an npm package runnable under node (the `NODE` global): an install of
- * the package and its dependencies as `node_modules` ({@link assembleNodeModules}),
- * rooted at `node_modules/<name>`. Used for an `@npm:` package under `run`, a
- * `js_package[run]` and a js_script's package entry. The package's dependencies
- * must be materialized.
+ * the package and its dependencies as `laid` holds them, rooted at the
+ * package's location there (`node_modules/<name>` in a `node_modules` tree).
+ * Used for an `@npm:` package under `run`, a `js_package[run]` and a
+ * js_script's package entry. The package's dependencies must be materialized.
  *
  * The runnable's surface, which a projection selects its entry from, is a
  * `SymlinkFile` per package.json `bin` command, targeting the bin's install
@@ -911,6 +912,8 @@ export const NODE_GLOBAL = "NODE";
  *   join the `node_modules` tree, and must come from the entry's collection
  *   point; other sets are laid out at the install root.
  * - `args`: leading arguments the runnable always passes.
+ * - `laid`: the package and the packages among `extras` as the install holds
+ *   them ({@link layoutProgram}); a `node_modules` tree where none is given.
  *
  * Throws a TypeError where `entry` is not over a package, and rejects where
  * its `bin` is invalid ({@link binOf}).
@@ -919,7 +922,8 @@ export function makeNpmRunnable(
   context: ResolutionContext,
   entry: PackageFileSet | FileSetRef,
   extras: FileSet[] = [],
-  args: string[] = []
+  args: string[] = [],
+  laid?: IProgramLayout
 ): Computable<RunnableFileSet> {
   const pkg = entry instanceof FileSetRef ? entry.source : entry;
   if (!(pkg instanceof PackageFileSet)) {
@@ -927,10 +931,15 @@ export function makeNpmRunnable(
   }
   return binOf(pkg)
     .then(bin => {
-      const root = `node_modules/${pkg.packageName}`;
       const packages = extras.filter((extra): extra is PackageFileSet => extra instanceof PackageFileSet);
       const loose = extras.filter(extra => !(extra instanceof PackageFileSet));
-      const install = FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }), ...loose);
+      const placed = laid ?? {
+        files: FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }),
+        locationOf: (at: PackageFileSet) => `node_modules/${at.packageName}`,
+        interpreterArgs: [],
+      };
+      const root = placed.locationOf(pkg);
+      const install = FileSet.unionAll(placed.files, ...loose);
       /* Bins first, so a bin wins its command name over a file of that name
        * (`fabr run pkg:tsc` is the bin), and a same-path tie at launch. */
       const surface = new Map<string, IFile>();
@@ -942,7 +951,11 @@ export function makeNpmRunnable(
           surface.set(name, file);
         }
       }
-      return context.launchedBy(new RunnableFileSet(install, args, undefined, root, new FileSet(surface)), NODE_GLOBAL);
+      return context.launchedBy(
+        new RunnableFileSet(install, args, undefined, root, new FileSet(surface)),
+        NODE_GLOBAL,
+        placed.interpreterArgs
+      );
     })
     .then(runnable => {
       if (!(entry instanceof FileSetRef)) {

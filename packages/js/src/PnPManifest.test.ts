@@ -33,7 +33,7 @@ import { packageNodeSignature } from "@fabr-build/core";
 import * as path from "path";
 import type { IPnpPackageInfo, PnpDependencyTarget } from "@fabr-build/js-tools";
 import { TREE_MOUNT } from "@fabr-build/core";
-import { assertOnePackagePerName, pnpManifestOf, treeMountOf } from "./PnPManifest";
+import { assertOnePackagePerName, pnpManifestOf, treeMountOf, unpluggedPackages } from "./PnPManifest";
 import { resolveVirtual } from "@fabr-build/js-tools";
 
 /** A package as a REPOSITORY delivered it — carrying a resolution provenance,
@@ -348,6 +348,97 @@ describe("pnpManifestOf", () => {
   ]
 }
 `
+    );
+  });
+});
+
+/** A repository's package holding `files`, beside an `index.js`. */
+function holding(name: string, files: Record<string, string>, deps: PackageFileSet[] = []): PackageFileSet {
+  return new PackageFileSet(
+    new Map<string, IFile>([
+      ["index.js", MemoryFile.from(`// ${name}`)],
+      ...Object.entries(files).map(([file, text]): [string, IFile] => [file, MemoryFile.from(text)]),
+    ]),
+    name,
+    "1.0.0",
+    dependenciesOn(...deps)
+  ).withOrigin({ kind: PACKAGE_RESOLUTION_PROVENANCE });
+}
+
+describe("unpluggedPackages", () => {
+  it("unplugs a package holding a native addon, and not what it reaches", async () => {
+    const helper = pkg("node-gyp-build");
+    const addon = holding("bcrypt", { "prebuilds/bcrypt.node": "\0" }, [helper]);
+    const unplugged = await toPromise(unpluggedPackages([pkg("app", "1.0.0", [addon]), pkg("other")]));
+    expect([...unplugged]).to.deep.equal([addon.toManifestHash()]);
+  });
+
+  it("unplugs a package whose manifest prefers it", async () => {
+    const preferring = holding("prefers", { "package.json": JSON.stringify({ name: "prefers", preferUnplugged: true }) });
+    const declining = holding("declines", { "package.json": JSON.stringify({ name: "declines", preferUnplugged: false }) });
+    const unreadable = holding("unreadable", { "package.json": "{" });
+    const unplugged = await toPromise(unpluggedPackages([preferring, declining, unreadable]));
+    expect([...unplugged]).to.deep.equal([preferring.toManifestHash()]);
+  });
+});
+
+describe("pnpManifestOf with unplugged packages", () => {
+  /** The manifest for `deps`, unplugging what {@link unpluggedPackages} finds. */
+  const unpluggedManifest = async (deps: PackageFileSet[]): Promise<ReturnType<typeof pnpManifestOf>> =>
+    pnpManifestOf(deps, undefined, undefined, await toPromise(unpluggedPackages(deps)));
+  const locationOf = (manifest: ReturnType<typeof pnpManifestOf>, name: string): string =>
+    [...rowsOf(manifest, name).values()][0].packageLocation;
+  /** The unplugged trees of `manifest`: those that are no package's own. */
+  const unpluggedTrees = (manifest: ReturnType<typeof pnpManifestOf>): FileSet[] =>
+    manifest.trees.filter(tree => !(tree instanceof PackageFileSet));
+
+  it("locates unplugged packages joined by an edge side by side in one tree, under node_modules", async () => {
+    const libvips = holding("@img/sharp-libvips-darwin-arm64", { "lib/libvips.node": "\0" });
+    const helper = pkg("detect-libc");
+    const addon = holding("@img/sharp-darwin-arm64", { "lib/sharp.node": "\0" }, [libvips, helper]);
+    const sharp = pkg("sharp", "1.0.0", [addon]);
+    const manifest = await unpluggedManifest([sharp]);
+    const [tree] = unpluggedTrees(manifest);
+    expect(unpluggedTrees(manifest)).to.have.lengthOf(1);
+    const root = `${TREE_MOUNT}/${tree.toManifestHash()}/node_modules`;
+    expect(locationOf(manifest, "@img/sharp-darwin-arm64")).to.equal(`${root}/@img/sharp-darwin-arm64/`);
+    expect(locationOf(manifest, "@img/sharp-libvips-darwin-arm64")).to.equal(`${root}/@img/sharp-libvips-darwin-arm64/`);
+    expect([...tree].map(([name]) => name).sort()).to.deep.equal([
+      "node_modules/@img/sharp-darwin-arm64/index.js",
+      "node_modules/@img/sharp-darwin-arm64/lib/sharp.node",
+      "node_modules/@img/sharp-libvips-darwin-arm64/index.js",
+      "node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips.node",
+    ]);
+    /* What is not unplugged stays a tree of its own, and an unplugged
+     * package's own tree is not wanted in the pool. */
+    expect(locationOf(manifest, "sharp")).to.equal(`${treeMountOf(sharp)}/`);
+    expect(locationOf(manifest, "detect-libc")).to.equal(`${treeMountOf(helper)}/`);
+    expect(manifest.trees.filter(candidate => candidate instanceof PackageFileSet)).to.have.members([sharp, helper]);
+  });
+
+  it("gives unplugged packages with no edge between them trees of their own, two versions of one name included", async () => {
+    const one = holding("addon", { "a.node": "1" });
+    const two = new PackageFileSet(new Map<string, IFile>([["b.node", MemoryFile.from("2")]]), "addon", "2.0.0").withOrigin({
+      kind: PACKAGE_RESOLUTION_PROVENANCE,
+    });
+    const manifest = await unpluggedManifest([pkg("left", "1.0.0", [one]), pkg("right", "1.0.0", [two])]);
+    expect(unpluggedTrees(manifest)).to.have.lengthOf(2);
+    const locations = [...rowsOf(manifest, "addon").values()].map(row => row.packageLocation);
+    expect(new Set(locations).size).to.equal(2);
+    for (const location of locations) {
+      expect(location).to.match(/\/[0-9a-f]{64}\/node_modules\/addon\/$/);
+    }
+  });
+
+  it("refuses two packages of one name unplugged in one tree", async () => {
+    const one = holding("dep", { "a.node": "1" });
+    const two = new PackageFileSet(new Map<string, IFile>([["b.node", MemoryFile.from("2")]]), "dep", "2.0.0").withOrigin({
+      kind: PACKAGE_RESOLUTION_PROVENANCE,
+    });
+    const inner = holding("inner", { "inner.node": "\0" }, [two]);
+    const outer = holding("outer", { "outer.node": "\0" }, [one, inner]);
+    await toPromise(unpluggedPackages([outer])).then(unplugged =>
+      expect(() => pnpManifestOf([outer], undefined, undefined, unplugged)).to.throw("unplugged together")
     );
   });
 });

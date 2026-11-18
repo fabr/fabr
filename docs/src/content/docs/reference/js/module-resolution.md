@@ -171,9 +171,11 @@ Which conditions in an `exports` map apply depends on what's reading the package
 
 Tests and programs started with `fabr run` execute from a generated `node_modules` directory
 containing exactly the packages the build resolved, so Node.js's own resolution applies to them
-unchanged. (A target's tests can instead resolve their packages through a Yarn PnP-style table,
-with the `layout/pnp` flag; see [How tests find their packages](/reference/js/testing/#how-tests-find-their-packages).
-An import of an undeclared package then resolves as it does when compiling.) The directory is laid
+unchanged. (A target's tests, or a `js_script` program, can instead resolve their packages
+through a Yarn PnP-style table, with the `layout/pnp` flag; see [How tests find their
+packages](/reference/js/testing/#how-tests-find-their-packages) and [Running without a
+`node_modules` directory](/guides/tools/#running-without-a-node_modules-directory). An import of an
+undeclared package then resolves as it does when compiling.) The directory is laid
 out the way pnpm lays one out:
 
 - The top level holds only the packages the target declares.

@@ -45,6 +45,7 @@ import {
   FabrError,
   FileSet,
   FileSetRef,
+  Flag,
   PackageFileSet,
   RuleResult,
   RunnableFileSet,
@@ -52,18 +53,18 @@ import {
   defineRule,
   ContainedSources,
   EMPTY_FILESET,
-  Flag,
   PackageSources,
   NoRequirements,
   ResolutionSpec,
   toEnvironment,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "../NodeModules";
+import { layoutProgram } from "../Layout";
 import {
   classifySourceByExt,
   classifySources,
   compileContents,
   formatJSTarget,
+  layoutOf,
   makeNpmRunnable,
   moduleTypeFile,
   NODE_GLOBAL,
@@ -119,10 +120,13 @@ function defineJsRunnable(
     (args, target): RuleResult | Computable<RuleResult> => {
       const argv = args ? args.getValues() : [];
       const sole = entry.length === 1 ? entry[0] : undefined;
+      const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
+      const layout = layoutOf(deps.filter((dep): dep is Flag => dep instanceof Flag));
       /* A package entry is the program, launched by its declared bin (or the
        * one a pending projection names), with `deps` added to its install. */
       if (sole instanceof PackageFileSet || (sole instanceof FileSetRef && sole.source instanceof PackageFileSet)) {
-        return makeNpmRunnable(context, sole, deps, argv);
+        const pkg = sole instanceof FileSetRef ? (sole.source as PackageFileSet) : sole;
+        return layoutProgram(context, [pkg, ...packages], layout).then(laid => makeNpmRunnable(context, sole, deps, argv, laid));
       }
       /* A file entry is the script. A JavaScript entry is installed as it is
        * and launched under node; a TypeScript entry is compiled first. */
@@ -140,7 +144,6 @@ function defineJsRunnable(
           );
         }
         const entryName = names[0];
-        const packages = deps.filter((d): d is PackageFileSet => d instanceof PackageFileSet);
 
         /* A TypeScript entry: compile it and the source files in `deps`
          * against the packages in `deps`, then launch its compiled `.js`. A
@@ -161,35 +164,41 @@ function defineJsRunnable(
            * is shared with any other of that target. */
           const format = soleModuleFormat(jsTarget.module);
           const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: format }) });
-          return compileContents(context, entrySet, deps, { constraints: faceTarget }).then(built => {
-            const install = FileSet.unionAll(
-              FileSet.layout({ node_modules: assembleNodeModules(packages) }),
-              stripPackageJson(built.passthrough),
-              built.compiled,
-              resources,
-              new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
-            );
-            return context.launchedBy(RunnableFileSet.forEntry(install, launchName, argv), NODE_GLOBAL);
-          });
+          return Computable.forAll(
+            [compileContents(context, entrySet, deps, { constraints: faceTarget }), layoutProgram(context, packages, layout)] as const,
+            (built, laid) => {
+              const install = FileSet.unionAll(
+                laid.files,
+                stripPackageJson(built.passthrough),
+                built.compiled,
+                resources,
+                new FileSet(new Map([["package.json", moduleTypeFile(format)]]))
+              );
+              return context.launchedBy(RunnableFileSet.forEntry(install, launchName, argv), NODE_GLOBAL, laid.interpreterArgs);
+            }
+          );
         }
 
-        /* A JavaScript entry is installed as it is, with packages under
-         * node_modules and loose files at their own paths. TypeScript among
+        /* A JavaScript entry is installed as it is, with the packages laid out
+         * as `layout` says and loose files at their own paths. TypeScript among
          * the loose files is compiled to JS_TARGET's format, against the
          * packages and the other loose files, and installed in place of its
          * sources; the JavaScript stays as written. No root package.json is
          * written, so node loads the JavaScript by its own rules. */
         const typescript = FileSet.unionAll(...deps.filter(isLooseFiles).map(typeScriptOf));
         const rest = deps.map(set => (isLooseFiles(set) ? set.minus(typeScriptOf(set)) : set));
-        const launch = (compiled: FileSet): Computable<RuleResult> => {
-          const install = FileSet.unionAll(
-            FileSet.layout({ node_modules: assembleNodeModules(packages) }),
-            ...rest.filter(set => !(set instanceof PackageFileSet)),
-            compiled,
-            entrySet
+        const launch = (compiled: FileSet): Computable<RuleResult> =>
+          layoutProgram(context, packages, layout).then(laid =>
+            context.launchedBy(
+              RunnableFileSet.forEntry(
+                FileSet.unionAll(laid.files, ...rest.filter(isLooseFiles), compiled, entrySet),
+                entryName,
+                argv
+              ),
+              NODE_GLOBAL,
+              laid.interpreterArgs
+            )
           );
-          return context.launchedBy(RunnableFileSet.forEntry(install, entryName, argv), NODE_GLOBAL);
-        };
         if (typescript.isEmpty()) {
           return launch(EMPTY_FILESET);
         }

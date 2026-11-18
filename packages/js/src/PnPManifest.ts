@@ -27,8 +27,11 @@
  */
 
 import {
+  Computable,
+  FabrError,
   FileSet,
   hashString,
+  mapComputable,
   MemoryFile,
   PACKAGE_RESOLUTION_PROVENANCE,
   nodeNaming,
@@ -36,6 +39,8 @@ import {
   PackageFileSet,
   packageNameConflict,
   reachablePackages,
+  readJsonFile,
+  toJsonObject,
   TREE_MOUNT,
 } from "@fabr-build/core";
 import { type IPnpPackageInfo, type IPnpSerializedState, type PnpDependencyTarget, virtualLocation } from "@fabr-build/js-tools";
@@ -52,15 +57,19 @@ export interface ISelfPackage {
  * package's reference (a hex digest). */
 const SELF_REFERENCE = "self";
 
-/** A manifest and the packages it has rows for. The caller must put each
- * package's tree in the pool before anything reads the manifest. */
+/** A manifest and the packages it has rows for. The caller must put each of
+ * its {@link trees} in the pool before anything reads the manifest. */
 export interface IPnpManifest {
   readonly state: IPnpSerializedState;
   /** Every package with a row, one instance per row. */
   readonly packages: ReadonlyArray<PackageFileSet>;
+  /** The trees the rows are located in: each package's own, and the trees
+   *  the unplugged packages lie in ({@link unpluggedTreesOf}). */
+  readonly trees: ReadonlyArray<FileSet>;
   /** Locate a package's row, relative to the working directory: its tree
-   * ({@link treeMountOf}), or, where its content is wired more than one way in
-   * this manifest, the virtual location of its wiring over that tree. */
+   * ({@link treeMountOf}), or its directory in an unplugged tree, or, where
+   * its content is wired more than one way in this manifest, the virtual
+   * location of its wiring over that directory. */
   mountOf(pkg: PackageFileSet): string;
   /** Make the manifest the file to stage. */
   toFile(): MemoryFile;
@@ -114,11 +123,20 @@ export function assertOnePackagePerName(directDeps: ReadonlyArray<FileSet>): voi
  * - `ignored`, a regular expression over paths relative to the table's root, is
  *   Yarn's `ignorePattern`: the files it names belong to no package of the
  *   table (a tree laid out for node's own resolution beside it).
+ * - A package whose content hash is among `unplugged` is located at
+ *   `node_modules/<name>/` in a tree it shares with the unplugged packages it is
+ *   joined to by dependency edges ({@link unpluggedTreesOf}).
  *
  * Every list is sorted, so the manifest's bytes depend only on the graph.
- * Throws where two direct packages share a name ({@link assertOnePackagePerName}).
+ * Throws where two direct packages share a name ({@link assertOnePackagePerName}),
+ * or two unplugged packages of one tree do.
  */
-export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignored?: string): IPnpManifest {
+export function pnpManifestOf(
+  directDeps: FileSet[],
+  self?: ISelfPackage,
+  ignored?: string,
+  unplugged: ReadonlySet<string> = new Set()
+): IPnpManifest {
   assertOnePackagePerName(directDeps);
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
   const referenceIn = referencesOf(roots);
@@ -133,7 +151,14 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
       packages.push(pkg);
     }
   }
-  const mountOf = locations(packages, referenceIn);
+  const isUnplugged = (pkg: PackageFileSet): boolean => unplugged.has(pkg.toManifestHash());
+  const unpluggedTrees = unpluggedTreesOf(packages.filter(isUnplugged));
+  const treeOf = (pkg: PackageFileSet): string => {
+    const tree = unpluggedTrees.get(pkg.toManifestHash());
+    return tree === undefined ? treeMountOf(pkg) : `${TREE_MOUNT}/${tree.toManifestHash()}/node_modules/${pkg.packageName}`;
+  };
+  const trees = [...packages.filter(pkg => !isUnplugged(pkg)), ...new Set(unpluggedTrees.values())];
+  const mountOf = locations(packages, referenceIn, treeOf);
   /* The one dependency list of both rows that stand for the sources, the
    * top-level row and the self row. Keep them one list: a source file matches
    * the self row (its location is the longer prefix), so a difference would
@@ -174,7 +199,95 @@ export function pnpManifestOf(directDeps: FileSet[], self?: ISelfPackage, ignore
         ]),
     ],
   };
-  return { state, packages, mountOf, toFile: () => MemoryFile.from(serialize(state)) };
+  return { state, packages, trees, mountOf, toFile: () => MemoryFile.from(serialize(state)) };
+}
+
+/** The file extension of a native addon. */
+const NATIVE_ADDON = ".node";
+
+/**
+ * Find the packages to unplug among those `directDeps` reach: each that holds
+ * a native addon (a `.node` file) or whose `package.json` sets
+ * `preferUnplugged`. An addon finds the libraries it links against by paths
+ * relative to itself, which assume its package and theirs lie side by side
+ * under one `node_modules`.
+ *
+ * @return the content hashes of the packages to unplug.
+ */
+export function unpluggedPackages(directDeps: FileSet[]): Computable<ReadonlySet<string>> {
+  const packages = reachablePackages(directDeps);
+  return mapComputable(packages, pkg => (holdsNativeAddon(pkg) ? Computable.resolve(true) : prefersUnplugged(pkg))).then(
+    wanted => new Set(packages.filter((_, index) => wanted[index]).map(pkg => pkg.toManifestHash()))
+  );
+}
+
+/** @return true if `pkg` holds a native addon, otherwise false. */
+function holdsNativeAddon(pkg: PackageFileSet): boolean {
+  for (const [name] of pkg) {
+    if (name.endsWith(NATIVE_ADDON)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @return true if `pkg`'s `package.json` sets `preferUnplugged`, otherwise
+ *  false, as it is where the manifest is missing or unreadable. */
+function prefersUnplugged(pkg: PackageFileSet): Computable<boolean> {
+  return pkg
+    .get("package.json")
+    .then(file => (file === undefined ? false : readJsonFile(file, toJsonObject).then(json => json.preferUnplugged === true)))
+    .catch(() => false);
+}
+
+/**
+ * Make the trees the unplugged `packages` lie in: one for each group of them
+ * joined by dependency edges, each package at `node_modules/<name>/` in its
+ * group's tree, as an installed package is.
+ *
+ * @return each package's tree, by its content hash.
+ * @throws where two packages of different content are unplugged under one name
+ *   in one group.
+ */
+function unpluggedTreesOf(packages: ReadonlyArray<PackageFileSet>): Map<string, FileSet> {
+  /* Each content hash's group, as a disjoint-set forest over the hashes. */
+  const parent = new Map(packages.map((pkg): [string, string] => [pkg.toManifestHash(), pkg.toManifestHash()]));
+  const root = (hash: string): string => {
+    for (let at = hash; ;) {
+      const up = parent.get(at)!;
+      if (up === at) {
+        return at;
+      }
+      at = up;
+    }
+  };
+  for (const pkg of packages) {
+    for (const dep of pkg.packages) {
+      if (parent.has(dep.toManifestHash())) {
+        parent.set(root(dep.toManifestHash()), root(pkg.toManifestHash()));
+      }
+    }
+  }
+  const groups = new Map<string, Map<string, PackageFileSet>>();
+  for (const pkg of packages) {
+    const group = groups.get(root(pkg.toManifestHash())) ?? new Map<string, PackageFileSet>();
+    groups.set(root(pkg.toManifestHash()), group);
+    const held = group.get(pkg.packageName);
+    if (held !== undefined && held.toManifestHash() !== pkg.toManifestHash()) {
+      throw new FabrError(
+        `${held.packageId} and ${pkg.packageId} are unplugged together, and an unplugged tree lays out one package of each name`
+      );
+    }
+    group.set(pkg.packageName, pkg);
+  }
+  const trees = new Map<string, FileSet>();
+  for (const group of groups.values()) {
+    const tree = FileSet.layout({ node_modules: [...group.values()].map(pkg => pkg.mountedAt(pkg.packageName)) });
+    for (const pkg of group.values()) {
+      trees.set(pkg.toManifestHash(), tree);
+    }
+  }
+  return trees;
 }
 
 /**
@@ -196,7 +309,8 @@ function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSe
 }
 
 /**
- * Make the function locating each row's files: its content's tree, shared by
+ * Make the function locating each row's files: its content's tree
+ * (`treeOf`), shared by
  * every row of that content (the same package under two names) where they all
  * bind the same dependencies. Where content is wired more than one way in this
  * manifest, every wiring gets a virtual location of its own over the tree
@@ -205,7 +319,8 @@ function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSe
  */
 function locations(
   packages: ReadonlyArray<PackageFileSet>,
-  referenceIn: (pkg: PackageFileSet) => string
+  referenceIn: (pkg: PackageFileSet) => string,
+  treeOf: (pkg: PackageFileSet) => string
 ): (pkg: PackageFileSet) => string {
   const wiring = (pkg: PackageFileSet): string =>
     dependencyList(pkg.packages, referenceIn)
@@ -219,8 +334,8 @@ function locations(
   }
   return pkg =>
     (wiringsByContent.get(pkg.toManifestHash())?.size ?? 0) > 1
-      ? virtualLocation(treeMountOf(pkg), hashString(wiring(pkg)).slice(0, 16))
-      : treeMountOf(pkg);
+      ? virtualLocation(treeOf(pkg), hashString(wiring(pkg)).slice(0, 16))
+      : treeOf(pkg);
 }
 
 /**

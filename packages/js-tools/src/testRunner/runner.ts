@@ -29,7 +29,7 @@
  */
 
 import * as path from "node:path";
-import { atLeastNode, IRunnerOptions, parseRunnerArgs, runTestFiles } from "./RunTests";
+import { atLeastNode, IRunnerOptions, loadPnpPreload, parseRunnerArgs, runTestFiles } from "./RunTests";
 
 /** The node version from which node:test's snapshot assertions need no flag. */
 const SNAPSHOT_NODE = [23, 4] as const;
@@ -50,6 +50,7 @@ function requireSupportedEnvironment(options: IRunnerOptions): void {
  * than `node`, and for `--update-snapshots` before node 23.4. */
 export function main(argv: string[]): void {
   const options = parseRunnerArgs(argv);
+  loadPnpPreload(options);
   requireSupportedEnvironment(options);
   if (options.update && !atLeastNode(SNAPSHOT_NODE[0], SNAPSHOT_NODE[1])) {
     throw new Error(

@@ -144,35 +144,91 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
      * runs share; the sources are unique to this run, so the first is a miss. */
     const { marker, ran } = runMarker();
     const unique = `${process.pid}-${Date.now()}`;
-    const files = (a: string): Record<string, string> => ({
+    const files = (a: string, b: string): Record<string, string> => ({
       ...STUB_TSC,
       "PROJECT.fabr":
         "plugin @fabr-build/js;\n\n" +
         STUB_TSC_CONFIG +
         `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
       "src/a.ts": `exports.a = "${a}";\n`,
-      "src/b.ts": `exports.b = "${unique}";\n`,
+      "src/b.ts": `exports.b = "${b}";\n`,
       "src/a.test.ts":
         'const { a } = require("./a");\nrequire("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
-      "src/b.test.ts":
-        'const { b } = require("./b");\nrequire("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
-      /* What a process it starts reads is beyond any record, so it runs on every change. */
+      /* What a node process it starts reads is recorded with it: b is loaded
+       * there alone. */
       "src/c.test.ts":
-        'require("child_process").execFileSync(process.execPath, ["-e", ""]);\nrequire("fs").appendFileSync(process.env.MARKER, "c\\n");\ndescribe("c", () => { it("is", () => {}); });\n',
+        'require("child_process").execFileSync(process.execPath, ["-e", "require(" + JSON.stringify(require.resolve("./b")) + ")"]);\n' +
+        'require("fs").appendFileSync(process.env.MARKER, "c\\n");\ndescribe("c", () => { it("is", () => {}); });\n',
+      /* What a shell it starts reads is beyond any record, so it runs on every change. */
+      "src/d.test.ts":
+        'require("child_process").execSync("exit 0");\nrequire("fs").appendFileSync(process.env.MARKER, "d\\n");\ndescribe("d", () => { it("is", () => {}); });\n',
     });
 
-    const first = runFabr(files(unique), ["-DJS_TARGET=es2020", "test", "thing"]);
+    const first = runFabr(files(unique, unique), ["-DJS_TARGET=es2020", "test", "thing"]);
     expect(first.status, first.stderr).to.equal(0);
-    expect(ran()).to.deep.equal(["a", "b", "c"]);
+    expect(ran()).to.deep.equal(["a", "c", "d"]);
 
-    const edited = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
-    expect(edited.status, edited.stderr).to.equal(0);
-    expect(edited.stderr, "the report covers every file").to.contain("3 tests passed");
-    expect(ran(), "the test that loads the edited source, and the one whose reads are unknown").to.deep.equal(["a", "c"]);
+    const editedA = runFabr(files(`${unique}-edited`, unique), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(editedA.status, editedA.stderr).to.equal(0);
+    expect(editedA.stderr, "the report covers every file").to.contain("3 tests passed");
+    expect(ran(), "the test that loads the edited source, and the one whose reads are unknown").to.deep.equal(["a", "d"]);
 
-    const again = runFabr(files(`${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    const editedB = runFabr(files(`${unique}-edited`, `${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(editedB.status, editedB.stderr).to.equal(0);
+    expect(ran(), "the test whose child loads the edited source, and the one whose reads are unknown").to.deep.equal(["c", "d"]);
+
+    const again = runFabr(files(`${unique}-edited`, `${unique}-edited`), ["-DJS_TARGET=es2020", "test", "thing"]);
     expect(again.status).to.equal(0);
     expect(ran(), "an unchanged run runs nothing").to.deep.equal([]);
+  });
+
+  it("lets a node process a test starts end by a signal, as it would unrecorded", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n}\n",
+        "src/a.test.ts":
+          'const assert = require("node:assert");\n' +
+          'describe("a", () => { it("sees its child killed by SIGTERM", () => {\n' +
+          '  const child = require("child_process").spawnSync(process.execPath, ["-e", "process.kill(process.pid, \'SIGTERM\'); setTimeout(() => {}, 5000);"]);\n' +
+          '  assert.equal(child.signal, "SIGTERM");\n' +
+          "  assert.equal(child.status, null);\n" +
+          "}); });\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
+  });
+
+  it("resolves the packages of a node process a test starts through the table under layout/pnp", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; resources = libres:**; }\n" +
+          "js_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  deps = lib;\n  test_deps = layout/pnp;\n}\n",
+        "libsrc/index.ts": 'exports.greeting = "hello";\n',
+        /* A script of the package, run in a node process of its own, as
+         * aws-param-store runs its ssm_sync. */
+        "libres/child.js": 'process.stdout.write(require("lib").greeting);\n',
+        "src/a.ts": 'exports.a = require("lib").greeting;\n',
+        "src/a.test.ts":
+          'const assert = require("node:assert");\n' +
+          'describe("a", () => { it("starts node on a script of its dependency", () => {\n' +
+          '  const script = require.resolve("lib/child.js");\n' +
+          '  assert.equal(require("child_process").execFileSync(process.execPath, [script]).toString(), "hello");\n' +
+          "}); });\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "thing"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.contain("1 test passed");
   });
 
   it("resolves the tests' packages through a PnP table under layout/pnp", () => {
@@ -503,12 +559,13 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
 
   it("runs the tests with the declared environment, and nothing else", () => {
     /* One fixture, both targetdefs: a js_package's `test_env` and a js_test's
-     * `env`. Nothing of fabr's own environment arrives. */
+     * `env`. Nothing of fabr's own environment arrives, bar the runner's
+     * preloads after the declared NODE_OPTIONS. */
     const test = (expected: string): string =>
       'const assert = require("node:assert");\n' +
       'describe("env", () => { it("sees its target\'s variables only", () => {\n' +
       `  assert.equal(process.env.GREETING, "${expected}");\n` +
-      '  assert.equal(process.env.NODE_OPTIONS, "--max-old-space-size=512 --no-warnings");\n' +
+      '  assert.match(process.env.NODE_OPTIONS, /^--max-old-space-size=512 --no-warnings( --require "[^"]+")*$/);\n' +
       "  assert.equal(process.env.PATH || undefined, undefined);\n" +
       "}); });\n";
     const files = {
