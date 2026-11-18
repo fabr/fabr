@@ -921,6 +921,33 @@ describe("the tsc driver", () => {
     expect(output).to.not.contain("extensionless");
   });
 
+  it("judges a package subpath by the file node loads, not its types target", () => {
+    /* Neither subpath's types target is shipped, and a `declare module` types
+     * each import; node loads `./reporter`'s `default` target, which is
+     * present, and `./gone`'s, which is not. */
+    const split = work.add(
+      "split",
+      { "dist/reporter.js": "exports.v = 1;\n" },
+      {
+        exports: {
+          "./reporter": { types: "./types/reporter.d.ts", default: "./dist/reporter.js" },
+          "./gone": { types: "./types/gone.d.ts", default: "./dist/gone.js" },
+        },
+      }
+    );
+    stage(work.root, [["split", split, [["split", split]]]], [["split", split]], []);
+    fs.writeFileSync(work.root + "/src/decl.d.ts", 'declare module "split/reporter";\ndeclare module "split/gone";\n');
+    fs.writeFileSync(
+      work.root + "/src/index.ts",
+      'import * as reporter from "split/reporter";\nimport * as gone from "split/gone";\nexport const both = [reporter, gone];\n'
+    );
+
+    const { status, output } = compile(work.root);
+    expect(status).to.not.equal(0);
+    expect(output).to.contain("Cannot find file 'split/gone'");
+    expect(output).to.not.contain("split/reporter");
+  });
+
   it("resolves through a trailing-slash folder key, as tsc does", () => {
     /* Not in the exports specification (node removed it in v17), but tsc and
      * esbuild still honor it — a compatibility allowance. */

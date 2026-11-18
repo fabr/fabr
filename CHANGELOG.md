@@ -4,6 +4,10 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
+## Fabr 0.4.3
+@fabr-build/js
+- Fix tsc import check failing when type files are missing.
+
 ## Fabr 0.4.2
 @fabr-build/core
 - `HOST` spells an ARM64 CPU `aarch64` on every platform, macOS included (`aarch64-apple-macosx15.0`,

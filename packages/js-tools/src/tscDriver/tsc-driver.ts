@@ -629,7 +629,8 @@ export type IResolutionHost = Pick<
  *   and certainly names no file, where the compiler reported nothing at the
  *   same position: a relative path with an extension whose file is absent, or
  *   a subpath of an installed package that the package does not publish or
- *   whose published file is absent. A bare package name is never judged, nor is
+ *   whose file node loads (by the runtime conditions, without `types`) is
+ *   absent. A bare package name is never judged, nor is
  *   a side-effect import where the project sets `noUncheckedSideEffectImports`
  *   to false.
  */
@@ -659,6 +660,18 @@ export function installResolution(
       const plain = new Set(conditionsOf(ts, options, mode));
       set = { has: condition => plain.has(condition) || (plain.has("types") && versionedTypesKeyApplies(ts, condition)) };
       conditionSets.set(mode, set);
+    }
+    return set;
+  };
+  /* The conditions node applies loading an import written for `mode`: the
+   * compilation's without `types`. */
+  const runtimeConditionSets = new Map<number, IConditionSet>();
+  const runtimeConditionsFor = (mode: number): IConditionSet => {
+    let set = runtimeConditionSets.get(mode);
+    if (set === undefined) {
+      const plain = new Set(conditionsOf(ts, options, mode).filter(condition => condition !== "types"));
+      set = { has: condition => plain.has(condition) };
+      runtimeConditionSets.set(mode, set);
     }
     return set;
   };
@@ -697,9 +710,10 @@ export function installResolution(
       return [file];
     });
   };
-  /** @return the first file the package publishes for a specifier: the one
-   * node loads. */
-  const publishedPath = (specifier: string, issuer: string): string | undefined => published(specifier, issuer)[0];
+  /** @return the first file the package publishes for a specifier under the
+   * runtime conditions of an import written for `mode`: the one node loads. */
+  const publishedPath = (specifier: string, issuer: string, mode: number): string | undefined =>
+    published(specifier, issuer, runtimeConditionsFor(mode))[0];
   /** @return the compiler's resolution of a path the resolver produced, marked
    * an external library import, or undefined where it finds no file. The
    * compiler resolves a rooted specifier as a path, not a package name. */
@@ -914,16 +928,17 @@ export function installResolution(
   /**
    * @return the file an import names, where it is present, else undefined: for
    * a relative import, the file beside the importer (after the rewrite rules);
-   * for a package specifier, the first file the package publishes for it. Asked
+   * for a package specifier, the file node loads for it when imported for
+   * `mode`. Asked
    * of an import the compiler could not resolve, so of a resource it cannot
    * read as a module (a stylesheet, an image, a `.wasm`). The target's own
    * resources count as present by name (`declared`); any other file must be on
    * disk.
    */
-  const resourceFile = (written: string, issuer: string): string | undefined => {
+  const resourceFile = (written: string, issuer: string, mode: number): string | undefined => {
     const specifier = ownRelative(written, issuer) ?? written;
     const name = splitSpecifier(specifier) !== undefined || specifier.startsWith("#");
-    const file = name ? publishedPath(specifier, issuer) : path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
+    const file = name ? publishedPath(specifier, issuer, mode) : path.resolve(path.dirname(issuer), rewritten(specifier, issuer));
     return file !== undefined && (declared.has(file) || host.fileExists(file)) ? file : undefined;
   };
   /* Side-effect imports of present resources, their specifiers by importing
@@ -932,14 +947,14 @@ export function installResolution(
   /**
    * @return true if an unresolved import certainly names no file, otherwise
    * false: a relative path with an extension whose file is absent, or a subpath
-   * of an installed package that the package publishes nothing for or whose
-   * published file is absent. A relative path without an extension (a bundler
+   * of an installed package that the package publishes nothing for, imported
+   * for `mode`, or whose file node loads for it is absent. A relative path without an extension (a bundler
    * may complete it), a `#` import and a bare package name are never judged
    * (`declare module "virtual:*"` types a bundler's virtual modules). An import
    * of the compile's own package by name is judged as the relative path it
    * names.
    */
-  const certainlyMissing = (written: string, issuer: string): boolean => {
+  const certainlyMissing = (written: string, issuer: string, mode: number): boolean => {
     const specifier = ownRelative(written, issuer) ?? written;
     const split = splitSpecifier(specifier);
     if (split === undefined) {
@@ -953,7 +968,7 @@ export function installResolution(
     if (location === undefined || resolver.instanceNameOf(path.join(location, "package.json")) === undefined) {
       return false;
     }
-    const file = publishedPath(specifier, issuer);
+    const file = publishedPath(specifier, issuer, mode);
     return file === undefined || !host.fileExists(file);
   };
   /* A target that turned the side-effect check off (`ts/allow_unchecked_side_effect_imports`)
@@ -1009,16 +1024,12 @@ export function installResolution(
     presentResources.delete(containingFile);
     missingFiles.delete(containingFile);
     return literals.map(literal => {
-      const answer = resolveModule(
-        literal.text,
-        containingFile,
-        ts.getModeForUsageLocation?.(containingSourceFile, literal, options) ?? defaultMode,
-        loadsAtRuntime(ts, literal, containingSourceFile)
-      );
+      const mode = ts.getModeForUsageLocation?.(containingSourceFile, literal, options) ?? defaultMode;
+      const answer = resolveModule(literal.text, containingFile, mode, loadsAtRuntime(ts, literal, containingSourceFile));
       if (
         answer.resolvedModule === undefined &&
         isSideEffectImport(ts, literal) &&
-        resourceFile(literal.text, containingFile) !== undefined
+        resourceFile(literal.text, containingFile, mode) !== undefined
       ) {
         presentResources.set(containingFile, (presentResources.get(containingFile) ?? new Set()).add(literal.text));
       }
@@ -1027,7 +1038,7 @@ export function installResolution(
         containingSourceFile !== undefined &&
         loadsAtRuntime(ts, literal, containingSourceFile) &&
         !(sideEffectsUnchecked && isSideEffectImport(ts, literal)) &&
-        certainlyMissing(literal.text, containingFile)
+        certainlyMissing(literal.text, containingFile, mode)
       ) {
         const node = literal as IStringLiteralLike & { getStart(file: unknown): number; end: number };
         const start = node.getStart(containingSourceFile);
