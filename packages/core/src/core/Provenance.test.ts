@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
-import { derivedFrom, describeProvenance, renderProvenance } from "./Provenance";
+import { derivedFrom, describeProvenance, ISourcePathStep, renderProvenance, SOURCE_PATH_PROVENANCE } from "./Provenance";
 
 describe("derived provenance", () => {
   it("states the mapping when the step renamed its input", () => {
@@ -46,6 +46,13 @@ describe("derived provenance", () => {
 
   it("describes itself by the input, for one-line attribution", () => {
     expect(describeProvenance(derivedFrom("a/Card.module.scss", "css_postcss"))).to.equal("a/Card.module.scss");
+  });
+});
+
+describe("source-path provenance", () => {
+  it("describes the content as the reference naming it", () => {
+    const step: ISourcePathStep = { kind: SOURCE_PATH_PROVENANCE, sourcePath: "@npm:typescript:5.4.5" };
+    expect(describeProvenance(step)).to.equal("@npm:typescript:5.4.5");
   });
 });
 

@@ -368,6 +368,7 @@ registerProvenanceNaming<ISourcePathStep>(SOURCE_PATH_PROVENANCE, {
 });
 /* Renders nothing: the steps beneath explain the content. */
 registerProvenanceRenderer(SOURCE_PATH_PROVENANCE, () => []);
+registerProvenanceDescriber<ISourcePathStep>(SOURCE_PATH_PROVENANCE, step => step.sourcePath);
 
 /**
  * The kind of step recording that a set's files were renamed; the steps

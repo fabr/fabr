@@ -31,6 +31,7 @@ import { parseName } from "../model/Parser";
 import { manifestArguments, RunnableFileSet, startLaunch, toArgv, toRunnable } from "./RunnableFileSet";
 import { Computable } from "./Computable";
 import { ownerName, TREE_MOUNT } from "./BuildCache";
+import { registerProvenanceDescriber } from "./Provenance";
 
 const NODE = new HostLink("node-hash", "/opt/node/bin/node");
 
@@ -43,6 +44,36 @@ describe("RunnableFileSet", () => {
     expect(runnable.size).to.equal(1);
     expect(runnable.toCommandLine()).to.deep.equal([NODE, { installFile: "run.js" }, "--flag"]);
     expect(toArgv(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "run.js", "--flag"]);
+  });
+});
+
+describe("RunnableFileSet's entry errors", () => {
+  /** A runnable with two bins, at a root that names no package (a tree of the pool). */
+  const twoBins = (): RunnableFileSet =>
+    new RunnableFileSet(
+      new Map([
+        ["one.js", MemoryFile.from("1")],
+        ["two.js", MemoryFile.from("2")],
+      ]),
+      [],
+      undefined,
+      "../.fabr-tree/0123",
+      new FileSet(
+        new Map<string, IFile>([
+          ["one", new SymlinkFile("../.fabr-tree/0123/one.js")],
+          ["two", new SymlinkFile("../.fabr-tree/0123/two.js")],
+        ])
+      )
+    );
+
+  it("names the runnable as its provenance describes it, whatever its root", () => {
+    registerProvenanceDescriber("test-runnable", () => "prog");
+    const runnable = twoBins().withOrigin({ kind: "test-runnable" });
+    expect(() => runnable.toCommandLine()).to.throw("'prog' has 2 candidate entries (one, two)");
+  });
+
+  it("names a runnable with no describable provenance 'the runnable'", () => {
+    expect(() => twoBins().toCommandLine()).to.throw("the runnable has 2 candidate entries");
   });
 });
 

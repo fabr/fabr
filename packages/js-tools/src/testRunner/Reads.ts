@@ -485,20 +485,20 @@ export function readsRecordedIn(directory: string, here: ReadonlyArray<IRecorded
   return { files: all.flatMap(reads => reads.files), lookups: all.flatMap(reads => reads.lookups), children: [] };
 }
 
-/** Convert one process's recorded reads: a reads document and the tokens of
- * the node processes it started, or `null` where it started a process that
- * does not record or a worker thread (converted to undefined). */
+/** Convert one process's recorded reads: a reads document with the tokens
+ * of the node processes it started (`children`), or `null` where it started a
+ * process that does not record or a worker thread (converted to undefined).
+ * Throws where it is neither. */
 function toRecordedReads(json: unknown): IRecordedReads | undefined {
   if (json === null) {
     return undefined;
   }
   const document = toReadsDocument(json);
   const children = (json as { children?: unknown }).children;
-  return {
-    files: [...document.files],
-    lookups: [...document.lookups],
-    children: Array.isArray(children) ? children.filter((child): child is string => typeof child === "string") : [],
-  };
+  if (!Array.isArray(children) || children.some(child => typeof child !== "string")) {
+    throw new Error("expected 'children' to be a list of tokens");
+  }
+  return { files: [...document.files], lookups: [...document.lookups], children: children as string[] };
 }
 
 /** @return `reads` with the PnP table the processes resolved through added,

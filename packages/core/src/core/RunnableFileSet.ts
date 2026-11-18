@@ -22,7 +22,7 @@ import * as path from "path";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "./FileSet";
 import { FileSetRef } from "./FileSetRef";
 import { IProjection } from "./Reference";
-import { IProvenanceStep } from "./Provenance";
+import { describeProvenance, IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
 import { FabrError } from "./Errors";
@@ -481,9 +481,10 @@ export class RunnableFileSet extends FileSet {
     return this.root ? `${this.root}/${rel}` : rel;
   }
 
-  /** Name this runnable for an error — the primary package name, or "the runnable". */
+  /** Name this runnable for an error, as its provenance describes it (the target that built it, the package it is), or "the runnable". */
   private describe(): string {
-    return this.root ? `'${this.root.replace(/^node_modules\//, "")}'` : "the runnable";
+    const described = describeProvenance(this.origin);
+    return described === undefined ? "the runnable" : `'${described}'`;
   }
 }
 

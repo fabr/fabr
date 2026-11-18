@@ -52,8 +52,7 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
-import { assembleNodeModules } from "./NodeModules";
-import type { IProgramLayout } from "./Layout";
+import { IProgramLayout, nodeModulesLayout } from "./Layout";
 import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
 import { type ExportsValue, resolveExports } from "@fabr-build/js-tools";
 
@@ -913,7 +912,8 @@ export const NODE_GLOBAL = "NODE";
  *   point; other sets are laid out at the install root.
  * - `args`: leading arguments the runnable always passes.
  * - `laid`: the package and the packages among `extras` as the install holds
- *   them ({@link layoutProgram}); a `node_modules` tree where none is given.
+ *   them ({@link layoutProgram}); a `node_modules` tree
+ *   ({@link nodeModulesLayout}) where none is given.
  *
  * Throws a TypeError where `entry` is not over a package, and rejects where
  * its `bin` is invalid ({@link binOf}).
@@ -933,11 +933,7 @@ export function makeNpmRunnable(
     .then(bin => {
       const packages = extras.filter((extra): extra is PackageFileSet => extra instanceof PackageFileSet);
       const loose = extras.filter(extra => !(extra instanceof PackageFileSet));
-      const placed = laid ?? {
-        files: FileSet.layout({ node_modules: assembleNodeModules([pkg, ...packages]) }),
-        locationOf: (at: PackageFileSet) => `node_modules/${at.packageName}`,
-        interpreterArgs: [],
-      };
+      const placed = laid ?? nodeModulesLayout([pkg, ...packages]);
       const root = placed.locationOf(pkg);
       const install = FileSet.unionAll(placed.files, ...loose);
       /* Bins first, so a bin wins its command name over a file of that name

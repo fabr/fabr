@@ -39,9 +39,6 @@ const READERS = ["readFile", "stat", "lstat", "access", "open", "readdir", "open
 const SYNC_READERS = [...READERS.map(name => `${name}Sync`), "createReadStream"];
 const PROMISE_READERS = READERS.filter(name => name !== "exists");
 
-/** Marks a process whose `fs` is patched, so a second runtime patches nothing. */
-const PATCHED = Symbol.for("fabr.pnp.virtualFs");
-
 type AnyFunction = (...args: unknown[]) => unknown;
 
 /** @return the path `file` reads from: the physical file beneath a virtual
@@ -79,16 +76,12 @@ function mapFirst(target: Record<string, unknown>, name: string): void {
 }
 
 /**
- * Install the patch, once per process: every later read of a virtual path in
- * this process, through `fs`, `fs.promises` or `fs/promises`, reads the file
- * beneath it.
+ * Install the patch: every later read of a virtual path in this process,
+ * through `fs`, `fs.promises` or `fs/promises`, reads the file beneath it.
+ * Call it once per process (the runtime does, with the first table it
+ * installs): a second call patches the patched functions again.
  */
 export function installVirtualFs(): void {
-  const marked = process as unknown as Record<symbol, boolean>;
-  if (marked[PATCHED]) {
-    return;
-  }
-  marked[PATCHED] = true;
   const callbacks = fs as unknown as Record<string, unknown>;
   const promises = fs.promises as unknown as Record<string, unknown>;
   for (const name of [...READERS, ...SYNC_READERS]) {

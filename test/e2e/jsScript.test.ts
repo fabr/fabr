@@ -362,7 +362,7 @@ describe("e2e: fabr run — selecting an entry (multi-bin)", () => {
   it("errors, naming the choices, when several bins and none selected", () => {
     const result = runFabr(project, ["-DJS_TARGET=es2020", "run", "multi"]);
     expect(result.status).to.not.equal(0);
-    expect(result.stderr).to.contain("2 candidate entries");
+    expect(result.stderr).to.contain("'multi' has 2 candidate entries");
     expect(result.stderr).to.contain("one");
     expect(result.stderr).to.contain("two");
   });

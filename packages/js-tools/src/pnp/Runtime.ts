@@ -140,6 +140,7 @@ export function installPnpRuntime(table: string): void {
   if (tables.resolvers.has(root)) {
     return;
   }
+  const first = tables.resolvers.size === 0;
   const resolver = PnpResolver.load(root, []);
   if (resolver === undefined) {
     throw new Error(`No PnP table at ${table}`);
@@ -186,7 +187,9 @@ export function installPnpRuntime(table: string): void {
     answered.set(key, file);
     return file ?? next();
   };
-  installVirtualFs();
+  if (first) {
+    installVirtualFs();
+  }
   (process.versions as Record<string, string>).pnp = PNP_STANDARD;
   const internals = nodeModule.Module as unknown as IModuleInternals;
   const resolveFilename = internals._resolveFilename;

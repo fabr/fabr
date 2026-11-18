@@ -286,6 +286,15 @@ export function pnpPreloadOf(context: TargetContext): Computable<IPnpPreload> {
   });
 }
 
+/** Lay out a program's `packages` in a `node_modules` tree, each reached at `node_modules/<name>`. */
+export function nodeModulesLayout(packages: PackageFileSet[]): IProgramLayout {
+  return {
+    files: FileSet.layout({ node_modules: assembleNodeModules(packages) }),
+    locationOf: pkg => `node_modules/${pkg.packageName}`,
+    interpreterArgs: [],
+  };
+}
+
 /**
  * Lay out a program's `packages` (those of `deps`, and a package entry among
  * them) as `layout` says:
@@ -301,11 +310,7 @@ export function pnpPreloadOf(context: TargetContext): Computable<IPnpPreload> {
  */
 export function layoutProgram(context: TargetContext, packages: PackageFileSet[], layout: NodeLayout): Computable<IProgramLayout> {
   if (layout === NODE_MODULES) {
-    return Computable.resolve({
-      files: FileSet.layout({ node_modules: assembleNodeModules(packages) }),
-      locationOf: pkg => `node_modules/${pkg.packageName}`,
-      interpreterArgs: [],
-    });
+    return Computable.resolve(nodeModulesLayout(packages));
   }
   return Computable.forAll(
     [
@@ -318,7 +323,7 @@ export function layoutProgram(context: TargetContext, packages: PackageFileSet[]
     (manifest, preload) =>
       context.ensureTree(preload.runtime).then((): IProgramLayout => ({
         files: FileSet.layout({ [PNP_DATA_FILE]: manifest.toFile(), [PNP_PRELOAD]: preload.file }),
-        locationOf: pkg => manifest.mountOf(pkg).replace(/\/$/, ""),
+        locationOf: pkg => manifest.mountOf(pkg),
         /* `./`, so node reads it as a file rather than a package name. */
         interpreterArgs: ["--require", { installFile: `./${PNP_PRELOAD}` }],
       }))

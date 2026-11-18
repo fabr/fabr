@@ -29,7 +29,8 @@
  *
  * Usage (the runner contract, same as every flavour):
  *   node runner.js --report=<path> --env=<node|jsdom> [--update-snapshots]
- *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]... <test-file>...
+ *                  [--name-pattern=<regex>] [--setup=<module|./staged path>]...
+ *                  [--pnp=<file>] [--reads=<file>] <test-file>...
  */
 
 import { availableParallelism } from "node:os";
