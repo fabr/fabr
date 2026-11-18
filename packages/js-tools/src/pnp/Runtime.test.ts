@@ -86,7 +86,9 @@ describe("installPnpRuntime", () => {
   let work: string;
 
   beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnp-runtime-")));
+    /* The native realpath, which expands a Windows short name (`RUNNER~1`) as
+     * every realpath the runtime reports does. */
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-pnp-runtime-")));
     work = path.join(root, "work");
     const pool = path.join(root, "pool");
     for (const [name, files] of Object.entries({

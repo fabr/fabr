@@ -112,13 +112,20 @@ export function installFromPreload(preload: string): void {
   /* Another table's preload, inherited from the process that started this
    * one, is dropped: this table answers here and in what this process starts. */
   const option = `--require ${JSON.stringify(preload)}`;
-  const others = (process.env.NODE_OPTIONS ?? "").replace(OTHER_PRELOAD, held => (held === option ? held : ""));
-  const kept = others.replace(/\s+/g, " ").trim();
+  const kept = (process.env.NODE_OPTIONS ?? "")
+    .replace(QUOTED_REQUIRE, (held, quoted: string) => (held !== option && isPreload(JSON.parse(quoted)) ? "" : held))
+    .replace(/\s+/g, " ")
+    .trim();
   process.env.NODE_OPTIONS = kept.includes(option) ? kept : [kept, option].filter(Boolean).join(" ");
 }
 
-/** Matches a `NODE_OPTIONS` entry that loads a table's preload ({@link PNP_PRELOAD}), as {@link installFromPreload} writes one. */
-const OTHER_PRELOAD = new RegExp(`--require "(?:[^"\\\\]|\\\\.)*[\\\\/]${PNP_PRELOAD.replace(/\./g, "\\.")}"`, "g");
+/** Matches a `NODE_OPTIONS` entry that requires a quoted path, as {@link installFromPreload} writes one: the quoted path, as JSON, is its group. */
+const QUOTED_REQUIRE = /--require ("(?:[^"\\]|\\.)*")/g;
+
+/** @return true if `file` is a table's preload ({@link PNP_PRELOAD}), otherwise false. */
+function isPreload(file: unknown): boolean {
+  return typeof file === "string" && path.basename(file) === PNP_PRELOAD;
+}
 
 /**
  * Resolve this process's module requests through the PnP table `table`, from

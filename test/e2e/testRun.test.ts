@@ -159,9 +159,10 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       "src/c.test.ts":
         'require("child_process").execFileSync(process.execPath, ["-e", "require(" + JSON.stringify(require.resolve("./b")) + ")"]);\n' +
         'require("fs").appendFileSync(process.env.MARKER, "c\\n");\ndescribe("c", () => { it("is", () => {}); });\n',
-      /* What a shell it starts reads is beyond any record, so it runs on every change. */
+      /* What a node process it starts with an environment of its own (no
+       * recorder) reads is beyond any record, so it runs on every change. */
       "src/d.test.ts":
-        'require("child_process").execSync("exit 0");\nrequire("fs").appendFileSync(process.env.MARKER, "d\\n");\ndescribe("d", () => { it("is", () => {}); });\n',
+        'require("child_process").execFileSync(process.execPath, ["-e", ""], { env: {} });\nrequire("fs").appendFileSync(process.env.MARKER, "d\\n");\ndescribe("d", () => { it("is", () => {}); });\n',
     });
 
     const first = runFabr(files(unique, unique), ["-DJS_TARGET=es2020", "test", "thing"]);
@@ -182,7 +183,8 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(ran(), "an unchanged run runs nothing").to.deep.equal([]);
   });
 
-  it("lets a node process a test starts end by a signal, as it would unrecorded", () => {
+  /* Windows has no signals: a process sent one is terminated outright. */
+  (process.platform === "win32" ? it.skip : it)("lets a node process a test starts end by a signal, as it would unrecorded", () => {
     const result = runFabr(
       {
         ...STUB_TSC,
