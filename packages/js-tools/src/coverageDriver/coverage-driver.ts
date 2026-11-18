@@ -209,7 +209,12 @@ async function convert(options: ICoverageConvertOptions): Promise<void> {
 
   const measured = new Set(options.measured);
   /* Sum the counts of a script every process loaded before converting anything. */
-  const merged = mergeProcessCovs(recordedCoverage(options.raw.map(directory => path.resolve(directory)), measured));
+  const merged = mergeProcessCovs(
+    recordedCoverage(
+      options.raw.map(directory => path.resolve(directory)),
+      measured
+    )
+  );
   const byName = new Map(merged.result.map(script => [script.url, script]));
 
   const physical = physicalPaths();

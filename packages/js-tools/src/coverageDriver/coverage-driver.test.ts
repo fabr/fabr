@@ -183,7 +183,9 @@ describe("the coverage driver, over real V8 coverage", () => {
       },
     });
     assert.equal(run.status, 0, String(run.stderr));
-    const names = [...new Set(Object.values(JSON.parse(fs.readFileSync(path.join(root, "table.json"), "utf8")) as Record<string, string>))];
+    const names = [
+      ...new Set(Object.values(JSON.parse(fs.readFileSync(path.join(root, "table.json"), "utf8")) as Record<string, string>)),
+    ];
     drive({ kind: "convert", raw: ["raw", "kept"], measured: names, output: "lcov.info" });
     return parseLcov(fs.readFileSync(path.join(root, "lcov.info"), "utf8"));
   }
@@ -213,7 +215,9 @@ describe("the coverage driver, over real V8 coverage", () => {
     measure(["out/math.js"]);
     const recorded = fs.readdirSync(path.join(root, "raw", "0"));
     assert.equal(recorded.length, 1);
-    const { result } = JSON.parse(fs.readFileSync(path.join(root, "raw", "0", recorded[0]), "utf8")) as { result: Array<{ url: string }> };
+    const { result } = JSON.parse(fs.readFileSync(path.join(root, "raw", "0", recorded[0]), "utf8")) as {
+      result: Array<{ url: string }>;
+    };
     assert.deepEqual(
       result.map(script => script.url),
       ["out/math.js"]

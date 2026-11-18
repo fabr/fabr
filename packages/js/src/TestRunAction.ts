@@ -209,12 +209,21 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
                * file cannot stop the others: concludeRun judges the outcomes. */
               rerun.map(file => {
                 const index = testFiles.indexOf(file);
-                return runOneFile(ctx, report, argv, coverage?.environmentOf(index) ?? declared, file, index, layout, directories).then(
-                  run => tally.add(run)
-                );
+                return runOneFile(
+                  ctx,
+                  report,
+                  argv,
+                  coverage?.environmentOf(index) ?? declared,
+                  file,
+                  index,
+                  layout,
+                  directories
+                ).then(run => tally.add(run));
               }),
               (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
-            ).then(latest => (coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest, testFiles).then(() => latest)));
+            ).then(latest =>
+              coverage === undefined ? Computable.resolve(latest) : coverage.merge(latest, testFiles).then(() => latest)
+            );
           });
         })
         .then(latest =>
@@ -340,7 +349,10 @@ class TestCoverage {
             return this.drive(String(shard), options).then(() => fs.readFileSync(join(this.ctx.workDir, output), "utf8"));
           }),
           (...documents) => {
-            fs.writeFileSync(join(this.ctx.workDir, COVERAGE_REPORT_FILENAME), lcovOf(mergeCoverage(documents.map(parseLcov)).values()));
+            fs.writeFileSync(
+              join(this.ctx.workDir, COVERAGE_REPORT_FILENAME),
+              lcovOf(mergeCoverage(documents.map(parseLcov)).values())
+            );
           }
         );
       }
