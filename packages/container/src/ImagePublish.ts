@@ -37,6 +37,7 @@ import {
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
+import { attachImageAttestation, IImageAttestation } from "./ImageAttestation";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { blobPath, OCI_LAYOUT_DOCUMENT, OCI_LAYOUT_FILE, OCI_LAYOUT_INDEX, REF_NAME_ANNOTATION } from "./OciLayout";
 import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_INDEX, OCI_MANIFEST, Registry, toManifestDocument } from "./OciProtocol";
@@ -185,40 +186,61 @@ function compressLayer(tar: IFile, out: string): Computable<void> {
  * the repository lacks, then the manifest. A blob is mounted from the
  * repository it was published to where that is on the same registry, else
  * uploaded (a layer published on another registry is streamed from there).
+ * Where the tag does not name the manifest yet, `sign` is asked for an
+ * attestation of the manifest before anything is pushed. One it gives is
+ * attached to the image before the tag is put: the manifest is put by its
+ * digest first, so the tag names the image only once its attestation is in,
+ * and a push that fails before then is not already synced when run again.
  * @return "already-synced" where the tag already names the manifest, else "published".
  */
 export function pushImage(
   context: TargetContext,
   registry: Registry,
   carrier: PublishableFileSet,
-  repository: string
+  repository: string,
+  sign: (manifest: IDescriptor) => Computable<IImageAttestation | undefined> = () => Computable.resolve(undefined)
 ): Computable<PublishStatus> {
   const tag = packageCoordinateOf(carrier.destination).version;
   return carrier
     .readFile(OCI_LAYOUT_INDEX)
     .then(indexText => {
-      const path = blobPath(parseJson(indexText, OCI_LAYOUT_INDEX, toIndexedManifest).digest);
+      const indexed = parseJson(indexText, OCI_LAYOUT_INDEX, toIndexedManifest);
+      const path = blobPath(indexed.digest);
       return Computable.forAll(
         [carrier.readFile(path), carrier.readFile(CARRIER_SOURCES)] as const,
         (manifestText: string, sourcesText: string) => ({
+          indexed,
           manifestText,
           manifestImage: parseJson(manifestText, path, toImageManifest),
           sources: new Map(parseJson(sourcesText, CARRIER_SOURCES, toLayerSources).map(source => [source.digest, source])),
         })
       );
     })
-    .then(({ manifestText, manifestImage, sources }) => {
+    .then(({ indexed, manifestText, manifestImage, sources }) => {
       const manifest = Buffer.from(manifestText, "utf8");
+      const subject: IDescriptor = { mediaType: OCI_MANIFEST, digest: digestOf(manifest), size: manifest.length };
+      if (subject.digest !== indexed.digest) {
+        throw new FabrError(`a carrier's index names ${indexed.digest}, but its manifest's digest is ${subject.digest}`);
+      }
       return registry.taggedDigest(repository, tag).then(existing => {
-        if (existing === digestOf(manifest)) {
+        if (existing === subject.digest) {
           return Computable.resolve<PublishStatus>("already-synced");
         }
-        const blobs = [...manifestImage.layers, manifestImage.config].map(blob =>
-          pushBlob(context, registry, repository, blob, carrier.getFile(blobPath(blob.digest)), sources.get(blob.digest))
-        );
-        return Computable.forAll(blobs, () => undefined)
-          .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST))
-          .then((): PublishStatus => "published");
+        return sign(subject).then(attestation => {
+          const blobs = [...manifestImage.layers, manifestImage.config].map(blob =>
+            pushBlob(context, registry, repository, blob, carrier.getFile(blobPath(blob.digest)), sources.get(blob.digest))
+          );
+          const attached = (): Computable<unknown> =>
+            attestation === undefined
+              ? Computable.resolve(undefined)
+              : registry
+                  .putManifest(repository, subject.digest, manifest, OCI_MANIFEST)
+                  .then(() => attachImageAttestation(registry, repository, subject, attestation));
+          return Computable.forAll(blobs, () => undefined)
+            .then(attached)
+            .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST))
+            .then((): PublishStatus => "published");
+        });
       });
     });
 }

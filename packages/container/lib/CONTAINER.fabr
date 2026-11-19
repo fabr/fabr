@@ -21,6 +21,9 @@ targetdef oci_repository {
     # The address a login to the registry is filed under, as given to
     # `docker login` or `podman login`: by default the host of `url`.
     login_url = STRING;
+    # Whether a push from CI attaches a signed provenance statement to the
+    # image where it applies: `on` (the default) or `off`.
+    provenance = STRING;
 }
 
 #

@@ -78,10 +78,36 @@ const sha256 = (data: Buffer | string): string => `sha256:${createHash("sha256")
 interface IFakeRegistry {
   readonly url: string;
   readonly requests: string[];
+  /** Get the manifests `repository` holds, by tag and digest. */
+  manifestsOf(repository: string): ReadonlyMap<string, string>;
+  /** Get the blob `digest`, as uploaded or held. */
+  blob(digest: string): Buffer | string | undefined;
   close(): Promise<void>;
 }
 
-async function startRegistry(options: { declineMounts?: boolean } = {}): Promise<IFakeRegistry> {
+/** A certificate for the fake Fulcio to issue. */
+const CERTIFICATE = `-----BEGIN CERTIFICATE-----
+MIIBJzCBzgIJAJfJvFEElpo7MAoGCCqGSM49BAMCMBsxGTAXBgNVBAMMEGZhYnIt
+dGVzdC1mdWxjaW8wIBcNMjYxMTExMDI0MzAxWhgPMjEyNjEwMTgwMjQzMDFaMBsx
+GTAXBgNVBAMMEGZhYnItdGVzdC1mdWxjaW8wWTATBgcqhkjOPQIBBggqhkjOPQMB
+BwNCAASixLPyPpMtg39bfwejfBKj1fZfJH4IYZh8DuVlD4eeBDQ/QjcYynjEQnvu
+i5oBWk0tSGCd0oy2JZXic3fOO7uuMAoGCCqGSM49BAMCA0gAMEUCIQD8lycWVf8S
+07g74WFv3ck8l+7FcyjjHWIjU6S31EwhtAIgZPDNsOQR9elPe7TNMzUFq6SzylrL
+SZmsJo0cKcK3owM=
+-----END CERTIFICATE-----
+`;
+
+/**
+ * Start a registry holding one image, `library/demo:1.0`, which also answers
+ * as Sigstore's Fulcio and Rekor. With `referrers`, it says it recorded a
+ * pushed manifest's subject (`OCI-Subject`), as one with the referrers API
+ * does; with `rekorStatus`, Rekor answers with that status; with
+ * `failReferrers`, it refuses that many puts of a manifest with a subject.
+ */
+async function startRegistry(
+  options: { declineMounts?: boolean; referrers?: boolean; rekorStatus?: number; failReferrers?: number } = {}
+): Promise<IFakeRegistry> {
+  let refusals = options.failReferrers ?? 0;
   const layers = [
     await layerTar({
       "etc/os-release": "base",
@@ -158,6 +184,22 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
         .end(JSON.stringify({ token: scopes.length > 0 && scopes.every(scope => scope.startsWith("repository:")) ? "t" : "wrong" }));
       return;
     }
+    if (url.pathname === "/api/v2/signingCert") {
+      res.writeHead(201).end(JSON.stringify({ signedCertificateEmbeddedSct: { chain: { certificates: [CERTIFICATE] } } }));
+      return;
+    }
+    if (url.pathname === "/api/v1/log/entries") {
+      const entry = {
+        body: Buffer.from('{"kind":"dsse","apiVersion":"0.0.1"}').toString("base64"),
+        integratedTime: 1,
+        logID: "00",
+        logIndex: 7,
+      };
+      res
+        .writeHead(options.rekorStatus ?? 201)
+        .end(options.rekorStatus === undefined ? JSON.stringify({ uuid: entry }) : "unavailable");
+      return;
+    }
     if (url.pathname === "/v2/" || req.headers.authorization !== "Bearer t") {
       res.writeHead(401, { "www-authenticate": `Bearer realm="${origin}/token",service="test"` }).end();
       return;
@@ -207,9 +249,15 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
       const found = /^\/v2\/(.+)\/(manifests|blobs)\/([^/]+)$/.exec(url.pathname);
       if (found !== null && found[2] === "manifests" && req.method === "PUT") {
         const text = received.toString("utf8");
+        if ((JSON.parse(text) as { subject?: unknown }).subject !== undefined && refusals > 0) {
+          refusals--;
+          res.writeHead(500).end("unavailable");
+          return;
+        }
         repositoryOf(found[1]).manifests.set(found[3], text);
         repositoryOf(found[1]).manifests.set(sha256(text), text);
-        res.writeHead(201).end();
+        const subject = (JSON.parse(text) as { subject?: { digest: string } }).subject;
+        res.writeHead(201, options.referrers && subject !== undefined ? { "oci-subject": subject.digest } : {}).end();
         return;
       }
       const held = found === null ? undefined : repositoryOf(found[1]);
@@ -232,7 +280,13 @@ async function startRegistry(options: { declineMounts?: boolean } = {}): Promise
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { url: origin, requests, close: () => new Promise(done => server.close(() => done())) };
+  return {
+    url: origin,
+    requests,
+    manifestsOf: repository => repositoryOf(repository).manifests,
+    blob: digest => blobs.get(digest),
+    close: () => new Promise(done => server.close(() => done())),
+  };
 }
 
 /**
@@ -553,5 +607,161 @@ describe("OciRepository", () => {
     expect(projected.name).to.equal("demo");
     expect(projected.versionConstraint).to.equal("1.0");
     expect(projected.projections).to.have.lengthOf(1);
+  });
+});
+
+describe("OciRepository provenance", () => {
+  const SIGSTORE_BUNDLE = "application/vnd.dev.sigstore.bundle.v0.3+json";
+  let server: IFakeRegistry;
+
+  afterEach(async () => {
+    await server.close();
+    workDirs.splice(0).forEach(dir => fs.rmSync(dir, { recursive: true, force: true }));
+  });
+
+  /** Make an unsigned JWT whose payload is `claims`. */
+  function jwt(claims: Record<string, unknown>): string {
+    const part = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+    return `${part({ alg: "RS256" })}.${part(claims)}.signature`;
+  }
+
+  /**
+   * Push an image built here to `myorg/app:<tag>` on `server`, which serves
+   * Sigstore too, from a CI job building a repository of `visibility` (none:
+   * outside CI). @return what the push reports and the image's digest.
+   */
+  async function pushFromRun(
+    options: { visibility?: "public" | "private"; provenance?: boolean; tag?: string } = {}
+  ): Promise<{ status: string; digest: string }> {
+    const context = fetchingContext("x86_64-unknown-linux");
+    if (options.visibility !== undefined) {
+      (context.execution as { identityProvider?: unknown }).identityProvider = {
+        token: (audience: string) =>
+          Computable.resolve(audience === "sigstore" ? jwt({ sub: "repo:acme/app:ref:refs/heads/main" }) : "id"),
+        build: {
+          statementType: "https://in-toto.io/Statement/v1",
+          predicateType: "https://slsa.dev/provenance/v1",
+          predicate: { runDetails: { metadata: { invocationId: "https://github.com/acme/app/actions/runs/1/attempts/1" } } },
+          sourceRepository: "https://github.com/acme/app",
+          isPublicSource: () => Computable.resolve(options.visibility === "public"),
+        },
+      };
+    }
+    const repository = new OciRepository(
+      context,
+      new Registry(context, server.url, new RegistrySignIn(server.url, () => Computable.resolve(undefined))),
+      undefined,
+      undefined,
+      options.provenance ?? true,
+      { fulcioUrl: server.url, rekorUrl: server.url }
+    );
+    const layer = await builtLayer({ "app/main": "built" });
+    const config = toImageConfig({ architecture: "amd64", os: "linux", rootfs: { type: "layers", diff_ids: [layer.index.diffId] } });
+    const [carrier] = await Promise.resolve(
+      repository.package([
+        {
+          destination: repository.getRepositoryPublishRef(parseName(`myorg/app:${options.tag ?? "1"}`)),
+          content: ImageFileSet.of(config, [layer], "app"),
+        },
+      ])
+    );
+    const index = JSON.parse(await carrier.readFile("index.json")) as { manifests: Array<{ digest: string }> };
+    return { status: await Promise.resolve(repository.publish(carrier)), digest: index.manifests[0].digest };
+  }
+
+  /** @return the attestations `repository` holds, each its manifest. */
+  function attestationsIn(repository: string): Array<{ subject: { digest: string }; layers: Array<{ digest: string }> }> {
+    return [...new Set(server.manifestsOf(repository).values())]
+      .map(text => JSON.parse(text) as { artifactType?: string; subject: { digest: string }; layers: Array<{ digest: string }> })
+      .filter(manifest => manifest.artifactType === SIGSTORE_BUNDLE);
+  }
+
+  /** @return the in-toto statement the bundle of `attestation` signs. */
+  function statementOf(attestation: { layers: Array<{ digest: string }> }): { subject: Array<{ name: string; digest: unknown }> } {
+    const bundle = JSON.parse(server.blob(attestation.layers[0].digest)!.toString()) as { dsseEnvelope: { payload: string } };
+    return JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, "base64").toString("utf8")) as {
+      subject: Array<{ name: string; digest: unknown }>;
+    };
+  }
+
+  it("attaches a signed provenance statement to an image pushed from a public repository's CI, as a referrer", async () => {
+    server = await startRegistry({ referrers: true });
+    const { status, digest } = await pushFromRun({ visibility: "public" });
+    expect(status).to.equal("published");
+    const [attestation, ...others] = attestationsIn("myorg/app");
+    expect(others).to.deep.equal([]);
+    expect(attestation.subject.digest).to.equal(digest);
+    expect(statementOf(attestation).subject).to.deep.equal([
+      { name: `${new URL(server.url).host}/myorg/app`, digest: { sha256: digest.substring("sha256:".length) } },
+    ]);
+    /* The registry recorded the subject, so no referrers tag index is written. */
+    expect(server.manifestsOf("myorg/app").has(digest.replace(":", "-"))).to.equal(false);
+    /* Signed before anything was pushed; the image put by digest, then its attestation, then the tag. */
+    const signed = server.requests.indexOf("POST /api/v1/log/entries");
+    const puts = server.requests.filter(request => request.startsWith("PUT /v2/myorg/app/manifests/"));
+    expect(signed).to.be.lessThan(server.requests.indexOf(puts[0]));
+    expect(puts).to.have.lengthOf(3);
+    expect(puts[0]).to.equal(`PUT /v2/myorg/app/manifests/${digest}`);
+    expect(puts[2]).to.equal("PUT /v2/myorg/app/manifests/1");
+  });
+
+  it("leaves the tag unset where attaching the attestation fails, so a second push completes it", async () => {
+    server = await startRegistry({ referrers: true, failReferrers: 1 });
+    const failed = await pushFromRun({ visibility: "public" }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failed?.message).to.match(/refused putting the manifest myorg\/app:sha256:/);
+    expect(server.manifestsOf("myorg/app").has("1")).to.equal(false);
+    const { status, digest } = await pushFromRun({ visibility: "public" });
+    expect(status).to.equal("published");
+    expect(server.manifestsOf("myorg/app").has("1")).to.equal(true);
+    expect(attestationsIn("myorg/app").map(attestation => attestation.subject.digest)).to.deep.equal([digest]);
+  });
+
+  it("lists the attestation in the referrers tag index where the registry has no referrers API, keeping those listed", async () => {
+    server = await startRegistry();
+    const first = await pushFromRun({ visibility: "public", tag: "1" });
+    const second = await pushFromRun({ visibility: "public", tag: "latest" });
+    expect(second.digest).to.equal(first.digest);
+    const index = JSON.parse(server.manifestsOf("myorg/app").get(first.digest.replace(":", "-"))!) as {
+      mediaType: string;
+      manifests: Array<{ digest: string; artifactType: string }>;
+    };
+    expect(index.mediaType).to.equal("application/vnd.oci.image.index.v1+json");
+    expect(index.manifests).to.have.lengthOf(2);
+    expect(index.manifests.every(entry => entry.artifactType === SIGSTORE_BUNDLE)).to.equal(true);
+    expect(attestationsIn("myorg/app").map(attestation => attestation.subject.digest)).to.deep.equal([first.digest, first.digest]);
+  });
+
+  for (const [where, options] of [
+    ["from a private repository", { visibility: "private" }],
+    ["outside CI", {}],
+    ["where the repository turns it off", { visibility: "public", provenance: false }],
+  ] as const) {
+    it(`pushes without provenance ${where}`, async () => {
+      server = await startRegistry({ referrers: true });
+      expect((await pushFromRun(options)).status).to.equal("published");
+      expect(attestationsIn("myorg/app")).to.deep.equal([]);
+      expect(server.requests.filter(request => request.startsWith("POST /api/"))).to.deep.equal([]);
+    });
+  }
+
+  it("pushes nothing where signing fails", async () => {
+    server = await startRegistry({ referrers: true, rekorStatus: 503 });
+    const err = await pushFromRun({ visibility: "public" }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(err?.message).to.match(/^Rekor at .* failed \(503\)/);
+    expect(server.requests.filter(request => request.startsWith("PUT /v2/") || request.startsWith("POST /v2/"))).to.deep.equal([]);
+  });
+
+  it("signs nothing where the tag already names the image", async () => {
+    server = await startRegistry({ referrers: true });
+    await pushFromRun({ visibility: "public" });
+    server.requests.length = 0;
+    expect((await pushFromRun({ visibility: "public" })).status).to.equal("already-synced");
+    expect(server.requests.filter(request => request.startsWith("POST /api/"))).to.deep.equal([]);
   });
 });

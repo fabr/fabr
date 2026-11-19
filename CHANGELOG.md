@@ -12,6 +12,7 @@ together and share a version number.
 - A `sync` target's image entry now contains an OCI image layout whose `index.json` names the pushed
   image's digest, platform and full reference (`host/repository:tag@sha256:…`), readable with
   `fabr cat` before or after `fabr sync`.
+- Add provenance attestation support for OCI publishing.
 
 ## Fabr 0.4.2
 @fabr-build/core

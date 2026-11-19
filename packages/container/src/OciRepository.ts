@@ -24,11 +24,13 @@ import {
   FabrError,
   FileSet,
   IProvenanceStep,
+  ISigstoreInstance,
   MemoryCache,
   Name,
   onlyTo,
   PackageFileSet,
   PartialRepositoryRef,
+  PUBLIC_SIGSTORE,
   Property,
   registerProvenanceDescriber,
   registerProvenanceRenderer,
@@ -51,6 +53,7 @@ import {
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { imageRunnable } from "./ImageRunnable";
 import { isDigest, splitImageReference } from "./ImageReference";
+import { signImageProvenance } from "./ImageAttestation";
 import { packageImage, pushImage } from "./ImagePublish";
 import { authFileSignIn } from "./RegistrySignIn";
 import {
@@ -144,7 +147,11 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     /** The namespace a single-segment name is in (`library` on Docker Hub), where the registry has one. */
     private readonly defaultNamespace?: string,
     /** The name the registry's login is stored under, where it is not the host of its URL (`login_url`). */
-    private readonly loginUrl?: string
+    private readonly loginUrl?: string,
+    /** Whether a push from CI attaches a signed provenance statement where it applies. */
+    private readonly provenance = true,
+    /** The Sigstore instance provenance statements are signed with. */
+    private readonly sigstore: ISigstoreInstance = PUBLIC_SIGSTORE
   ) {}
 
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
@@ -204,19 +211,27 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
 
   /** Package each member's image for this registry, named as it is published here (see {@link packageImage}). */
   public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
-    const host = new URL(this.registry.url).host;
     return Computable.forAll(
       members.map(member => {
         const { name, version } = packageCoordinateOf(member.destination);
-        return packageImage(this.context, member, `${host}/${this.repositoryOf(name)}:${version}`);
+        return packageImage(this.context, member, `${this.publishedName(name)}:${version}`);
       }),
       (...carriers: PublishableFileSet[]) => carriers
     );
   }
 
-  /** Push a packaged image under its tag (see {@link pushImage}). */
+  /**
+   * Push a packaged image under its tag (see {@link pushImage}), with a signed
+   * provenance statement where this repository asks for one and it applies
+   * (see {@link signImageProvenance}).
+   */
   public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
-    return pushImage(this.context, this.registry, artifact, this.repositoryOf(artifact.destination.name));
+    const name = artifact.destination.name;
+    return pushImage(this.context, this.registry, artifact, this.repositoryOf(name), manifest =>
+      this.provenance
+        ? signImageProvenance(this.context, this.publishedName(name), manifest, this.sigstore)
+        : Computable.resolve(undefined)
+    );
   }
 
   /**
@@ -330,6 +345,11 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     });
   }
 
+  /** @return the name an image is published as here, `host/repository`. */
+  private publishedName(image: string): string {
+    return `${new URL(this.registry.url).host}/${this.repositoryOf(image)}`;
+  }
+
   /** @return the repository an image's name is in at the registry: a single-segment name's in the default namespace. */
   private repositoryOf(image: string): string {
     return this.defaultNamespace !== undefined && !image.includes("/") ? `${this.defaultNamespace}/${image}` : image;
@@ -344,11 +364,24 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
  */
 function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
-    [context.getProperty("url"), context.getProperty("default_namespace"), context.getProperty("login_url")],
-    (declared: Property | undefined, defaultNamespace: Property | undefined, loginUrl: Property | undefined) => {
+    [
+      context.getProperty("url"),
+      context.getProperty("default_namespace"),
+      context.getProperty("login_url"),
+      context.getString("provenance"),
+    ],
+    (
+      declared: Property | undefined,
+      defaultNamespace: Property | undefined,
+      loginUrl: Property | undefined,
+      provenance: string | undefined
+    ) => {
       const written = declared?.toString() ?? url;
       if (written === undefined) {
         throw new FabrError("Missing required property url");
+      }
+      if (provenance !== undefined && provenance !== "on" && provenance !== "off") {
+        throw new FabrError(`invalid provenance value ${JSON.stringify(provenance)} (expected "on" or "off")`);
       }
       const base = written.replace(/\/+$/, "");
       const signIn = registrySignIn(context, base, loginUrl?.toString(), credential);
@@ -356,7 +389,8 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
         context,
         new Registry(context, base, signIn),
         defaultNamespace?.toString(),
-        credential === undefined ? loginUrl?.toString() : undefined
+        credential === undefined ? loginUrl?.toString() : undefined,
+        provenance !== "off"
       );
     }
   );

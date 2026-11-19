@@ -417,13 +417,35 @@ export class Registry {
     });
   }
 
-  /** Put `manifest` into `repository` under `tag`. */
-  public putManifest(repository: string, tag: string, manifest: Buffer, mediaType: string): Computable<void> {
+  /**
+   * Put `manifest` into `repository` under `tag` (a tag or its digest).
+   * @return the digest the registry says it recorded as the manifest's
+   * subject (`OCI-Subject`), or undefined where it says none.
+   */
+  public putManifest(repository: string, tag: string, manifest: Buffer, mediaType: string): Computable<string | undefined> {
     return this.send(`/v2/${repository}/manifests/${tag}`, {
       method: "PUT",
       headers: { "content-type": mediaType },
       body: manifest,
-    }).then(response => this.expect(response, [201], `putting the manifest ${repository}:${tag}`));
+    }).then(response => {
+      this.expect(response, [201], `putting the manifest ${repository}:${tag}`);
+      const subject = response.headers["oci-subject"];
+      return typeof subject === "string" ? subject : undefined;
+    });
+  }
+
+  /**
+   * Read the manifest `tag` names in `repository` as the registry holds it now,
+   * uncached, or undefined where there is none: for a document fabr changes.
+   */
+  public currentManifest(repository: string, tag: string): Computable<Buffer | undefined> {
+    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "GET", headers: { accept: MANIFEST_ACCEPT } }).then(response => {
+      if (response.statusCode === 404) {
+        return undefined;
+      }
+      this.expect(response, [200], `reading the manifest ${repository}:${tag}`);
+      return response.body;
+    });
   }
 
   /** Send a request to `path` (or a whole URL) on the registry, signed in. */

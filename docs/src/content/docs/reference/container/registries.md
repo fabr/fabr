@@ -43,6 +43,7 @@ Docker Hub is declared for you as `@docker`; declare any other registry with an
 | `docker pull --platform linux/amd64` | `-DOCI_TARGET=x86_64-unknown-linux`; see [The image's platform](/reference/container/images/#the-images-platform). |
 | `docker login ghcr.io` | The same: fabr reads the credentials Docker and podman store; see [Signing in](#signing-in). |
 | `docker tag` and `docker push` | A `sync` entry, then `fabr sync`; see [Pushing images](#pushing-images). |
+| `actions/attest-build-provenance` with `push-to-registry`, `cosign attest` | Automatic from GitHub Actions and GitLab; see [Provenance](#provenance). |
 | A registry mirror in `daemon.json` | Declare `@docker` with the mirror's URL; see [Declaring a registry](#declaring-a-registry). |
 
 ## Naming images
@@ -114,6 +115,7 @@ oci_repository @internal { url = https://registry.example.com:5000; }
 | `url` | The registry's URL. Required. |
 | `default_namespace` | The namespace a repository named with one segment is in (`library` on Docker Hub). None: the name is used as it is. |
 | `login_url` | The name the registry's login is stored under, as `docker login` stores it. By default, the host of `url`. |
+| `provenance` | `on` (the default) or `off`: whether an image pushed from CI carries a signed provenance statement where it applies; see [Provenance](#provenance). |
 
 `@docker` is declared as a default, so a project can declare it again to read Docker Hub's images
 through a mirror:
@@ -219,6 +221,45 @@ registry is not in it: `sources.json` beside the layout records where each such 
 from when the image is pushed. A tool can inspect the layout, but copying or loading it needs the
 missing layers.
 
+### Provenance
+
+From a GitHub Actions workflow granted `id-token: write`, or a GitLab CI/CD job given an identity
+token for Sigstore, each image of a public repository is pushed with a signed
+[SLSA provenance](https://slsa.dev/spec/v1.0/provenance) statement: it says the image, by its
+digest, was built by this workflow run or job, from this repository at this commit. It is signed
+with [Sigstore](https://www.sigstore.dev/) and recorded in its public transparency log, so an image
+from a private repository is pushed without one.
+
+The statement is attached to the image in the registry, as GitHub's `attest-build-provenance` and
+`cosign attest` attach one: as an OCI artifact whose subject is the image, holding the Sigstore
+bundle. Where the registry has no referrers API, it is also listed in the `sha256-<digest>` tag
+that tools read in its place.
+
+The statement is signed before anything is pushed, and the tag is set only once the statement is
+attached, so the tag never names the image without it: if signing fails, nothing is pushed, and if
+attaching fails, the tag is left as it was and running the release again completes it. An entry
+whose tag already names the image is left as it is, and nothing is signed. To push without
+provenance where it would apply, set `provenance = off;` on the registry:
+
+```
+oci_repository @ghcr {
+  url = https://ghcr.io;
+  provenance = off;
+}
+```
+
+On GitLab, give the job a token for Sigstore in `SIGSTORE_ID_TOKEN`:
+
+```yaml
+# .gitlab-ci.yml
+release:
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: "sigstore"
+  script:
+    - fabr sync release
+```
+
 ## Troubleshooting
 
 **`https://registry-1.docker.io has no image @docker:node:99`**: the registry has no image with
@@ -235,6 +276,9 @@ it is stored under.
 **`the credential for ghcr.io is held by 'docker-credential-desktop', which is not on PATH`**: the
 auth file names a credential helper fabr can't find. Put the helper's directory on `PATH`, or log
 in again so the credentials are stored in the file.
+
+**`Fulcio at … failed`, `Rekor at … failed`**: signing the image's provenance statement failed, and
+the image wasn't pushed. Run the release again.
 
 **`@docker cannot list every image it holds`**: `fabr ls` was given the registry on its own. Name an
 image to list its tags: `fabr ls @docker:alpine`.
