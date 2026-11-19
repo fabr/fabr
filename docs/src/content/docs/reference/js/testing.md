@@ -66,15 +66,16 @@ becomes part of the built package, and `test_deps` are not added to its `package
 For tests that don't belong to a package, such as an end-to-end suite, declare a `js_test`. It
 takes the same settings under shorter names:
 
-| `js_package`           | `js_test`      | What it is                                                                                   |
-| ---------------------- | -------------- | -------------------------------------------------------------------------------------------- |
-| `tests`                | `tests`        | The test files.                                                                              |
-| `deps` and `test_deps` | `deps`         | Packages and supporting sources the tests use.                                               |
-| `compile_deps`         | `compile_deps` | Packages the tests are compiled against whose [flags](#dom-tests) don't change how they run. |
-| `test_framework`       | `framework`    | `node`, `jest` or `vitest`.                                                                  |
-| `test_env`             | `env`          | Environment variables for the test processes.                                                |
-| `test_resources`       | `resources`    | Files the tests read at run time.                                                            |
-| `test_expectations`    | `expectations` | Snapshot files.                                                                              |
+| `js_package`           | `js_test`      | What it is                                                                                                |
+| ---------------------- | -------------- | --------------------------------------------------------------------------------------------------------- |
+| `tests`                | `tests`        | The test files.                                                                                           |
+| `deps` and `test_deps` | `deps`         | Packages and supporting sources the tests use.                                                            |
+| `compile_deps`         | `compile_deps` | Packages the tests are compiled against whose [flags](#dom-tests) don't change how they run.              |
+| `test_framework`       | `framework`    | `node`, `jest` or `vitest`.                                                                               |
+| `test_stability`       | `stability`    | `stable` (the default), `flaky` or `unstable`: see [Flaky and unstable tests](#flaky-and-unstable-tests). |
+| `test_env`             | `env`          | Environment variables for the test processes.                                                             |
+| `test_resources`       | `resources`    | Files the tests read at run time.                                                                         |
+| `test_expectations`    | `expectations` | Snapshot files.                                                                                           |
 
 ```
 js_test e2e {
@@ -128,8 +129,9 @@ Some things differ from running a test framework's own command:
 - **A run is cached, passing or failing.** If nothing the tests depend on has changed, `fabr test`
   reports the previous result without running them again; a failing run's failures are reported
   again, and the command fails again, until something they depend on changes. To run the failed
-  test files again anyway, as for a flaky test, use
-  [`fabr test --retry-failed`](/reference/command-line/#test). The
+  test files again anyway, use
+  [`fabr test --retry-failed`](/reference/command-line/#test); for tests that fail now and then,
+  or whose results can't be cached at all, see [Flaky and unstable tests](#flaky-and-unstable-tests). The
   [exit status](/reference/command-line/#exit-status) is 1 whenever a test failed.
 - **Only the test files a change can reach run again.** Each test file's run records what it
   loaded and read; after a change, a file runs again if it read something that changed, or failed
@@ -148,6 +150,39 @@ Some things differ from running a test framework's own command:
   a server or an open connection behind, as with jest's `--forceExit`.
 - **A test times out after 120 seconds** under every framework, where jest and vitest default to
   5 seconds. A timeout you set on an individual test still applies, as does `jest.setTimeout`.
+
+## Flaky and unstable tests
+
+A target's `test_stability` (`stability` on a `js_test`) says how far fabr can trust its results:
+
+| Value              | For                                                                                      | What fabr does                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `stable` (default) | Tests whose results depend only on their inputs.                                         | Caches the run, and runs again only the test files a change reaches.                                      |
+| `flaky`            | Tests that sometimes fail with the same inputs, such as browser tests.                   | Runs a failed test file again, up to `TEST_FLAKE_RETRIES` more times (2 by default), then caches the run. |
+| `unstable`         | Tests whose results depend on something outside the build, such as evals of an AI model. | Runs every test file every time, and never caches the run.                                                |
+
+```
+js_test browser {
+  tests = e2e:**/*.test.ts;
+  deps = e2e:**/*.ts app @npm:playwright:1.48.0;
+  stability = flaky;
+}
+```
+
+A test that passes only on a retry counts as passed, and the summary names it:
+
+```
+browser: 24 tests passed (1 flaky)
+  opens the menu (e2e/menu.test.ts): passed after 1 retry
+```
+
+A cached flaky run is reported as it was, flaky tests included. A retry runs the whole test file
+again, not just the test that failed. To see a flaky target's failures without retries, set
+`-DTEST_FLAKE_RETRIES=0`.
+
+An `unstable` target's tests run in full each time `fabr test` is run. Under `fabr test -w` they
+run again only when something they depend on changes, as any test does. An `unstable` target is
+never retried; where its tests can also fail by chance, retry inside the test instead.
 
 ## The test environment
 

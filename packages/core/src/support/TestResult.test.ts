@@ -20,7 +20,17 @@
 import { expect } from "chai";
 import { FileSet } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
-import { getTestReport, ITestReport, TEST_REPORT_FILENAME, toTestReport } from "./TestResult";
+import {
+  formatFlakyTests,
+  formatTestSummary,
+  getTestReport,
+  ITestReport,
+  retriedReport,
+  TEST_REPORT_FILENAME,
+  toFlakeRetries,
+  toTestReport,
+  toTestStability,
+} from "./TestResult";
 
 /** A single-file FileSet holding a report artifact with the given raw content. */
 function reportSet(content: string): FileSet {
@@ -116,5 +126,68 @@ describe("toTestReport", () => {
   it("rejects a tests list that isn't a list of test objects", () => {
     expect(() => toTestReport(withResults({ tests: {} }))).to.throw(/not a recognizable CTRF report/);
     expect(() => toTestReport(withResults({ tests: [null] }))).to.throw(/not a recognizable CTRF report/);
+  });
+});
+
+/** A report of `tests`, each `[name, status]`, its summary counted from them. */
+function reportOf(...tests: Array<[string, "passed" | "failed"]>): ITestReport {
+  const passed = tests.filter(([, status]) => status === "passed").length;
+  return {
+    results: {
+      tool: { name: "fabr" },
+      summary: { tests: tests.length, passed, failed: tests.length - passed, pending: 0, skipped: 0, other: 0, start: 0, stop: 0 },
+      tests: tests.map(([name, status]) => ({ name, status, duration: 0, filePath: "src/a.test.ts" })),
+    },
+  };
+}
+
+describe("retriedReport", () => {
+  it("is the last run's report, unmarked, where there were no earlier runs", () => {
+    const last = reportOf(["a", "passed"]);
+    expect(retriedReport([], last)).to.equal(last);
+  });
+
+  it("marks a test that failed before and passed last as flaky, and every test with the retries made", () => {
+    const report = retriedReport([reportOf(["a", "failed"], ["b", "passed"])], reportOf(["a", "passed"], ["b", "passed"]));
+    expect(report.results.tests.map(test => [test.name, test.flaky, test.retries])).to.deep.equal([
+      ["a", true, 1],
+      ["b", undefined, 1],
+    ]);
+    expect(formatTestSummary(report)).to.equal("2 tests passed (1 flaky)");
+    expect(formatFlakyTests(report)).to.deep.equal(["  a (src/a.test.ts): passed after 1 retry"]);
+  });
+
+  it("matches tests of one name by their position among them", () => {
+    const report = retriedReport([reportOf(["a", "passed"], ["a", "failed"])], reportOf(["a", "passed"], ["a", "passed"]));
+    expect(report.results.tests.map(test => test.flaky)).to.deep.equal([undefined, true]);
+  });
+
+  it("counts an earlier run that wrote no report as every test failing", () => {
+    const report = retriedReport([undefined, reportOf(["a", "failed"])], reportOf(["a", "passed"]));
+    expect(report.results.tests[0]).to.include({ flaky: true, retries: 2 });
+  });
+
+  it("leaves a test that failed last failed, not flaky", () => {
+    const report = retriedReport([reportOf(["a", "failed"])], reportOf(["a", "failed"]));
+    expect(report.results.tests[0].flaky).to.equal(undefined);
+    expect(formatTestSummary(report)).to.equal("1 of 1 test failed");
+  });
+});
+
+describe("toTestStability", () => {
+  it("accepts the stabilities there are", () => {
+    expect(["stable", "flaky", "unstable"].map(toTestStability)).to.deep.equal(["stable", "flaky", "unstable"]);
+  });
+
+  it("refuses any other value, naming those there are", () => {
+    expect(() => toTestStability("shaky")).to.throw("'shaky' is not a test stability (stable, flaky, unstable)");
+  });
+});
+
+describe("toFlakeRetries", () => {
+  it("reads a count, and refuses anything else", () => {
+    expect(toFlakeRetries("0")).to.equal(0);
+    expect(toFlakeRetries("3")).to.equal(3);
+    expect(() => toFlakeRetries("-1")).to.throw("TEST_FLAKE_RETRIES must be a number of retries, not '-1'");
   });
 });

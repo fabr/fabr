@@ -57,12 +57,12 @@ export default defineRule({
   /* Describe the tests for an editor as the compile the run makes. */
   describe(context, requirements) {
     return testFramework(context, "framework").then(framework =>
-      describeTests(context, framework, { envProperty: "env" }, requirements)
+      describeTests(context, framework, { envProperty: "env", stabilityProperty: "stability" }, requirements)
     );
   },
   evaluateMaterialized(context, collected) {
     return testFramework(context, "framework").then(framework =>
-      compileAndRunTests(context, framework, { envProperty: "env" }, collected)
+      compileAndRunTests(context, framework, { envProperty: "env", stabilityProperty: "stability" }, collected)
     );
   },
 });

@@ -664,6 +664,7 @@ export class BuildCache {
   ): Computable<FileSet> {
     const anchorKey = hashString(cacheKey);
     const discoverable = action === undefined ? options?.discoverable : action.discoverable;
+    const uncached = action?.uncached === true;
     /* Called by createEntry with the scratch dir it made. */
     const inContext = (targetDir: string): Computable<BuildResult> =>
       create(
@@ -671,7 +672,7 @@ export class BuildCache {
           this,
           options?.processLimit ?? UNBOUNDED_FUNNEL,
           this.makeStepDir(targetDir),
-          options?.targetKey,
+          uncached ? undefined : options?.targetKey,
           options?.force ?? false,
           action?.inputs,
           discoverable,
@@ -685,6 +686,9 @@ export class BuildCache {
      * share an anchor and differ in their discoverable deps (a superseded watch
      * cycle). The lock key need not match an entry key's format. */
     return this.withLock(discoverable === undefined ? anchorKey : hashString(anchorKey + manifestFileInputs(discoverable)), () => {
+      if (uncached) {
+        return this.createUncached(inContext);
+      }
       if (options?.force || options?.retry) {
         return this.createEntry(anchorKey, inContext, options, undefined, action, discoverable, cls);
       }
@@ -1256,6 +1260,18 @@ export class BuildCache {
             );
         })
       )
+      .finally(() => this.releaseWorkDir(targetDir));
+  }
+
+  /**
+   * Run an uncached action's step ({@link IBuildActionOptions.uncached}) in a
+   * fresh work dir and return its result with its files in the blob pool,
+   * storing no manifest and no record.
+   */
+  private createUncached(create: (targetDir: string) => Computable<BuildResult>): Computable<FileSet> {
+    const targetDir = this.createWorkDir();
+    return create(targetDir)
+      .then(produced => this.storeContent(produced.result))
       .finally(() => this.releaseWorkDir(targetDir));
   }
 

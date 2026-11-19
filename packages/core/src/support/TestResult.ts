@@ -52,6 +52,11 @@ export interface ITestResult {
    * test file that died before any of its tests ran. Shown beneath the
    * message. */
   trace?: string;
+  /** True where the test failed on an earlier run of its file and passed on a
+   * later one (a `flaky` target's retries). */
+  flaky?: boolean;
+  /** How many further runs of the test's file were made after the first, where any were. */
+  retries?: number;
 }
 
 export interface ITestSummary {
@@ -84,19 +89,116 @@ export const TEST_REPORT_FILENAME = "ctrf-report.json";
 export const COVERAGE_REPORT_FILENAME = "lcov.info";
 
 /**
+ * How far a test target's results are trusted, its `test_stability` (`stability`
+ * on a test-only target):
+ *
+ * - `stable`: the result is a function of the run's inputs, and is cached.
+ * - `flaky`: the same inputs may fail; a test file that fails is run again, up
+ *   to `TEST_FLAKE_RETRIES` more times, and the result is cached.
+ * - `unstable`: the result depends on something outside the build; every test
+ *   file runs on every demand, and the result is never cached.
+ */
+export type TestStability = "stable" | "flaky" | "unstable";
+
+const TEST_STABILITIES: ReadonlyArray<TestStability> = ["stable", "flaky", "unstable"];
+
+/**
+ * Convert a test target's stability property value to a {@link TestStability}.
+ * @throws FabrError naming the values there are, where `value` is none of them.
+ */
+export function toTestStability(value: string): TestStability {
+  const stability = TEST_STABILITIES.find(known => known === value);
+  if (stability === undefined) {
+    throw new FabrError(`'${value}' is not a test stability (${TEST_STABILITIES.join(", ")})`);
+  }
+  return stability;
+}
+
+/**
+ * Convert the value of the `TEST_FLAKE_RETRIES` property to a count.
+ * @throws FabrError where it is not a non-negative integer.
+ */
+export function toFlakeRetries(value: string): number {
+  if (!/^[0-9]+$/.test(value)) {
+    throw new FabrError(`TEST_FLAKE_RETRIES must be a number of retries, not '${value}'`);
+  }
+  return Number(value);
+}
+
+/**
  * @return a one-line description of the run ("12 tests passed", "2 of 14
- * tests failed", ...).
+ * tests failed", "12 tests passed (1 flaky)", ...).
  */
 export function formatTestSummary(report: ITestReport): string {
   const { tests, passed, failed, pending, skipped, other } = report.results.summary;
   const notRun = skipped + pending + other;
+  const flaky = flakyTests(report).length;
+  const notes = [...(flaky > 0 ? [`${flaky} flaky`] : []), ...(notRun > 0 ? [`${notRun} skipped`] : [])];
   if (failed > 0) {
-    return `${failed} of ${testCount(tests)} failed`;
-  } else if (notRun > 0) {
-    return `${testCount(passed)} passed (${notRun} skipped)`;
+    return `${failed} of ${testCount(tests)} failed${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
   } else {
-    return `${testCount(passed)} passed`;
+    return `${testCount(passed)} passed${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`;
   }
+}
+
+/** @return the tests of `report` that passed only after their file was run again. */
+export function flakyTests(report: ITestReport): ITestResult[] {
+  return report.results.tests.filter(test => test.flaky === true && test.status === "passed");
+}
+
+/**
+ * @return one indented line per flaky test of `report` ({@link flakyTests}):
+ * its name, its file and how many further runs it took.
+ */
+export function formatFlakyTests(report: ITestReport): string[] {
+  return flakyTests(report).map(test => {
+    const where = test.filePath && test.filePath !== test.name ? ` (${test.filePath})` : "";
+    const retries = test.retries ?? 1;
+    return `  ${test.name}${where}: passed after ${retries} ${retries === 1 ? "retry" : "retries"}`;
+  });
+}
+
+/**
+ * Combine the reports of successive runs of one test file into the file's
+ * report: `last`'s, each of its tests marked with the number of earlier runs
+ * (`retries`), and a test that passed in `last` but failed in an earlier run
+ * marked `flaky`. An earlier run that wrote no report (its process died) is
+ * `undefined`, and counts as every test failing. A test is matched across runs
+ * by its file, its name and its position among the tests of that name.
+ */
+export function retriedReport(earlier: ReadonlyArray<ITestReport | undefined>, last: ITestReport): ITestReport {
+  if (earlier.length === 0) {
+    return last;
+  }
+  const died = earlier.includes(undefined);
+  const failedBefore = new Set(
+    earlier.flatMap(report => {
+      const ids = report === undefined ? [] : testIds(report);
+      return ids.filter((_, at) => report!.results.tests[at].status === "failed");
+    })
+  );
+  const ids = testIds(last);
+  return {
+    results: {
+      ...last.results,
+      tests: last.results.tests.map((test, at) => ({
+        ...test,
+        retries: earlier.length,
+        ...(test.status === "passed" && (died || failedBefore.has(ids[at])) ? { flaky: true } : {}),
+      })),
+    },
+  };
+}
+
+/** @return an identity for each test of `report`, in order: its file, its name and its position among the tests of that name. */
+function testIds(report: ITestReport): string[] {
+  const seen = new Map<string, number>();
+  return report.results.tests.map(test => {
+    const name = JSON.stringify([test.filePath ?? "", test.name]);
+    const count = seen.get(name) ?? 0;
+    seen.set(name, count + 1);
+    return `${name}#${count}`;
+  });
 }
 
 /**

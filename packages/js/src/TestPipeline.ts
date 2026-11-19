@@ -85,9 +85,13 @@ import {
   SourceRef,
   TargetContext,
   TEST_EXPECTATIONS,
+  TEST_FLAKE_RETRIES,
   TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
+  type TestStability,
   toEnvironment,
+  toFlakeRetries,
+  toTestStability,
   TREE_MOUNT,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
@@ -255,6 +259,10 @@ export interface ITestSettings {
    * run with — their whole environment: `test_env` on a js_package, `env` on a
    * js_test. */
   envProperty: string;
+  /** The STRING property saying how far the tests' results are trusted
+   * ({@link TestStability}): `test_stability` on a js_package, `stability` on a
+   * js_test. */
+  stabilityProperty: string;
   /** The package name a js_package[test]'s sources may import themselves by; a
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
@@ -364,8 +372,10 @@ export function compileAndRunTests(
       context.getMap(settings.envProperty),
       context.getGlobalString(COVERAGE),
       context.getGlobalString(TEST_NAME_PATTERN),
+      context.getRequiredProperty(settings.stabilityProperty),
+      context.getGlobalString(TEST_FLAKE_RETRIES),
     ],
-    (runner, expectations, target, env, coverage, namePattern): Computable<RuleResult> =>
+    (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries): Computable<RuleResult> =>
       (coverage === COVERAGE_ON ? context.getGlobalRunnable("JS_COVERAGE_DRIVER") : Computable.resolve(undefined)).then(
         (coverageDriver): Computable<RuleResult> => {
           const jsTarget = parseJSTarget(target);
@@ -415,6 +425,8 @@ export function compileAndRunTests(
                 packageName: settings.packageName,
                 update: expectations === UPDATE_EXPECTATIONS,
                 namePattern: namePattern === "" ? undefined : namePattern,
+                stability: toTestStability(stability.toString()),
+                flakeRetries: toFlakeRetries(flakeRetries),
                 coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
               });
             }
@@ -599,6 +611,10 @@ interface ITestRun {
   update: boolean;
   /** The regular expression selecting the tests run by name, if any. */
   namePattern?: string;
+  /** How far the tests' results are trusted. */
+  stability: TestStability;
+  /** How many further runs a failed test file gets where `stability` is `flaky`. */
+  flakeRetries: number;
   /** Where the run is measured for coverage: the program converting what the
    * test processes record, and the packages installed for the run, of which
    * those built in the project are measured. */
@@ -719,6 +735,8 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       outputs,
       env: toEnvironment(run.env),
       coverage: coverage && { argv: coverage.argv, measured: coverage.measured },
+      retries: run.stability === "flaky" ? run.flakeRetries : 0,
+      uncached: run.stability === "unstable",
     }).withReshape(result => reshapeTestResult(result, run.tests, records));
   });
 }

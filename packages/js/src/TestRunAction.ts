@@ -59,6 +59,7 @@ import {
   parseJson,
   parseLcov,
   readJsonFile,
+  retriedReport,
   RunnableArgument,
   splitDepsPath,
   stringListConfig,
@@ -101,7 +102,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 12, run: runTests, stage: stageTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 13, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -114,7 +115,7 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
     cwd: COMPILE_OUT_DIR,
     commands: testFiles.map((file, index) => ({
-      stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(argv, file, index)] }],
+      stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(action, argv, file, index)] }],
     })),
     env: new Map(Object.entries(declaredEnv(action))),
   }));
@@ -162,9 +163,21 @@ function testFilesOf(action: BuildAction): Computable<string[]> {
 }
 
 /** @return the runner's invocation for one test file: `argv` less its
- * interpreter, then the file's own report and reads documents, then the file. */
-function invocationOf(argv: string[], file: string, index: number): string[] {
-  return [...argv.slice(1), `--report=${invocationReport(index)}`, `--reads=${invocationReads(index)}`, file];
+ * interpreter, then the file's own report document and, unless `action` is
+ * uncached (where nothing is keyed on them), its reads document, then the
+ * file. */
+function invocationOf(action: BuildAction, argv: string[], file: string, index: number): string[] {
+  return [
+    ...argv.slice(1),
+    `--report=${invocationReport(index)}`,
+    ...(action.uncached ? [] : [`--reads=${invocationReads(index)}`]),
+    file,
+  ];
+}
+
+/** Read the `flake_retries` config member: how many further runs a failed test file gets. */
+function flakeRetriesOf(action: BuildAction): number {
+  return typeof action.config.flake_retries === "string" ? Number(action.config.flake_retries) : 0;
 }
 
 /** Run the test-run step ({@link JS_TEST_STEP}). */
@@ -209,8 +222,9 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
                * file cannot stop the others: concludeRun judges the outcomes. */
               rerun.map(file => {
                 const index = testFiles.indexOf(file);
-                return runOneFile(
+                return runRetried(
                   ctx,
+                  action,
                   report,
                   argv,
                   coverage?.environmentOf(index) ?? declared,
@@ -746,10 +760,42 @@ export class DirectoryRows {
   }
 }
 
+/**
+ * Run the runner on one test file ({@link runOneFile}), and where tests failed
+ * or the invocation failed outright, run it again, up to the action's
+ * `flake_retries` more times. The outcome is the last run's, its report
+ * combined with the earlier runs' ({@link retriedReport}).
+ */
+function runRetried(
+  ctx: ActionContext,
+  action: BuildAction,
+  taskReport: ITaskReport,
+  argv: string[],
+  env: Record<string, string>,
+  file: string,
+  index: number,
+  layout: IPackageLayout,
+  directories: DirectoryRows
+): Computable<IFileRun> {
+  const retries = flakeRetriesOf(action);
+  const attempt = (earlier: Array<ITestReport | undefined>): Computable<IFileRun> =>
+    runOneFile(ctx, action, taskReport, argv, env, file, index, layout, directories).then((run): IFileRun | Computable<IFileRun> => {
+      const failed = "error" in run || run.report.results.summary.failed > 0;
+      if (failed && earlier.length < retries) {
+        /* What the failed run's processes recorded is not this file's coverage. */
+        fs.rmSync(join(ctx.workDir, COVERAGE_RAW_DIR, String(index)), { recursive: true, force: true });
+        return attempt([...earlier, "error" in run ? undefined : run.report]);
+      }
+      return "error" in run ? run : { ...run, report: retriedReport(earlier, run.report) };
+    });
+  return attempt([]);
+}
+
 /** Run the runner on one test file and judge the invocation ({@link judgeRun}),
  * adding what it read where its reads document says ({@link readsOf}). */
 function runOneFile(
   ctx: ActionContext,
+  action: BuildAction,
   taskReport: ITaskReport,
   argv: string[],
   env: Record<string, string>,
@@ -759,7 +805,7 @@ function runOneFile(
   directories: DirectoryRows
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
-  const invocation = invocationOf(argv, file, index);
+  const invocation = invocationOf(action, argv, file, index);
   /* The invocation's output is the step's, shown as any step's is; the
    * report carries the outcomes, and the capture backs the no-report failure. */
   return execute(
@@ -777,7 +823,8 @@ function runOneFile(
     .then(error => judgeRun(join(ctx.workDir, COMPILE_OUT_DIR), [argv[0], ...invocation], reportName, file, error))
     .then((run): IFileRun => {
       const cwd = join(ctx.workDir, COMPILE_OUT_DIR);
-      const named = "error" in run ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout, directories);
+      const named =
+        "error" in run || action.uncached ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout, directories);
       return named === undefined ? run : { ...run, reads: named.reads, deps: named.deps };
     });
 }
@@ -914,6 +961,10 @@ export interface ITestRunInputs {
   /** Where the run is measured for coverage: the coverage driver's command
    * line, run from the install root, and the files it measures. */
   coverage?: { argv: readonly RunnableArgument[]; measured: IMeasuredFiles };
+  /** How many further runs a test file whose tests failed gets (a `flaky` target's). */
+  retries: number;
+  /** Whether every test file runs on every demand, the result never cached (an `unstable` target's). */
+  uncached: boolean;
 }
 
 /** Make the test-run action ({@link JS_TEST_STEP}). */
@@ -929,6 +980,8 @@ export function createTestRunAction({
   outputs,
   env,
   coverage,
+  retries,
+  uncached,
 }: ITestRunInputs): BuildAction {
   return new BuildAction(
     JS_TEST_STEP,
@@ -953,10 +1006,12 @@ export function createTestRunAction({
       ...selfConfig(self),
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
       ...(coverage ? { coverage_argv: coverage.argv } : {}),
+      ...(retries > 0 ? { flake_retries: String(retries) } : {}),
     },
     /* Each test file's last run is kept, and what changed since decides which
      * files run again. The packages are discoverable: the runs report what they
-     * read of them, and the entry is keyed on that selection. */
-    { discoverable: { deps: packages }, trackChangedFiles: true, links }
+     * read of them, and the entry is keyed on that selection. An uncached run
+     * keeps nothing and runs every file. */
+    { discoverable: { deps: packages }, trackChangedFiles: true, links, uncached }
   );
 }

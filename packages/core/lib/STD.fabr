@@ -23,6 +23,11 @@ default TEST_EXPECTATIONS = check;
 # `fabr test -t PATTERN` sets it for one run.
 default TEST_NAME_PATTERN = "";
 
+# How many more times a test file of a target whose `test_stability` is `flaky`
+# is run after it fails. A test that passes on a later run is reported as flaky.
+# `0` runs flaky targets as stable ones.
+default TEST_FLAKE_RETRIES = 2;
+
 # Whether what is built and tested is measured for code coverage: `on` or
 # `off`. `fabr test --coverage` sets `on` for one run. A tool is always built
 # with it `off`.

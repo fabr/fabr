@@ -139,6 +139,88 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(ran(), "only the file that failed").to.deep.equal(["red"]);
   });
 
+  it("runs a failed test file of a flaky target again, reports what passed on a retry as flaky, and caches it", () => {
+    const { marker, ran } = runMarker();
+    const unique = `${process.pid}-${Date.now()}`;
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_stability = flaky;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
+      /* Fails the first time it runs, and passes after. */
+      "src/flaky.test.ts":
+        'const fs = require("fs");\nconst count = process.env.MARKER + ".count";\n' +
+        'const n = fs.existsSync(count) ? Number(fs.readFileSync(count, "utf8")) : 0;\nfs.writeFileSync(count, String(n + 1));\n' +
+        'fs.appendFileSync(process.env.MARKER, "flaky\\n");\n' +
+        `describe("flaky", () => { it("passes the second time ${unique}", () => { if (n === 0) throw new Error("first time"); }); });\n`,
+      "src/steady.test.ts":
+        'require("fs").appendFileSync(process.env.MARKER, "steady\\n");\ndescribe("steady", () => { it("holds", () => {}); });\n',
+    };
+    const first = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(first.status, first.stderr).to.equal(0);
+    expect(first.stderr).to.contain("2 tests passed (1 flaky)");
+    expect(first.stderr).to.contain(`passes the second time ${unique} (`);
+    expect(first.stderr).to.contain("passed after 1 retry");
+    expect(ran(), "the failed file twice, the other once").to.deep.equal(["flaky", "flaky", "steady"]);
+
+    const cached = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(cached.status, cached.stderr).to.equal(0);
+    expect(cached.stderr, "served as it last succeeded").to.contain("2 tests passed (1 flaky)");
+    expect(ran()).to.deep.equal([]);
+  });
+
+  it("fails a flaky target's test file that fails on every retry, after TEST_FLAKE_RETRIES more runs", () => {
+    const { marker, ran } = runMarker();
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_package thing {\n  srcs = src:**/*.ts;\n  tests = src:**/*.test.ts;\n  test_stability = flaky;\n  test_env = { MARKER = '${marker}'; }\n}\n`,
+      "src/red.test.ts":
+        'const assert = require("node:assert");\nrequire("fs").appendFileSync(process.env.MARKER, "red\\n");\n' +
+        `describe("red", () => { it("fails on purpose ${process.pid}-${Date.now()}", () => { assert.equal(1, 2); }); });\n`,
+    };
+    const result = runFabr(files, ["-DJS_TARGET=es2020", "-DTEST_FLAKE_RETRIES=1", "test", "thing"]);
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("fails on purpose");
+    expect(ran(), "the first run and one retry").to.deep.equal(["red", "red"]);
+  });
+
+  it("runs every test file of an unstable target on every run, caching nothing", () => {
+    const { marker, ran } = runMarker();
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_test evals {\n  tests = src:**/*.test.ts;\n  stability = unstable;\n  env = { MARKER = '${marker}'; }\n}\n`,
+      "src/a.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+      "src/b.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "b\\n");\ndescribe("b", () => { it("is", () => {}); });\n',
+    };
+    for (const run of ["first", "unchanged"]) {
+      const result = runFabr(files, ["-DJS_TARGET=es2020", "test", "evals"]);
+      expect(result.status, result.stderr).to.equal(0);
+      expect(result.stderr).to.contain("2 tests passed");
+      expect(ran(), `the ${run} run runs every file`).to.deep.equal(["a", "b"]);
+    }
+  });
+
+  it("refuses a test stability it does not know, naming those there are", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_test evals {\n  tests = src:**/*.test.ts;\n  stability = shaky;\n}\n",
+        "src/a.test.ts": 'describe("a", () => { it("is", () => {}); });\n',
+      },
+      ["-DJS_TARGET=es2020", "test", "evals"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'shaky' is not a test stability (stable, flaky, unstable)");
+  });
+
   it("runs again only the test files a change reaches", () => {
     /* Each test records that it ran in a file outside the project, which the
      * runs share; the sources are unique to this run, so the first is a miss. */

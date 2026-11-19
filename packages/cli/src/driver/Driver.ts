@@ -52,6 +52,7 @@ import {
   Fabr,
   FileSet,
   hashString,
+  formatFlakyTests,
   formatTestFailures,
   formatTestSummary,
   IFile,
@@ -1703,7 +1704,12 @@ function reportTestResults(
       failed += report.results.summary.failed;
       tests += report.results.summary.tests;
     } else if (report !== undefined || !unbuilt[i]) {
-      log.log(DIAG_TEST_RESULT, { name: names[i], summary: (report ? formatTestSummary(report) : "no tests") + filtered });
+      /* A passing run names its flaky tests beneath its summary. */
+      const flaky = report ? formatFlakyTests(report) : [];
+      log.log(DIAG_TEST_RESULT, {
+        name: names[i],
+        summary: [(report ? formatTestSummary(report) : "no tests") + filtered, ...flaky].join("\n"),
+      });
     }
   });
   const ran = reports.reduce(

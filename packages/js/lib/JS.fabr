@@ -300,6 +300,10 @@ targetdef js_package {
     test_env = MAP;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
+    # How far the tests' results are trusted: `stable`, `flaky` (a failed test
+    # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
+    # file runs every time, and the result is never cached).
+    test_stability = STRING default stable;
     # The package's version.
     version = STRING;
     # Other `package.json` fields (`description`, `license`, `repository`): a
@@ -404,6 +408,10 @@ targetdef js_test {
     compile_deps = PACKAGES;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
     framework = STRING default ${JS_TEST_FRAMEWORK};
+    # How far the tests' results are trusted: `stable`, `flaky` (a failed test
+    # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
+    # file runs every time, and the result is never cached).
+    stability = STRING default stable;
     # Files the tests read when they run.
     resources = FILES;
     # Environment variables for the test processes, which run with no others.

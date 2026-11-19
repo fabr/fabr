@@ -150,6 +150,13 @@ export interface IBuildActionOptions {
    * recorded base, and linked by {@link linkTrees}.
    */
   links?: Readonly<Record<string, FileSet>>;
+  /**
+   * Run the step on every demand, never looking up a stored entry and
+   * storing none: its output depends on something outside its inputs. The
+   * step is given no base ({@link trackChangedFiles} has no effect) and its
+   * discoverable inputs' selection keys nothing.
+   */
+  uncached?: boolean;
 }
 
 /**
@@ -167,6 +174,7 @@ export class BuildAction {
   public readonly reshape?: (output: FileSet) => FileSet | Computable<FileSet>;
   public readonly sourcePathInputs: ReadonlyArray<string>;
   public readonly links: Readonly<Record<string, FileSet>>;
+  public readonly uncached: boolean;
 
   constructor(
     public readonly step: IBuildActionDefinition,
@@ -184,6 +192,7 @@ export class BuildAction {
     this.reshape = options.reshape;
     this.sourcePathInputs = options.sourcePathInputs ?? [];
     this.links = options.links ?? {};
+    this.uncached = options.uncached ?? false;
   }
 
   /** @return the options this action was made with. */
@@ -195,6 +204,7 @@ export class BuildAction {
       reshape: this.reshape,
       sourcePathInputs: this.sourcePathInputs,
       links: this.links,
+      uncached: this.uncached,
     };
   }
 

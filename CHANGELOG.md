@@ -9,6 +9,10 @@ together and share a version number.
 - `fabr sync` marks a member published with a provenance statement: `✓ Publishing
   @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
 
+@fabr-build/core
+- New test stability options: `flaky` runs a failed test file again up to TEST_FLAKE_RETRIES (default 2); `unstable` runs every test file every time and never
+  caches the run.
+
 @fabr-build/js
 - Fix tsc import check failing when type files are missing.
 

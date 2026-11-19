@@ -1689,6 +1689,30 @@ describe("BuildCache build state", () => {
     expect(fs.existsSync(path.join(recordDir(targetKey), "outputs")), "the flat symlink is swept unconditionally").to.equal(false);
     expect(fs.existsSync(path.join(recordDir(targetKey), "inputs")), "a young flat file waits for the age window").to.equal(true);
   });
+
+  it("runs an uncached action's step on every demand, giving it no base and storing no entry or record", async () => {
+    const targetKey = "target-key-uncached";
+    const action = new BuildAction(STEP, { srcs: INPUT_FILES }, {}, { trackChangedFiles: true, uncached: true });
+    const seen: Array<{ changes: unknown; state: unknown }> = [];
+    const create = (ctx: ActionContext): Computable<BuildResult> =>
+      Computable.forAll([ctx.changedFiles(), ctx.incrementalState()], (changes, state) => {
+        seen.push({ changes, state });
+        return {
+          result: new FileSet(new Map([["out.txt", MemoryFile.from(`run ${seen.length}`)]])),
+          incrementalState: STATE.incrementalState,
+        };
+      });
+    const first = await toPromise(cache.getOrCreateAction(action, create, { targetKey }));
+    const second = await toPromise(cache.getOrCreateAction(action, create, { targetKey }));
+    expect([first.created, second.created]).to.deep.equal([true, true]);
+    expect(await toPromise(second.files.getFile("out.txt")!.readString()), "the result's bytes are in the pool").to.equal("run 2");
+    expect(seen).to.deep.equal([
+      { changes: undefined, state: undefined },
+      { changes: undefined, state: undefined },
+    ]);
+    expect(fs.existsSync(path.join(root, "entries", `${hashString(action.actionKey())}.manifest`))).to.equal(false);
+    expect(fs.existsSync(recordDir(targetKey))).to.equal(false);
+  });
 });
 
 /** Every spool temp still present under the store root, at any depth (they live in the

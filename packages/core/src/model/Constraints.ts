@@ -96,6 +96,12 @@ export const UPDATE_EXPECTATIONS = "update";
 export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
 
 /**
+ * The property holding how many further runs a failed test file of a target
+ * whose stability is `flaky` gets (2, the default, declared in STD.fabr).
+ */
+export const TEST_FLAKE_RETRIES = "TEST_FLAKE_RETRIES";
+
+/**
  * The property saying whether what is built and tested is measured for code
  * coverage: `on` or `off` (the default, declared in STD.fabr). `fabr test
  * --coverage` sets it; a tool is resolved with it `off` where it is set (see
