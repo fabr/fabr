@@ -16,6 +16,9 @@ together and share a version number.
 @fabr-build/js
 - Fix tsc import check failing when type files are missing.
 
+@fabr-build/java
+- `java_test`: tests that belong to no one jar, compiled against and run with its `deps`.
+
 @fabr-build/container
 - A `sync` target's image entry now contains an OCI image layout whose `index.json` names the pushed
   image's digest, platform and full reference (`host/repository:tag@sha256:…`), readable with

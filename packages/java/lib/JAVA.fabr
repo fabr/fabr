@@ -167,6 +167,53 @@ targetdef jar_package {
     test_defines = MAP;
     # Environment variables for the tests, which run with no others.
     test_env = MAP;
+    # How far the tests' results are trusted: `stable`, `flaky` (the source
+    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times) or
+    # `unstable` (the tests run every time, and the result is never cached).
+    test_stability = STRING default stable;
+}
+
+#
+# Tests that belong to no one package, such as integration tests across
+# several jars:
+#
+#     java_test integration {
+#       tests = src/it/java:**/*.java;
+#       deps = app storage
+#              @mvn:org.junit:junit-bom:5.11.4
+#              @mvn:org.junit.jupiter:junit-jupiter
+#              @mvn:org.junit.platform:junit-platform-launcher;
+#     }
+#
+# `fabr test` compiles the tests against `deps` and runs the classes they
+# compile to on the JUnit Platform, with `deps` on the classpath.
+#
+
+targetdef java_test {
+    # The test sources. The test engines on the classpath find the tests among
+    # the classes they compile to.
+    tests = FILES;
+    # The packages the tests use, and run with: what they test, JUnit's API,
+    # its test engines and the JUnit Platform launcher, of one JUnit release.
+    deps = PACKAGES;
+    # Packages the tests are compiled against that nothing needs when they
+    # run, such as an annotations-only jar.
+    compile_deps = PACKAGES;
+    # The annotation processors the compiler runs: packages, resolved apart
+    # from the ones the tests use.
+    processors = PACKAGES;
+    # Files on the classpath the tests run with, named as they are found there.
+    resources = FILES;
+    # Arguments given the JVM the tests run in: `-Xmx2g`, `--add-opens=…`.
+    jvm_args = STRING;
+    # System properties the tests run with, each a string: `-D<name>=<value>`.
+    defines = MAP;
+    # Environment variables for the tests, which run with no others.
+    env = MAP;
+    # How far the tests' results are trusted: `stable`, `flaky` (the source
+    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times) or
+    # `unstable` (the tests run every time, and the result is never cached).
+    stability = STRING default stable;
 }
 
 #
@@ -448,6 +495,7 @@ default jdk_distribution @jdk {
 rule jar_package pkg<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJarPackage;
 rule jar_package pkg<BUILD_OPERATION=run> = @fabr-build/java:rules/RunJarPackage;
 rule jar_package pkg<BUILD_OPERATION=test> = @fabr-build/java:rules/TestJarPackage;
+rule java_test t<BUILD_OPERATION=test> = @fabr-build/java:rules/TestJavaTest;
 rule java_compile c<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavaCompile;
 rule javadoc d<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavadoc;
 rule java_installation i<BUILD_OPERATION=build> = @fabr-build/java:rules/BuildJavaInstallation;

@@ -35,7 +35,12 @@ import {
   IBuildActionDefinition,
   ITaskReport,
   ITestReport,
+  ITestResult,
+  lcovOf,
+  mergeCoverage,
   parseJson,
+  parseLcov,
+  retriedReport,
   RunnableArgument,
   stringListConfig,
   TEST_REPORT_FILENAME,
@@ -50,65 +55,203 @@ import {
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
  * over every test class, and collect its CTRF report, with the coverage report
- * of a measured run beside it. A run whose tests failed is still a result and
- * is cached: its report says what failed, and its task ends as failed. A run
- * that wrote no usable report fails with the runner's own output.
+ * of a measured run beside it. Where tests failed and the action allows
+ * retries, the runner runs again over the source files whose tests failed (or
+ * over every class, where a failure names no file or the run died), and each
+ * file's report is combined with its earlier runs' ({@link retriedReport}). A
+ * run whose tests failed is still a result and is cached: its report says what
+ * failed, and its task ends as failed. A run that wrote no usable report fails
+ * with the runner's own output.
  */
-const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 4, run: runTests };
+const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 5, run: runTests };
+
+/** One run of the runner: its report, or the failure no report explains, and
+ * the source files it ran (undefined for every class). */
+export type IRun = { files?: string[] } & ({ report: ITestReport } | { error: Error });
 
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const staged = fileSetInput(action, "staged");
   const argv = toArgv(commandLineConfig(action, "argv"));
-  const invocation = [...argv.slice(1), `--report=${TEST_REPORT_FILENAME}`];
-  return ctx
-    .admit(report, () => writeFileSet(ctx.workDir, staged))
-    .then(() =>
-      /* Run with only the declared environment. Keep the runner's output for a failure
-       * rather than streaming it: the report carries the outcome. */
-      execute(
-        ctx.processLimit,
-        findExecutable(argv[0], ctx.workDir),
-        invocation,
-        ctx.workDir,
-        Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry)),
-        { ...report, output: undefined }
-      ).then(
+  const outputs = stringListConfig(action, "outputs");
+  const measured = outputs.includes(COVERAGE_REPORT_FILENAME);
+  const retries = typeof action.config.flake_retries === "string" ? Number(action.config.flake_retries) : 0;
+  const env = Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
+  /* Run `files` (every class where undefined) as run number `index`. Keep the
+   * runner's output for a failure rather than streaming it: the report carries
+   * the outcome. */
+  const runOnce = (index: number, files: string[] | undefined): Computable<IRun> => {
+    const invocation = [
+      ...argv.slice(1),
+      `--report=${reportOf(index)}`,
+      ...(index > 0 && measured ? [`--coverage=${coverageOf(index)}`] : []),
+      ...(files ?? []).map(file => `--select-file=${file}`),
+    ];
+    return execute(ctx.processLimit, findExecutable(argv[0], ctx.workDir), invocation, ctx.workDir, env, {
+      ...report,
+      output: undefined,
+    })
+      .then(
         () => undefined,
         (err: Error) => err
       )
-    )
-    .then(error => {
-      const failure = testFailureOf(judgeRun(ctx.workDir, [argv[0], ...invocation], error));
+      .then(error => ({
+        ...(files === undefined ? {} : { files }),
+        ...judgeRun(ctx.workDir, reportOf(index), [argv[0], ...invocation], error),
+      }));
+  };
+  const attempt = (runs: IRun[]): Computable<IRun[]> => {
+    const last = runs[runs.length - 1];
+    const failed = "error" in last || last.report.results.summary.failed > 0;
+    if (!failed || runs.length > retries) {
+      return Computable.resolve(runs);
+    }
+    return runOnce(runs.length, "error" in last ? undefined : failedFiles(last.report)).then(next => attempt([...runs, next]));
+  };
+  return ctx
+    .admit(report, () => writeFileSet(ctx.workDir, staged))
+    .then(() => runOnce(0, undefined))
+    .then(first => attempt([first]))
+    .then(runs => {
+      const last = runs[runs.length - 1];
+      if ("error" in last) {
+        throw last.error;
+      }
+      const combined = runs.length === 1 ? last.report : combinedReport(runs);
+      fs.writeFileSync(path.join(ctx.workDir, TEST_REPORT_FILENAME), JSON.stringify(combined, undefined, 2));
+      if (measured && runs.length > 1) {
+        mergeRunCoverage(ctx.workDir, runs.length);
+      }
+      const failure = testFailureOf(combined);
       if (failure !== undefined) {
         report.fail(failure);
       }
-      return getResultFileSet(ctx.workDir, stringListConfig(action, "outputs"));
+      return getResultFileSet(ctx.workDir, outputs);
     })
     .then(result => ({ result }));
 }
 
+/** Name run `index`'s report, apart from the step's own, which combines them. */
+function reportOf(index: number): string {
+  return `${TEST_REPORT_FILENAME}.${index}`;
+}
+
+/** Name run `index`'s coverage report; the first run's is the step's own. */
+function coverageOf(index: number): string {
+  return index === 0 ? COVERAGE_REPORT_FILENAME : `${COVERAGE_REPORT_FILENAME}.${index}`;
+}
+
+/** @return the source files whose tests failed in `report`, sorted; undefined where a failure names no file. */
+export function failedFiles(report: ITestReport): string[] | undefined {
+  const failed = report.results.tests.filter(test => test.status === "failed");
+  if (failed.some(test => test.filePath === undefined)) {
+    return undefined;
+  }
+  return [...new Set(failed.map(test => test.filePath!))].sort();
+}
+
 /**
- * @return the run's report. Throws the run's own `error` where the run failed
- * and its report is unreadable or records no failed test, and an
- * ExecutionError naming `invocation` where the run succeeded but its report is
- * unreadable.
+ * Combine the runs of a suite into its report: each source file's tests as its
+ * last run that ran it reported them, marked with what its earlier runs did
+ * ({@link retriedReport}). A run that died counts, for every file it ran, as
+ * every test failing; a file first reported after such a run of every class
+ * counts it too. The last run is one that wrote a report.
  */
-function judgeRun(workDir: string, invocation: string[], error: Error | undefined): ITestReport {
+export function combinedReport(runs: IRun[]): ITestReport {
+  const byFile = new Map<string, Array<ITestReport | undefined>>();
+  let wholeDeaths = 0;
+  for (const run of runs) {
+    if ("error" in run) {
+      for (const [file, history] of byFile) {
+        if (run.files === undefined || run.files.includes(file)) {
+          history.push(undefined);
+        }
+      }
+      wholeDeaths += run.files === undefined ? 1 : 0;
+      continue;
+    }
+    const reported = new Map<string, ITestResult[]>();
+    for (const test of run.report.results.tests) {
+      const file = test.filePath ?? "";
+      reported.set(file, [...(reported.get(file) ?? []), test]);
+    }
+    const covered = run.files === undefined ? new Set([...byFile.keys(), ...reported.keys()]) : new Set(run.files);
+    for (const file of covered) {
+      const history = byFile.get(file) ?? Array.from({ length: wholeDeaths }, (): ITestReport | undefined => undefined);
+      history.push(reportOfTests(run.report, reported.get(file) ?? []));
+      byFile.set(file, history);
+    }
+  }
+  const reports = runs.flatMap(run => ("error" in run ? [] : [run.report]));
+  const tests = [...byFile.values()].flatMap(history => {
+    const last = history[history.length - 1];
+    return last === undefined ? [] : retriedReport(history.slice(0, -1), last).results.tests;
+  });
+  return {
+    results: {
+      tool: reports[0].results.tool,
+      summary: {
+        tests: tests.length,
+        passed: tests.filter(test => test.status === "passed").length,
+        failed: tests.filter(test => test.status === "failed").length,
+        pending: tests.filter(test => test.status === "pending").length,
+        skipped: tests.filter(test => test.status === "skipped").length,
+        other: tests.filter(test => test.status === "other").length,
+        start: Math.min(...reports.map(report => report.results.summary.start)),
+        stop: Math.max(...reports.map(report => report.results.summary.stop)),
+      },
+      tests,
+    },
+  };
+}
+
+/** @return `report` holding only `tests` (its summary left as it is: only the tests are read). */
+function reportOfTests(report: ITestReport, tests: ITestResult[]): ITestReport {
+  return { results: { ...report.results, tests } };
+}
+
+/** Merge the coverage reports of a suite's `count` runs into the step's own. */
+function mergeRunCoverage(workDir: string, count: number): void {
+  const documents = Array.from({ length: count }, (_, index) => path.join(workDir, coverageOf(index)))
+    .filter(file => fs.existsSync(file))
+    .map(file => parseLcov(fs.readFileSync(file, "utf8")));
+  fs.writeFileSync(path.join(workDir, COVERAGE_REPORT_FILENAME), lcovOf(mergeCoverage(documents).values()));
+}
+
+/**
+ * Judge run `reportName`: its report, or the failure no report explains: the
+ * run's own `error` where the run failed and its report is unreadable or
+ * records no failed test, and an ExecutionError naming `invocation` where the
+ * run succeeded but its report is unreadable.
+ */
+function judgeRun(
+  workDir: string,
+  reportName: string,
+  invocation: string[],
+  error: Error | undefined
+): { report: ITestReport } | { error: Error } {
   let report: ITestReport;
   try {
-    report = parseJson(fs.readFileSync(path.join(workDir, TEST_REPORT_FILENAME)), TEST_REPORT_FILENAME, toTestReport);
+    report = parseJson(fs.readFileSync(path.join(workDir, reportName)), reportName, toTestReport);
   } catch (readErr) {
     if (error !== undefined) {
-      throw error;
+      return { error };
     }
-    throw new ExecutionError(
-      `$ ${invocation.join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`
-    );
+    return {
+      error: new ExecutionError(
+        `$ ${invocation.join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`
+      ),
+    };
   }
   if (error !== undefined && report.results.summary.failed === 0) {
-    throw error;
+    return { error };
   }
-  return report;
+  return { report };
+}
+
+/** How a suite's results are trusted: the further runs failed tests get, and whether the run is never cached. */
+export interface ITestRunStability {
+  retries: number;
+  uncached: boolean;
 }
 
 /** @return the action that runs `argv` (the runner's command line, less its report) in `staged`
@@ -117,7 +260,8 @@ export function createTestRunAction(
   staged: FileSet,
   argv: readonly RunnableArgument[],
   measured: boolean,
-  env: ReadonlyMap<string, string>
+  env: ReadonlyMap<string, string>,
+  { retries, uncached }: ITestRunStability
 ): BuildAction {
   return new BuildAction(
     JAVA_TEST_STEP,
@@ -126,6 +270,8 @@ export function createTestRunAction(
       argv,
       outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])],
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
-    }
+      ...(retries > 0 ? { flake_retries: String(retries) } : {}),
+    },
+    { uncached }
   );
 }

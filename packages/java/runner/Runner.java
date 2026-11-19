@@ -42,6 +42,7 @@ import java.util.stream.Collectors;
 
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
+import org.junit.platform.engine.discovery.ClassNameFilter;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.engine.support.descriptor.MethodSource;
@@ -59,6 +60,7 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * what happened as a CTRF report, as fabr's test runners do:
  *
  *     Runner --report=<file> [--sources=<file>] [--name-pattern=<regex>]
+ *            [--select-file=<source path>...]
  *            [--coverage=<file> --coverage-classpath=<paths> --measure=<jar>...]
  *            --scan=<directory>...
  *
@@ -70,8 +72,10 @@ import org.junit.platform.launcher.core.LauncherFactory;
  * lcov, converted by JaCoCo's analysis libraries from the coverage classpath. A
  * name pattern runs only the test methods whose qualified names
  * (`com.x.DateTest#parsesIso`) it matches any part of, and needs the JUnit
- * Platform 1.12 launcher or later. The exit status is 1 where a test failed,
- * or where no test was found without a name pattern.
+ * Platform 1.12 launcher or later. A selected file runs only the classes of
+ * those source files (by their source paths, as the sources file names them),
+ * nested classes included. The exit status is 1 where a test failed, or where
+ * no test was found without a name pattern or a selection.
  */
 public final class Runner {
     private Runner() {}
@@ -84,6 +88,7 @@ public final class Runner {
         String coverage = null;
         String coverageClasspath = null;
         List<String> measured = new ArrayList<>();
+        Set<String> selectedFiles = new HashSet<>();
         for (String arg : args) {
             if (arg.startsWith("--report=")) {
                 report = arg.substring("--report=".length());
@@ -102,6 +107,8 @@ public final class Runner {
                     System.err.println("fabr-junit-runner: the test name pattern is not a valid regular expression: " + invalid.getMessage());
                     System.exit(2);
                 }
+            } else if (arg.startsWith("--select-file=")) {
+                selectedFiles.add(arg.substring("--select-file=".length()));
             } else if (arg.startsWith("--coverage=")) {
                 coverage = arg.substring("--coverage=".length());
             } else if (arg.startsWith("--coverage-classpath=")) {
@@ -127,6 +134,9 @@ public final class Runner {
             if (namePattern != null) {
                 selectByName(builder, namePattern);
             }
+            if (!selectedFiles.isEmpty()) {
+                selectByFile(builder, sources, selectedFiles);
+            }
             LauncherDiscoveryRequest request = builder.build();
             Launcher launcher = LauncherFactory.create();
             launcher.execute(request, results);
@@ -140,7 +150,7 @@ public final class Runner {
             writeCoverage(coverage, coverageClasspath, measured, sources);
         }
         Files.write(Paths.get(report), results.toCtrf(start, stop).getBytes(StandardCharsets.UTF_8));
-        if (results.tests.isEmpty() && namePattern == null) {
+        if (results.tests.isEmpty() && namePattern == null && selectedFiles.isEmpty()) {
             /* The tests compiled, so finding none means no engine could run them. */
             System.err.println("fabr-junit-runner: no tests were found: no test engine on the classpath found a test among the classes in " + roots);
             System.exit(1);
@@ -182,6 +192,24 @@ public final class Runner {
             System.err.println("fabr-junit-runner: coverage could not be converted: " + trace(failed));
             System.exit(2);
         }
+    }
+
+    /**
+     * Select the classes of the source files whose source paths are `files`:
+     * each top-level class a source names in `sources` (its path within its
+     * package tree, less `.java`), and the classes nested in it.
+     */
+    private static void selectByFile(LauncherDiscoveryRequestBuilder builder, Map<String, String> sources, Set<String> files) {
+        List<String> patterns = new ArrayList<>();
+        for (Map.Entry<String, String> source : sources.entrySet()) {
+            if (files.contains(source.getValue())) {
+                String path = source.getKey();
+                String className = path.substring(0, path.length() - ".java".length()).replace('/', '.');
+                patterns.add(Pattern.quote(className) + "(?:\\$.*)?");
+            }
+        }
+        /* A selection naming no known source selects nothing. */
+        builder.filters(ClassNameFilter.includeClassNamePatterns(patterns.isEmpty() ? "(?!)" : String.join("|", patterns)));
     }
 
     /**

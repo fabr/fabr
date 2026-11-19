@@ -1,28 +1,31 @@
 ---
 title: Testing
-description: How fabr runs a jar_package's tests on the JUnit Platform, and what each failure means.
+description: How fabr runs a jar_package's tests and java_test targets on the JUnit Platform, and what each failure means.
 ---
 
 `fabr test` compiles a `jar_package`'s `tests` against the jar and runs them on the
 [JUnit Platform](https://junit.org/junit5/docs/current/user-guide/), the foundation JUnit 5's
 Jupiter engine runs on, and that the Vintage engine and other engines plug into. Whatever engines
-are among the target's `test_deps` find and run the tests.
+are among the target's `test_deps` find and run the tests. Tests that belong to no one jar, such
+as integration tests across several, are a [`java_test`](#tests-of-their-own).
 
 ## Coming from Maven or Gradle
 
-| With Maven or Gradle | In fabr |
-|---|---|
-| `src/test/java` | The target's `tests`. |
-| `src/test/resources` | `test_resources`. |
-| `<scope>test</scope>` / `testImplementation` | `test_deps`. |
-| Surefire / `useJUnitPlatform()` | Built in: tests always run on the JUnit Platform. |
-| Surefire bundles the platform launcher | The launcher is one of your `test_deps`. |
-| Surefire's `argLine` / Gradle's `jvmArgs` | `test_jvm_args`; see [The test JVM](#the-test-jvm). |
-| `systemPropertyVariables` / `systemProperty` | `test_defines`. |
-| `environmentVariables` / `environment` | `test_env`. |
-| `-Dtest=…` / `--tests …` | `fabr test -t <regex>`; see [Running some of the tests](#running-some-of-the-tests). |
-| Test reports under `target/surefire-reports` | A summary per target; `fabr test --report <file> --format junit` writes JUnit XML, or [CTRF](https://ctrf.io) without `--format`. |
-| jacoco-maven-plugin / the `jacoco` plugin | `fabr test --coverage`; see [Code coverage](#code-coverage). |
+| With Maven or Gradle                                             | In fabr                                                                                                                           |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `src/test/java`                                                  | The target's `tests`.                                                                                                             |
+| `src/test/resources`                                             | `test_resources`.                                                                                                                 |
+| `<scope>test</scope>` / `testImplementation`                     | `test_deps`.                                                                                                                      |
+| Surefire / `useJUnitPlatform()`                                  | Built in: tests always run on the JUnit Platform.                                                                                 |
+| Surefire bundles the platform launcher                           | The launcher is one of your `test_deps`.                                                                                          |
+| Surefire's `argLine` / Gradle's `jvmArgs`                        | `test_jvm_args`; see [The test JVM](#the-test-jvm).                                                                               |
+| `systemPropertyVariables` / `systemProperty`                     | `test_defines`.                                                                                                                   |
+| `environmentVariables` / `environment`                           | `test_env`.                                                                                                                       |
+| `-Dtest=…` / `--tests …`                                         | `fabr test -t <regex>`; see [Running some of the tests](#running-some-of-the-tests).                                              |
+| Test reports under `target/surefire-reports`                     | A summary per target; `fabr test --report <file> --format junit` writes JUnit XML, or [CTRF](https://ctrf.io) without `--format`. |
+| jacoco-maven-plugin / the `jacoco` plugin                        | `fabr test --coverage`; see [Code coverage](#code-coverage).                                                                      |
+| A module of integration tests / Gradle's `jvm-test-suite`        | A `java_test`; see [Tests of their own](#tests-of-their-own).                                                                     |
+| Surefire's `rerunFailingTestsCount` / Gradle's test-retry plugin | `test_stability = flaky`; see [Flaky and unstable tests](#flaky-and-unstable-tests).                                              |
 
 ## Setting up
 
@@ -73,6 +76,37 @@ target's results in one file for a CI system, as Surefire's XML reports are coll
 fabr test --report test-results.xml --format junit app
 ```
 
+## Tests of their own
+
+Tests that belong to no one jar, such as integration tests of several jars together, are a
+`java_test`. It takes the jars it tests and its JUnit packages in one `deps`:
+
+```
+java_test integration {
+  tests = src/it/java:**/*.java;
+  deps = app storage
+         @mvn:org.junit:junit-bom:5.11.4
+         @mvn:org.junit.jupiter:junit-jupiter
+         @mvn:org.junit.platform:junit-platform-launcher;
+}
+```
+
+`fabr test integration` compiles the tests against `deps` and runs them with `deps` on the
+classpath, as a `jar_package`'s tests are run. Its other properties are a `jar_package`'s test
+properties without the `test_` prefix:
+
+| `jar_package`    | `java_test`    | What it is                                                 |
+| ---------------- | -------------- | ---------------------------------------------------------- |
+| `tests`          | `tests`        | The test sources.                                          |
+| `test_deps`      | `deps`         | The packages the tests use and run with.                   |
+| `compile_deps`   | `compile_deps` | Packages the tests are compiled against, and not run with. |
+| `processors`     | `processors`   | Annotation processors.                                     |
+| `test_resources` | `resources`    | Files on the classpath the tests run with.                 |
+| `test_jvm_args`  | `jvm_args`     | Arguments given the test JVM.                              |
+| `test_defines`   | `defines`      | System properties.                                         |
+| `test_env`       | `env`          | Environment variables.                                     |
+| `test_stability` | `stability`    | `stable`, `flaky` or `unstable`.                           |
+
 ## The test JVM
 
 `test_jvm_args` are given to the JVM the tests run in, `test_defines` are system properties, given
@@ -119,6 +153,39 @@ together. Display names (`@DisplayName`) are not matched. The summary ends `(fil
 test in any target matches, the run fails. Selecting by name needs the JUnit Platform launcher
 1.12 (JUnit 5.12) or later.
 
+## Flaky and unstable tests
+
+A target's `test_stability` (`stability` on a `java_test`) says how far fabr can trust its
+results:
+
+- `stable`, the default: the run is cached, passing or failing.
+- `flaky`: where tests fail, the classes of the source files they are in run again, up to
+  `TEST_FLAKE_RETRIES` more times (2 by default), and a test that passes on a later run counts as
+  passed. The run is then cached. Where a failure names no source file, or the JVM dies, every
+  class runs again.
+- `unstable`: the tests run every time `fabr test` is run, and the run is never cached. Use it
+  for tests whose results depend on something outside the build, such as a live service.
+
+```
+java_test browser {
+  tests = src/browser/java:**/*.java;
+  deps = app …;
+  stability = flaky;
+}
+```
+
+A test that passed only on a retry is named under the target's summary:
+
+```
+browser: 24 tests passed (1 flaky)
+  opensTheMenu() (src/browser/java/com/example/MenuTest.java): passed after 1 retry
+```
+
+**Surefire:** `rerunFailingTestsCount` reruns each failed test method on its own. **fabr:** a
+retry runs every test class of the source file a failure is in, so a `@BeforeAll` or a shared
+fixture runs as it did the first time. To see a flaky target's failures without retries, set
+`-DTEST_FLAKE_RETRIES=0`.
+
 ## Code coverage
 
 ```sh
@@ -133,7 +200,8 @@ the JaCoCo release is `JACOCO_AGENT` and `JACOCO`, which must name the same vers
 
 JaCoCo records whether code ran, not how many times, so each line and method counts as 0 or 1.
 The classes measured are those of the packages the target's `srcs` declare; the tests' own classes
-and the jars the target depends on are not measured, including jars built in the project.
+and the jars the target depends on are not measured, including jars built in the project. A
+`java_test` measures nothing.
 
 ## Troubleshooting
 
@@ -159,3 +227,6 @@ BOM.
 
 - Running test classes in JVMs of their own, as Surefire's `reuseForks=false` or Gradle's
   `forkEvery` do: all of a target's tests run in one JVM.
+- Running only the tests a change reaches: a change to anything a target's tests use runs all of
+  them again.
+- Coverage of a `java_test`: the jars it tests are not measured.
