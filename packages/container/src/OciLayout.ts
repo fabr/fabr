@@ -21,6 +21,16 @@ import { Computable, contentSize, FileSet, IFile, MemoryFile } from "@fabr-build
 import { ImageFileSet } from "./ImageFileSet";
 import { digested, IDigested, OCI_CONFIG, OCI_INDEX, OCI_LAYER, OCI_MANIFEST } from "./OciProtocol";
 
+/** The file marking a directory as an OCI image layout, and what it holds. */
+export const OCI_LAYOUT_FILE = "oci-layout";
+export const OCI_LAYOUT_DOCUMENT = JSON.stringify({ imageLayoutVersion: "1.0.0" });
+
+/** The image index an OCI image layout is entered through. */
+export const OCI_LAYOUT_INDEX = "index.json";
+
+/** The annotation naming an image of a layout's index. */
+export const REF_NAME_ANNOTATION = "org.opencontainers.image.ref.name";
+
 /**
  * Make the OCI image layout of `image`, tagged `name` (`myorg/app:1.4`):
  * `oci-layout`, `index.json`, the blobs under `blobs/sha256/`, and Docker's
@@ -30,14 +40,14 @@ import { digested, IDigested, OCI_CONFIG, OCI_INDEX, OCI_LAYER, OCI_MANIFEST } f
 export function imageLayout(image: ImageFileSet, name: string): Computable<FileSet> {
   return manifestOf(image).then(({ manifest, config }) => {
     const files = new Map<string, IFile>([
-      ["oci-layout", MemoryFile.from(JSON.stringify({ imageLayoutVersion: "1.0.0" }))],
+      [OCI_LAYOUT_FILE, MemoryFile.from(OCI_LAYOUT_DOCUMENT)],
       [blobPath(config.digest), new MemoryFile(config.bytes)],
       [blobPath(manifest.digest), new MemoryFile(manifest.bytes)],
     ]);
     image.layers.forEach(layer => files.set(blobPath(layer.index.diffId), layer.tar));
     const tag = name.substring(name.lastIndexOf(":") + 1);
     files.set(
-      "index.json",
+      OCI_LAYOUT_INDEX,
       MemoryFile.from(
         JSON.stringify({
           schemaVersion: 2,
@@ -47,7 +57,7 @@ export function imageLayout(image: ImageFileSet, name: string): Computable<FileS
               mediaType: OCI_MANIFEST,
               digest: manifest.digest,
               size: manifest.bytes.length,
-              annotations: { "io.containerd.image.name": name, "org.opencontainers.image.ref.name": tag },
+              annotations: { "io.containerd.image.name": name, [REF_NAME_ANNOTATION]: tag },
             },
           ],
         })
@@ -84,6 +94,7 @@ export function manifestOf(
   );
 }
 
-function blobPath(digest: string): string {
+/** @return the name of the blob `digest` names in an OCI image layout. */
+export function blobPath(digest: string): string {
   return `blobs/sha256/${digest.substring("sha256:".length)}`;
 }

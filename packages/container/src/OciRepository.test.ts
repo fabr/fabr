@@ -18,13 +18,17 @@
  */
 
 import { createHash } from "crypto";
+import * as fs from "fs";
 import * as http from "http";
 import { AddressInfo } from "net";
+import * as os from "os";
+import * as path from "path";
 import { Writable } from "stream";
 import { gunzipSync, gzipSync } from "zlib";
 import { expect } from "chai";
 import {
   Computable,
+  contentSize,
   FetchOptions,
   IFetchContext,
   IFetchRequest,
@@ -40,9 +44,10 @@ import {
   SymlinkFile,
   TargetContext,
 } from "@fabr-build/core";
-import { ImageFileSet } from "./ImageFileSet";
+import { ILayerRecord, ImageFileSet } from "./ImageFileSet";
+import { indexLayer } from "./LayerIndex";
 import { OciRepository, ociPlatformOf, registrySignIn } from "./OciRepository";
-import { Registry } from "./OciProtocol";
+import { Registry, toImageConfig } from "./OciProtocol";
 import { RegistrySignIn } from "./RegistrySignIn";
 
 /** Pack `files` as an uncompressed tar, as a layer's is once decompressed. */
@@ -54,6 +59,18 @@ function layerTar(files: Record<string, string | SymlinkFile>): Promise<Buffer> 
   );
   return Promise.resolve(packToTarball(set)).then(buffer => gunzipSync(buffer));
 }
+
+/** Make the record of a layer built here holding `files`. */
+async function builtLayer(files: Record<string, string>): Promise<ILayerRecord> {
+  const tar = await layerTar(files);
+  const { sink, result } = indexLayer();
+  await new Promise<void>((resolve, reject) => sink.on("finish", resolve).on("error", reject).end(tar));
+  const index = result();
+  return { tar: new MemoryFile(tar), index, indexFile: MemoryFile.from(JSON.stringify(index)) };
+}
+
+/* The work directories the test contexts' memos were made in. */
+const workDirs: string[] = [];
 
 const sha256 = (data: Buffer | string): string => `sha256:${createHash("sha256").update(data).digest("hex")}`;
 
@@ -237,6 +254,11 @@ function fetchingContext(triple: string, options: Array<FetchOptions | undefined
     name: "@test",
     execution: { getOrCreatePluginContext: () => auth },
     getGlobalString: () => Computable.resolve(triple),
+    memoize: (_tag: string, _key: string, make: (workDir: string) => Computable<FileSet>) => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-oci-test-"));
+      workDirs.push(workDir);
+      return make(workDir);
+    },
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>, _report: unknown, fetchOptions?: FetchOptions) => {
       options.push(fetchOptions);
       return request().then(({ url, headers, credential, process }) =>
@@ -268,6 +290,7 @@ describe("OciRepository", () => {
 
   afterEach(async () => {
     await registry.close();
+    workDirs.splice(0).forEach(dir => fs.rmSync(dir, { recursive: true, force: true }));
   });
 
   const imageOf = (name: string, triple = "x86_64-unknown-linux", options?: Array<FetchOptions | undefined>): Promise<unknown> => {
@@ -323,6 +346,34 @@ describe("OciRepository", () => {
     const image = (await Promise.resolve(node.content.files())) as ImageFileSet;
     const destination = repository.getRepositoryPublishRef(parseName("myorg/copy:2"));
     const [carrier] = await Promise.resolve(repository.package([{ destination, content: image }]));
+
+    /* The carrier is an OCI image layout: its index names the manifest by digest, with its platform and full reference. */
+    expect(JSON.parse(await carrier.readFile("oci-layout"))).to.deep.equal({ imageLayoutVersion: "1.0.0" });
+    const index = JSON.parse(await carrier.readFile("index.json")) as {
+      mediaType: string;
+      manifests: Array<{ digest: string; size: number; platform: unknown; annotations: Record<string, string> }>;
+    };
+    expect(index.mediaType).to.equal("application/vnd.oci.image.index.v1+json");
+    expect(index.manifests).to.have.lengthOf(1);
+    const [entry] = index.manifests;
+    const manifestFile = carrier.getFile(`blobs/sha256/${entry.digest.substring("sha256:".length)}`)!;
+    expect(`sha256:${manifestFile.hash}`).to.equal(entry.digest);
+    expect(await Promise.resolve(contentSize(manifestFile))).to.equal(entry.size);
+    expect(entry.platform).to.deep.equal({ os: "linux", architecture: "amd64" });
+    expect(entry.annotations["org.opencontainers.image.ref.name"]).to.equal(
+      `${new URL(registry.url).host}/myorg/copy:2@${entry.digest}`
+    );
+    const manifest = JSON.parse(await carrier.readFile(`blobs/sha256/${entry.digest.substring(7)}`)) as {
+      config: { digest: string };
+      layers: Array<{ digest: string }>;
+    };
+    expect(carrier.getFile(`blobs/sha256/${manifest.config.digest.substring(7)}`)).to.not.equal(undefined);
+    /* The layers were fetched, so they are had from their registry rather than held. */
+    expect(manifest.layers.map(layer => carrier.getFile(`blobs/sha256/${layer.digest.substring(7)}`))).to.deep.equal([
+      undefined,
+      undefined,
+    ]);
+
     registry.requests.length = 0;
     expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
     const mounts = registry.requests.filter(request => request.startsWith("POST /v2/myorg/copy/blobs/uploads/?mount="));
@@ -333,6 +384,39 @@ describe("OciRepository", () => {
     const pulled = (await Promise.resolve(copied.content.files())) as ImageFileSet;
     expect(await pulled.readFile("app/server")).to.equal("srv");
     expect(await Promise.resolve(repository.publish(carrier))).to.equal("already-synced");
+  });
+
+  it("publishes an image built here, its layers compressed into the carrier's layout and uploaded from there", async () => {
+    const context = fetchingContext("x86_64-unknown-linux");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      "library"
+    );
+    const layer = await builtLayer({ "app/main": "built" });
+    const config = toImageConfig({ architecture: "arm64", os: "linux", rootfs: { type: "layers", diff_ids: [layer.index.diffId] } });
+    const image = ImageFileSet.of(config, [layer], "app");
+    const [carrier] = await Promise.resolve(
+      repository.package([{ destination: repository.getRepositoryPublishRef(parseName("myorg/app:1")), content: image }])
+    );
+    const index = JSON.parse(await carrier.readFile("index.json")) as {
+      manifests: Array<{ digest: string; platform: unknown; annotations: Record<string, string> }>;
+    };
+    expect(index.manifests[0].platform).to.deep.equal({ os: "linux", architecture: "arm64" });
+    const manifest = JSON.parse(await carrier.readFile(`blobs/sha256/${index.manifests[0].digest.substring(7)}`)) as {
+      layers: Array<{ mediaType: string; digest: string }>;
+    };
+    expect(manifest.layers.map(entry => entry.mediaType)).to.deep.equal(["application/vnd.oci.image.layer.v1.tar+gzip"]);
+    const compressed = carrier.getFile(`blobs/sha256/${manifest.layers[0].digest.substring(7)}`)!;
+    expect(gunzipSync(await Promise.resolve(compressed.getBuffer())).equals(await Promise.resolve(layer.tar.getBuffer()))).to.equal(
+      true
+    );
+    expect(JSON.parse(await carrier.readFile("sources.json"))).to.deep.equal([]);
+
+    expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+    expect(registry.requests.some(request => request.startsWith("PUT /v2/myorg/app/blobs/uploads/"))).to.equal(true);
+    const pushed = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("myorg/app:1")) as RepositoryRef));
+    expect(pushed.version).to.equal(index.manifests[0].digest);
   });
 
   it("uploads a layer its registry declines to mount, read through the registry's own sign-in", async () => {

@@ -38,7 +38,8 @@ import {
   toJsonObject,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
-import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_MANIFEST, Registry, toManifestDocument } from "./OciProtocol";
+import { blobPath, OCI_LAYOUT_DOCUMENT, OCI_LAYOUT_FILE, OCI_LAYOUT_INDEX, REF_NAME_ANNOTATION } from "./OciLayout";
+import { digested, digestOf, IDescriptor, OCI_CONFIG, OCI_INDEX, OCI_MANIFEST, Registry, toManifestDocument } from "./OciProtocol";
 import { authFileSignIn } from "./RegistrySignIn";
 
 /** A layer as published: gzip-compressed. */
@@ -47,12 +48,8 @@ const OCI_LAYER_GZIP = "application/vnd.oci.image.layer.v1.tar+gzip";
 /** Bumped when how a layer is compressed changes. */
 const GZIP_TAG = "oci:gzip:1";
 
-/* The names of a carrier's files. */
-const CARRIER_MANIFEST = "manifest.json";
-const CARRIER_CONFIG = "config.json";
-/** Where each layer published before is had from: its digest, registry and repository. */
+/** The carrier's file beside its layout: where each layer published before is had from, its digest, registry and repository. */
 const CARRIER_SOURCES = "sources.json";
-const CARRIER_BLOBS = "blobs";
 
 /** Where a layer published before can be had from, by its published digest, and the name its registry's login is stored under where it declares one. */
 interface ILayerSource {
@@ -64,15 +61,19 @@ interface ILayerSource {
 
 /**
  * Package a member for its registry, as the `PublishableFileSet` (the carrier)
- * `pushImage` pushes: the image's manifest, its config, the compressed layers
- * built here, and where each other layer is fetched from.
+ * `pushImage` pushes: an OCI image layout of the image as published, and
+ * `sources.json` beside it, where each layer not in the layout is fetched
+ * from. The layout's index names the manifest, with its platform and, as its
+ * `org.opencontainers.image.ref.name`, `named` (`host/repository:tag`) and the
+ * manifest's digest; its blobs are the manifest, the config and the
+ * compressed layers built here.
  *
  * A layer fetched from a registry keeps the form it was published in, and is
  * fetched from there when pushed. A layer built here is gzip-compressed, the
  * same bytes for the same layer on any machine, cached by its `diff_id`.
  * Throws where the member's content is not an image.
  */
-export function packageImage(context: TargetContext, member: PublishMember): Computable<PublishableFileSet> {
+export function packageImage(context: TargetContext, member: PublishMember, named: string): Computable<PublishableFileSet> {
   const image = member.content;
   if (!(image instanceof ImageFileSet)) {
     throw new FabrError(`${member.destination.toString()} can only hold an image`).withHelp(
@@ -89,12 +90,27 @@ export function packageImage(context: TargetContext, member: PublishMember): Com
         config: { mediaType: OCI_CONFIG, digest: config.digest, size: config.bytes.length },
         layers: layers.map(({ descriptor }) => descriptor),
       });
+      const index = {
+        schemaVersion: 2,
+        mediaType: OCI_INDEX,
+        manifests: [
+          {
+            mediaType: OCI_MANIFEST,
+            digest: manifest.digest,
+            size: manifest.bytes.length,
+            platform: image.config.platform,
+            annotations: { [REF_NAME_ANNOTATION]: `${named}@${manifest.digest}` },
+          },
+        ],
+      };
       const files = new Map<string, IFile>([
-        [CARRIER_MANIFEST, new MemoryFile(manifest.bytes)],
-        [CARRIER_CONFIG, new MemoryFile(config.bytes)],
+        [OCI_LAYOUT_FILE, MemoryFile.from(OCI_LAYOUT_DOCUMENT)],
+        [OCI_LAYOUT_INDEX, MemoryFile.from(JSON.stringify(index))],
+        [blobPath(manifest.digest), new MemoryFile(manifest.bytes)],
+        [blobPath(config.digest), new MemoryFile(config.bytes)],
         [CARRIER_SOURCES, MemoryFile.from(JSON.stringify(layers.flatMap(({ source }) => (source === undefined ? [] : [source]))))],
         ...layers.flatMap(({ descriptor, blob }): Array<[string, IFile]> =>
-          blob === undefined ? [] : [[blobName(descriptor.digest), blob]]
+          blob === undefined ? [] : [[blobPath(descriptor.digest), blob]]
         ),
       ]);
       return new PublishableFileSet(files, member.destination);
@@ -165,10 +181,10 @@ function compressLayer(tar: IFile, out: string): Computable<void> {
 
 /**
  * Push a carrier `packageImage` made to `repository` on `registry`, under the
- * tag its destination names: each blob the repository lacks, then the
- * manifest. A blob is mounted from the repository it was published to where
- * that is on the same registry, else uploaded (a layer published on another
- * registry is streamed from there).
+ * tag its destination names: each blob of the manifest its index names that
+ * the repository lacks, then the manifest. A blob is mounted from the
+ * repository it was published to where that is on the same registry, else
+ * uploaded (a layer published on another registry is streamed from there).
  * @return "already-synced" where the tag already names the manifest, else "published".
  */
 export function pushImage(
@@ -178,35 +194,33 @@ export function pushImage(
   repository: string
 ): Computable<PublishStatus> {
   const tag = packageCoordinateOf(carrier.destination).version;
-  return Computable.forAll(
-    [carrier.readFile(CARRIER_MANIFEST), carrier.readFile(CARRIER_CONFIG), carrier.readFile(CARRIER_SOURCES)] as const,
-    (manifestText: string, configText: string, sourcesText: string) => {
+  return carrier
+    .readFile(OCI_LAYOUT_INDEX)
+    .then(indexText => {
+      const path = blobPath(parseJson(indexText, OCI_LAYOUT_INDEX, toIndexedManifest).digest);
+      return Computable.forAll(
+        [carrier.readFile(path), carrier.readFile(CARRIER_SOURCES)] as const,
+        (manifestText: string, sourcesText: string) => ({
+          manifestText,
+          manifestImage: parseJson(manifestText, path, toImageManifest),
+          sources: new Map(parseJson(sourcesText, CARRIER_SOURCES, toLayerSources).map(source => [source.digest, source])),
+        })
+      );
+    })
+    .then(({ manifestText, manifestImage, sources }) => {
       const manifest = Buffer.from(manifestText, "utf8");
-      const layers = parseJson(manifestText, CARRIER_MANIFEST, toManifestLayers);
-      const sources = new Map(parseJson(sourcesText, CARRIER_SOURCES, toLayerSources).map(source => [source.digest, source]));
       return registry.taggedDigest(repository, tag).then(existing => {
         if (existing === digestOf(manifest)) {
           return Computable.resolve<PublishStatus>("already-synced");
         }
-        const config = Buffer.from(configText, "utf8");
-        const blobs = [
-          ...layers.map(layer =>
-            pushBlob(context, registry, repository, layer, carrier.getFile(blobName(layer.digest)), sources.get(layer.digest))
-          ),
-          pushBlob(
-            context,
-            registry,
-            repository,
-            { mediaType: OCI_CONFIG, digest: digestOf(config), size: config.length },
-            new MemoryFile(config)
-          ),
-        ];
+        const blobs = [...manifestImage.layers, manifestImage.config].map(blob =>
+          pushBlob(context, registry, repository, blob, carrier.getFile(blobPath(blob.digest)), sources.get(blob.digest))
+        );
         return Computable.forAll(blobs, () => undefined)
           .then(() => registry.putManifest(repository, tag, manifest, OCI_MANIFEST))
           .then((): PublishStatus => "published");
       });
-    }
-  );
+    });
 }
 
 /** Push one blob `repository` lacks: mounted where it is on this registry, else uploaded from `file` or fetched from where it was published. */
@@ -243,13 +257,22 @@ function pushBlob(
   });
 }
 
-/** Read the layers of a carrier's manifest. */
-function toManifestLayers(json: unknown): IDescriptor[] {
+/** Read the descriptor of the one manifest a carrier's layout index names. */
+function toIndexedManifest(json: unknown): IDescriptor {
+  const index = toManifestDocument(json, OCI_INDEX);
+  if (index.kind !== "index" || index.manifests.length !== 1) {
+    throw new FabrError("a carrier's index does not name exactly one manifest");
+  }
+  return index.manifests[0];
+}
+
+/** Read a carrier's manifest: its config and layers. */
+function toImageManifest(json: unknown): { config: IDescriptor; layers: readonly IDescriptor[] } {
   const manifest = toManifestDocument(json, OCI_MANIFEST);
   if (manifest.kind !== "manifest") {
     throw new FabrError("a carrier's manifest is an image index");
   }
-  return [...manifest.layers];
+  return manifest;
 }
 
 /** Read a carrier's record of where each layer published before is had from. */
@@ -269,8 +292,4 @@ function toLayerSources(json: unknown): ILayerSource[] {
     }
     return { digest, registry, repository, ...(loginUrl === undefined ? {} : { loginUrl }) };
   });
-}
-
-function blobName(digest: string): string {
-  return `${CARRIER_BLOBS}/${digest.substring("sha256:".length)}`;
 }

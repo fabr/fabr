@@ -8,6 +8,11 @@ together and share a version number.
 @fabr-build/js
 - Fix tsc import check failing when type files are missing.
 
+@fabr-build/container
+- A `sync` target's image entry now contains an OCI image layout whose `index.json` names the pushed
+  image's digest, platform and full reference (`host/repository:tag@sha256:…`), readable with
+  `fabr cat` before or after `fabr sync`.
+
 ## Fabr 0.4.2
 @fabr-build/core
 - `HOST` spells an ARM64 CPU `aarch64` on every platform, macOS included (`aarch64-apple-macosx15.0`,

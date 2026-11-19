@@ -35,6 +35,7 @@ import {
   Repository,
   RepositoryLookup,
   PackagePublishRef,
+  packageCoordinateOf,
   PublishableFileSet,
   PublishMember,
   PublishStatus,
@@ -201,10 +202,14 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     return new PackagePublishRef(this, { name: image, version });
   }
 
-  /** Package each member's image for this registry (see {@link packageImage}). */
+  /** Package each member's image for this registry, named as it is published here (see {@link packageImage}). */
   public package(members: PublishMember[]): Computable<PublishableFileSet[]> {
+    const host = new URL(this.registry.url).host;
     return Computable.forAll(
-      members.map(member => packageImage(this.context, member)),
+      members.map(member => {
+        const { name, version } = packageCoordinateOf(member.destination);
+        return packageImage(this.context, member, `${host}/${this.repositoryOf(name)}:${version}`);
+      }),
       (...carriers: PublishableFileSet[]) => carriers
     );
   }

@@ -194,6 +194,31 @@ sync mirror {
 }
 ```
 
+### The pushed image's digest
+
+`fabr build` on the `sync` target packages each image as it will be pushed, and pushes nothing.
+Each entry is an [OCI image layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
+whose `index.json` names the image's manifest by its digest, with the image's platform and, as its
+`org.opencontainers.image.ref.name` annotation, the full reference it is pushed as:
+
+```sh
+fabr build release
+fabr cat release/@ghcr/acme/app/1.4.2/index.json | jq -r '.manifests[0].digest'
+#   sha256:3f1c…
+fabr cat release/@ghcr/acme/app/1.4.2/index.json \
+  | jq -r '.manifests[0].annotations["org.opencontainers.image.ref.name"]'
+#   ghcr.io/acme/app:1.4.2@sha256:3f1c…
+```
+
+The digest is the one the registry reports once the image is pushed, so a deployment can name the
+image by digest (an ECS task definition's `image`, a Kubernetes manifest) before or after
+`fabr sync`. The reference's host is the host of the registry's `url`.
+
+The layout holds the manifest, the config and the layers fabr built. A layer of a base image from a
+registry is not in it: `sources.json` beside the layout records where each such layer is copied
+from when the image is pushed. A tool can inspect the layout, but copying or loading it needs the
+missing layers.
+
 ## Troubleshooting
 
 **`https://registry-1.docker.io has no image @docker:node:99`**: the registry has no image with
