@@ -115,10 +115,18 @@ export interface ITaskReport {
    *  succeeded and its result stands (a red test run): the task then ends as
    *  failed, with `error` saying why. */
   fail: (error: Error) => void;
+  /** Add `text` to the annotation the task's end is shown with (`[provenance]`):
+   *  a fact about how its work came out. */
+  annotate: (text: string) => void;
 }
 
 /** A report that discards everything, for work nobody observes (unit tests). */
-export const SILENT_REPORT: ITaskReport = { activity: () => undefined, progress: () => undefined, fail: () => undefined };
+export const SILENT_REPORT: ITaskReport = {
+  activity: () => undefined,
+  progress: () => undefined,
+  fail: () => undefined,
+  annotate: () => undefined,
+};
 
 /** A function that runs a unit of work as a reported task: a partially
  *  applied ExecutionContext.runTask, for a layer that knows when the work

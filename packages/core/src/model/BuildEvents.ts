@@ -111,6 +111,9 @@ export interface ITaskEndEvent extends ITaskEvent {
   /** The error that ended a failed task, for a one-line summary beside it;
    *  the failure itself is reported by the evaluation's rejection. */
   error?: Error;
+  /** Facts about how the task's work came out, shown beside its end
+   *  (`[provenance]`); absent where it reported none. */
+  annotations?: readonly string[];
 }
 
 /**

@@ -280,7 +280,12 @@ function publishTo(
   content: FileSet,
   progress: TaskProgress[] = []
 ): Computable<PublishStatus> {
-  const report: ITaskReport = { activity: () => undefined, progress: measured => progress.push(measured), fail: () => undefined };
+  const report: ITaskReport = {
+    activity: () => undefined,
+    progress: measured => progress.push(measured),
+    fail: () => undefined,
+    annotate: () => undefined,
+  };
   return publishRefOf(account, coordinate).then(destination =>
     destination.source
       .package([{ destination, content }], [destination], new Map())

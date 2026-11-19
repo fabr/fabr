@@ -5,6 +5,10 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 together and share a version number.
 
 ## Fabr 0.4.3
+@fabr-build/cli
+- `fabr sync` marks a member published with a provenance statement: `✓ Publishing
+  @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
+
 @fabr-build/js
 - Fix tsc import check failing when type files are missing.
 

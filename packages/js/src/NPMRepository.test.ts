@@ -72,6 +72,7 @@ import {
   vendPackageRef,
   versionToString,
   dependenciesOn,
+  SILENT_REPORT,
 } from "@fabr-build/core";
 import { NPMRepository } from "./NPMRepository";
 import { NO_PACKAGE_EXTENSIONS, PackageExtensions, toPackageExtensions } from "./PackageExtensions";
@@ -1176,7 +1177,7 @@ describe("NPMRepository publish", () => {
       expect(carrier.provides).to.equal("demo");
       expect([...carrier.dependsOn]).to.deep.equal(["@scope/dep"]);
 
-      expect(await repo.publish(carrier)).to.equal("published");
+      expect(await repo.publish(carrier, SILENT_REPORT)).to.equal("published");
 
       const put = server.captured()!;
       expect(put.method).to.equal("PUT");
@@ -1202,7 +1203,7 @@ describe("NPMRepository publish", () => {
       const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
       const destination = coord(repo, "@fabr/core:0.1.0");
       const [carrier] = await repo.package([{ destination, content: src }], [destination]);
-      await repo.publish(carrier);
+      await repo.publish(carrier, SILENT_REPORT);
       const put = server.captured()!;
       expect(put.url).to.equal("/@fabr%2fcore");
       expect(JSON.parse(put.body)._attachments["@fabr/core-0.1.0.tgz"]).to.not.equal(undefined);
@@ -1220,7 +1221,7 @@ describe("NPMRepository publish", () => {
       const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
       const destination = coord(repo, "@fabr/core:0.1.0");
       const [carrier] = await repo.package([{ destination, content: src }], [destination]);
-      await repo.publish(carrier);
+      await repo.publish(carrier, SILENT_REPORT);
       expect(JSON.parse(server.captured()!.body).access).to.equal("public");
     } finally {
       server.close();
@@ -1234,7 +1235,7 @@ describe("NPMRepository publish", () => {
       const src = publishFileSet({ "package.json": JSON.stringify({ name: "demo", version: "0" }) });
       const destination = coord(repo, "demo:1.0.0");
       const [carrier] = await repo.package([{ destination, content: src }], [destination]);
-      expect(await repo.publish(carrier)).to.equal("already-synced");
+      expect(await repo.publish(carrier, SILENT_REPORT)).to.equal("already-synced");
     } finally {
       server.close();
     }
@@ -1252,7 +1253,7 @@ describe("NPMRepository publish", () => {
       const src = publishFileSet({ "package.json": JSON.stringify({ name: "demo", version: "0" }) });
       const destination = coord(repo, "demo:1.0.0");
       const [carrier] = await repo.package([{ destination, content: src }], [destination]);
-      expect(await repo.publish(carrier)).to.equal("already-synced");
+      expect(await repo.publish(carrier, SILENT_REPORT)).to.equal("already-synced");
     } finally {
       server.close();
     }
@@ -1423,7 +1424,7 @@ describe("NPMRepository trusted publishing", () => {
     const destination = coord(repo, "@fabr/core:0.1.0");
     const src = publishFileSet({ "package.json": JSON.stringify({ name: "@fabr/core", version: "0" }) });
     const [carrier] = await repo.package([{ destination, content: src }], [destination]);
-    return toPromise(repo.publish(carrier));
+    return toPromise(repo.publish(carrier, SILENT_REPORT));
   }
 
   it("publishes with the token the registry exchanges the identity for", async () => {
@@ -1540,7 +1541,7 @@ SZmsJo0cKcK3owM=
   async function publishFromRun(
     port: number,
     options: { visibility?: string; access?: "public" | "restricted" | null; provenance?: boolean; repository?: string } = {}
-  ): Promise<void> {
+  ): Promise<string[]> {
     const context = npmrcContext();
     const sigstoreToken = jwt({ sub: "repo:fabr/fabr:ref:refs/tags/v0.1.0" });
     context.execution.identityProvider = {
@@ -1575,7 +1576,9 @@ SZmsJo0cKcK3owM=
       [{ destination, content: publishFileSet({ "package.json": JSON.stringify(manifest) }) }],
       [destination]
     );
-    await toPromise(repo.publish(carrier));
+    const annotations: string[] = [];
+    await toPromise(repo.publish(carrier, { ...SILENT_REPORT, annotate: text => annotations.push(text) }));
+    return annotations;
   }
 
   function envelopeOf(server: { requests: CapturedPut[] }): { _attachments: Record<string, { content_type: string; data: string }> } {
@@ -1585,7 +1588,7 @@ SZmsJo0cKcK3owM=
   it("attaches a signed statement of the run to a public package", async () => {
     const server = await routedServer({ ...SIGNING_ROUTES, [VISIBILITY]: [200, '{"public":true}'] });
     try {
-      await publishFromRun(server.port);
+      expect(await publishFromRun(server.port)).to.deep.equal(["provenance"]);
       const attachment = envelopeOf(server)._attachments["@fabr/core-0.1.0.sigstore"];
       expect(attachment.content_type).to.equal("application/vnd.dev.sigstore.bundle.v0.3+json");
       const bundle = JSON.parse(attachment.data);
@@ -1622,7 +1625,7 @@ SZmsJo0cKcK3owM=
     it(`publishes without a statement ${what}`, async () => {
       const server = await routedServer({ ...SIGNING_ROUTES, ...routes });
       try {
-        await publishFromRun(server.port, options);
+        expect(await publishFromRun(server.port, options)).to.deep.equal([]);
         expect(Object.keys(envelopeOf(server)._attachments)).to.deep.equal(["@fabr/core-0.1.0.tgz"]);
         expect(server.requests.map(r => r.url)).to.not.include("/api/v2/signingCert");
       } finally {

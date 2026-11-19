@@ -89,6 +89,18 @@ describe("ProgressReporter", () => {
     expect(lines[1]).to.equal("info:✗ Building //pkg (40ms): NPM package x@1.0.0 not found");
   });
 
+  it("shows the annotations a task ended with on its end line", () => {
+    const { lines, reporter, tick } = report();
+    const task = { kind: "publish" as const, destination: "@npm:@fabr-build/cli:0.4.2" };
+    send(reporter, { kind: "task-start", id: 1, task, state: "running" });
+    tick(5300);
+    send(reporter, { kind: "task-end", id: 1, task, failed: false, annotations: ["provenance"] });
+    expect(lines).to.deep.equal([
+      "info:Publishing @npm:@fabr-build/cli:0.4.2",
+      "info:✓ Publishing @npm:@fabr-build/cli:0.4.2 [provenance] (5.3s)",
+    ]);
+  });
+
   it("uses a sub-target's label as the verb", () => {
     const { lines, reporter } = report();
     send(reporter, { kind: "task-start", id: 1, task: building("//pkg", "Compiling"), state: "running" });

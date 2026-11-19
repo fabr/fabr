@@ -3255,6 +3255,25 @@ describe("BuildContext", () => {
     }
   });
 
+  it("Ends a task with the annotations it reported, each once", async () => {
+    const run = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+    const annotations: Array<readonly string[] | undefined> = [];
+    run.onBuildEvent(event => {
+      if (event.kind === "task-end") {
+        annotations.push(event.annotations);
+      }
+    });
+    await Promise.resolve(
+      run.runTask({ kind: "publish", destination: "@npm:x:1.0.0" }, report => {
+        report.annotate("provenance");
+        report.annotate("provenance");
+        return Computable.resolve(undefined);
+      })
+    );
+    await Promise.resolve(run.runTask({ kind: "publish", destination: "@npm:y:1.0.0" }, () => Computable.resolve(undefined)));
+    expect(annotations).to.deep.equal([["provenance"], undefined]);
+  });
+
   it("Builds a sub-target once and reshapes its output in resolution every run", async () => {
     const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-subtarget-test-"));
     const input =

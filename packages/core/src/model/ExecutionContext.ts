@@ -257,8 +257,8 @@ export class ExecutionContext {
    * Perform `run` as one task described by `task`: emits task-start now and
    * task-end when the returned chain settles or `run` throws. `run` is given
    * the task's {@link ITaskReport}, for its output, its slot activity, its
-   * progress and a failure of its own (`fail`), which ends the task failed
-   * while its result still resolves.
+   * progress, a failure of its own (`fail`), which ends the task failed
+   * while its result still resolves, and the annotations its end carries.
    */
   public runTask<T>(task: TaskDescription, run: (report: ITaskReport) => Computable<T>): Computable<T> {
     const id = this.nextTaskId++;
@@ -267,6 +267,7 @@ export class ExecutionContext {
     let state: TaskState = "running";
     let latest: TaskProgress | undefined;
     let failure: Error | undefined;
+    const annotations: string[] = [];
     const status = (): void => this.emit({ kind: "task-progress", id, task, state, progress: latest });
     const report: ITaskReport = {
       output: this.wantsOutput ? { line: (line, stream) => this.emit({ kind: "task-output", id, task, line, stream }) } : undefined,
@@ -281,10 +282,22 @@ export class ExecutionContext {
       fail: error => {
         failure = error;
       },
+      annotate: text => {
+        if (!annotations.includes(text)) {
+          annotations.push(text);
+        }
+      },
     };
     this.emit({ kind: "task-start", id, task, state });
     const end = (failed: boolean, error?: unknown): void =>
-      this.emit({ kind: "task-end", id, task, failed, ...(failed ? { error: toError(error) } : {}) });
+      this.emit({
+        kind: "task-end",
+        id,
+        task,
+        failed,
+        ...(failed ? { error: toError(error) } : {}),
+        ...(annotations.length > 0 ? { annotations: [...annotations] } : {}),
+      });
     /* End the task on a synchronous throw too, or its start is never
      * paired. */
     let chain: Computable<T>;

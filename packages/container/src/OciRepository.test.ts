@@ -43,6 +43,7 @@ import {
   ResolvedNode,
   SymlinkFile,
   TargetContext,
+  SILENT_REPORT,
 } from "@fabr-build/core";
 import { ILayerRecord, ImageFileSet } from "./ImageFileSet";
 import { indexLayer } from "./LayerIndex";
@@ -429,7 +430,7 @@ describe("OciRepository", () => {
     ]);
 
     registry.requests.length = 0;
-    expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+    expect(await Promise.resolve(repository.publish(carrier, SILENT_REPORT))).to.equal("published");
     const mounts = registry.requests.filter(request => request.startsWith("POST /v2/myorg/copy/blobs/uploads/?mount="));
     expect(mounts).to.have.lengthOf(2);
     expect(registry.requests).to.include("PUT /v2/myorg/copy/manifests/2");
@@ -437,7 +438,7 @@ describe("OciRepository", () => {
     const copied = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef));
     const pulled = (await Promise.resolve(copied.content.files())) as ImageFileSet;
     expect(await pulled.readFile("app/server")).to.equal("srv");
-    expect(await Promise.resolve(repository.publish(carrier))).to.equal("already-synced");
+    expect(await Promise.resolve(repository.publish(carrier, SILENT_REPORT))).to.equal("already-synced");
   });
 
   it("publishes an image built here, its layers compressed into the carrier's layout and uploaded from there", async () => {
@@ -467,7 +468,7 @@ describe("OciRepository", () => {
     );
     expect(JSON.parse(await carrier.readFile("sources.json"))).to.deep.equal([]);
 
-    expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+    expect(await Promise.resolve(repository.publish(carrier, SILENT_REPORT))).to.equal("published");
     expect(registry.requests.some(request => request.startsWith("PUT /v2/myorg/app/blobs/uploads/"))).to.equal(true);
     const pushed = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("myorg/app:1")) as RepositoryRef));
     expect(pushed.version).to.equal(index.manifests[0].digest);
@@ -488,7 +489,7 @@ describe("OciRepository", () => {
         repository.package([{ destination: repository.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }])
       );
       declining.requests.length = 0;
-      expect(await Promise.resolve(repository.publish(carrier))).to.equal("published");
+      expect(await Promise.resolve(repository.publish(carrier, SILENT_REPORT))).to.equal("published");
       expect(declining.requests.filter(request => request.startsWith("GET /v2/library/demo/blobs/"))).to.have.lengthOf(2);
       /* The token the registry's sign-in holds for reading `library/demo` is reused: no second client signs in. */
       expect(
@@ -523,7 +524,7 @@ describe("OciRepository", () => {
       const [carrier] = await Promise.resolve(
         destination.package([{ destination: destination.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }])
       );
-      expect(await Promise.resolve(destination.publish(carrier))).to.equal("published");
+      expect(await Promise.resolve(destination.publish(carrier, SILENT_REPORT))).to.equal("published");
       expect(logins).to.include("https://login.example/v1/");
       const copied = await Promise.resolve(
         destination.resolve(destination.getRepositoryRef(parseName("myorg/copy:2")) as RepositoryRef)
@@ -547,7 +548,7 @@ describe("OciRepository", () => {
       const [carrier] = await Promise.resolve(
         repository.package([{ destination: repository.getRepositoryPublishRef(parseName(`demo:${tag}`)), content: image }])
       );
-      await Promise.resolve(repository.publish(carrier));
+      await Promise.resolve(repository.publish(carrier, SILENT_REPORT));
     }
     const listed = await Promise.resolve(repository.children(repository.getRepositoryRef(parseName("demo")) as PartialRepositoryRef));
     expect([...listed.keys()]).to.deep.equal(["0.9", "1.0", "1.1", "2.0"]);
@@ -628,11 +629,12 @@ describe("OciRepository provenance", () => {
   /**
    * Push an image built here to `myorg/app:<tag>` on `server`, which serves
    * Sigstore too, from a CI job building a repository of `visibility` (none:
-   * outside CI). @return what the push reports and the image's digest.
+   * outside CI). @return what the push reports, the image's digest and the
+   * annotations the push reported.
    */
   async function pushFromRun(
     options: { visibility?: "public" | "private"; provenance?: boolean; tag?: string } = {}
-  ): Promise<{ status: string; digest: string }> {
+  ): Promise<{ status: string; digest: string; annotations: string[] }> {
     const context = fetchingContext("x86_64-unknown-linux");
     if (options.visibility !== undefined) {
       (context.execution as { identityProvider?: unknown }).identityProvider = {
@@ -666,7 +668,9 @@ describe("OciRepository provenance", () => {
       ])
     );
     const index = JSON.parse(await carrier.readFile("index.json")) as { manifests: Array<{ digest: string }> };
-    return { status: await Promise.resolve(repository.publish(carrier)), digest: index.manifests[0].digest };
+    const annotations: string[] = [];
+    const status = await Promise.resolve(repository.publish(carrier, { ...SILENT_REPORT, annotate: text => annotations.push(text) }));
+    return { status, digest: index.manifests[0].digest, annotations };
   }
 
   /** @return the attestations `repository` holds, each its manifest. */
@@ -686,8 +690,9 @@ describe("OciRepository provenance", () => {
 
   it("attaches a signed provenance statement to an image pushed from a public repository's CI, as a referrer", async () => {
     server = await startRegistry({ referrers: true });
-    const { status, digest } = await pushFromRun({ visibility: "public" });
+    const { status, digest, annotations } = await pushFromRun({ visibility: "public" });
     expect(status).to.equal("published");
+    expect(annotations).to.deep.equal(["provenance"]);
     const [attestation, ...others] = attestationsIn("myorg/app");
     expect(others).to.deep.equal([]);
     expect(attestation.subject.digest).to.equal(digest);
@@ -741,7 +746,9 @@ describe("OciRepository provenance", () => {
   ] as const) {
     it(`pushes without provenance ${where}`, async () => {
       server = await startRegistry({ referrers: true });
-      expect((await pushFromRun(options)).status).to.equal("published");
+      const { status, annotations } = await pushFromRun(options);
+      expect(status).to.equal("published");
+      expect(annotations).to.deep.equal([]);
       expect(attestationsIn("myorg/app")).to.deep.equal([]);
       expect(server.requests.filter(request => request.startsWith("POST /api/"))).to.deep.equal([]);
     });

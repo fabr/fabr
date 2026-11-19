@@ -75,6 +75,7 @@ import {
   SerializedBundle,
   SIGSTORE_AUDIENCE,
   signDsse,
+  ITaskReport,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -338,9 +339,10 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
    * The credential is the token the registry exchanges the run's CI identity
    * for (trusted publishing), where there is one and the registry grants it;
    * else this repository's credential. Where the exchange was refused and the
-   * upload then fails, the error carries help naming the refusal.
+   * upload then fails, the error carries help naming the refusal. A publish
+   * with a provenance statement annotates the task's end `provenance`.
    */
-  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+  public publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus> {
     const { name, version } = packageCoordinateOf(artifact.destination);
     const tgzFile = artifact.get(tarballBasename(name, version));
     const manifestFile = artifact.get("package.json");
@@ -376,15 +378,23 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
         this.access,
         auth.otpProvider(this.url, this.context.execution.interaction),
         provenance
-      ).catch(err => {
-        if (refused !== undefined && err instanceof FabrError) {
-          err.withHelp(
-            `trusted publishing was refused for ${name}: ${refused}; configure this job's workflow or pipeline as its ` +
-              `trusted publisher on the registry (\`npm trust\`), or give a credential for ${this.url} in .npmrc`
-          );
+      ).then(
+        status => {
+          if (provenance !== undefined && status === "published") {
+            report.annotate("provenance");
+          }
+          return status;
+        },
+        err => {
+          if (refused !== undefined && err instanceof FabrError) {
+            err.withHelp(
+              `trusted publishing was refused for ${name}: ${refused}; configure this job's workflow or pipeline as its ` +
+                `trusted publisher on the registry (\`npm trust\`), or give a credential for ${this.url} in .npmrc`
+            );
+          }
+          throw err;
         }
-        throw err;
-      })
+      )
     );
   }
   /**

@@ -49,6 +49,7 @@ import {
   RunnableFileSet,
   TargetContext,
   RepositoryImplementation,
+  ITaskReport,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { imageRunnable } from "./ImageRunnable";
@@ -223,15 +224,25 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   /**
    * Push a packaged image under its tag (see {@link pushImage}), with a signed
    * provenance statement where this repository asks for one and it applies
-   * (see {@link signImageProvenance}).
+   * (see {@link signImageProvenance}); the task's end is then annotated
+   * `provenance`.
    */
-  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+  public publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus> {
     const name = artifact.destination.name;
+    let attested = false;
     return pushImage(this.context, this.registry, artifact, this.repositoryOf(name), manifest =>
       this.provenance
-        ? signImageProvenance(this.context, this.publishedName(name), manifest, this.sigstore)
+        ? signImageProvenance(this.context, this.publishedName(name), manifest, this.sigstore).then(attestation => {
+            attested = attestation !== undefined;
+            return attestation;
+          })
         : Computable.resolve(undefined)
-    );
+    ).then(status => {
+      if (attested && status === "published") {
+        report.annotate("provenance");
+      }
+      return status;
+    });
   }
 
   /**

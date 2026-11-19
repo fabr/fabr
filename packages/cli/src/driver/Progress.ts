@@ -36,9 +36,14 @@ import {
 import { IPaneContent, IPaneRow, TerminalStream } from "./Terminal";
 
 const DIAG_TASK_START = Diagnostic.Info<{ what: string; chain: string }>("{what}{chain}");
-const DIAG_TASK_DONE = Diagnostic.Info<{ mark: string; what: string; chain: string; duration: string; reason: string }>(
-  "{mark} {what}{chain} {duration}{reason}"
-);
+const DIAG_TASK_DONE = Diagnostic.Info<{
+  mark: string;
+  what: string;
+  chain: string;
+  annotations: string;
+  duration: string;
+  reason: string;
+}>("{mark} {what}{chain}{annotations} {duration}{reason}");
 const DIAG_STEP_OUTPUT = Diagnostic.Info<{ prefix: string; line: string }>("{prefix} {line}");
 const DIAG_BUILD_COMPLETE = Diagnostic.Info<{ targets: string; duration: string }>("Built {targets} {duration}");
 const DIAG_UP_TO_DATE = Diagnostic.Info<{ duration: string }>("Already up to date {duration}");
@@ -248,6 +253,7 @@ export class ProgressReporter {
             what: describe(event.task),
             /* The context goes on whichever line is the task's first. */
             chain: this.announceStart ? "" : context(event.task),
+            annotations: event.annotations === undefined ? "" : ` [${event.annotations.join(", ")}]`,
             duration: this.style(SGR_DIM, `(${this.formatTimes(started)})`),
             reason: failureReason(event.error),
           });
