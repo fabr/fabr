@@ -265,6 +265,20 @@ describe("Command", () => {
     expect(capture(["build", "-t", "x", "foo"]).err.join("\n")).to.match(/'-t' is not valid for the 'build'/);
   });
 
+  it("takes 'purge' as the cache command's one argument", () => {
+    expect(parseCommandLine(["node", "fabr", "cache", "purge"]).command).to.equal("cache");
+    expect(capture(["cache", "prune"]).err.join("\n")).to.match(/'cache' command takes 'purge'/);
+    expect(capture(["cache"]).err.join("\n")).to.match(/'cache' command takes 'purge'/);
+  });
+
+  it("selects test files with -T, its pattern the next argument and not a target", () => {
+    const parsed = parseCommandLine(["node", "fabr", "test", "-T", "src/**/date*", "foo"]);
+    expect(parsed.properties.get("TEST_FILE_PATTERN")).to.equal("src/**/date*");
+    expect(parsed.targets).to.deep.equal(["foo"]);
+    expect(capture(["test", "foo", "-T"]).err.join("\n")).to.match(/'-T' requires a pattern/);
+    expect(capture(["build", "-T", "x", "foo"]).err.join("\n")).to.match(/'-T' is not valid for the 'build'/);
+  });
+
   it("parses the (undocumented) force flag in both spellings", () => {
     expect(parseCommandLine(["node", "fabr", "build", "-f", "foo"]).force).to.be.true;
     expect(parseCommandLine(["node", "fabr", "test", "--force", "foo"]).force).to.be.true;

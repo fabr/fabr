@@ -28,7 +28,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
 import { SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
-import { buildReport, describeSnapshotFailure, reportPathOf, snapshotPathOf, sourcePathOf, withStagedSources } from "./Report";
+import {
+  buildReport,
+  describeSnapshotFailure,
+  framesOf,
+  reportPathOf,
+  snapshotPathOf,
+  sourcePathOf,
+  withStagedSources,
+} from "./Report";
 
 function test(name: string, status: ITestResult["status"], extra?: Partial<ITestResult>): ITestResult {
   return { name, status, duration: 0, ...extra };
@@ -129,7 +137,24 @@ describe("reportPathOf", () => {
       fs.writeFileSync(`${file}.map`, JSON.stringify({ version: 3, sources: [entry], mappings: "" }));
       return file;
     };
-    fs.writeFileSync(path.join(install, SOURCE_LOCATIONS_FILE), JSON.stringify({ "./pkg/src/c.test.ts": "src/c.test.ts" }));
+    fs.writeFileSync(
+      path.join(install, SOURCE_LOCATIONS_FILE),
+      JSON.stringify({ "./pkg/src/c.test.ts": "src/c.test.ts", "./pkg/src/sub/f.test.tsx": "src/sub/f.test.tsx" })
+    );
+
+    it("names a compiled file with no map by the source the installation stages for its stem", () => {
+      const file = path.join(install, "build", "sub", "f.test.js");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "");
+      assert.equal(
+        withInstallCwd(() => reportPathOf(file)),
+        "pkg/src/sub/f.test.tsx"
+      );
+      assert.equal(
+        withInstallCwd(() => sourcePathOf(file)),
+        path.join(install, "src", "sub", "f.test.tsx")
+      );
+    });
 
     it("names it by the path the reference gives", () => {
       const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
@@ -230,5 +255,43 @@ describe("describeSnapshotFailure", () => {
       failure?.message,
       "Invalid state: Cannot read snapshot file '/work/a.snap.' Run 'fabr test -u' to record them again."
     );
+  });
+});
+
+describe("framesOf", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-frames-"));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it("keeps only the frames in the code under test", () => {
+    const own = path.join(dir, "a.test.js");
+    const stack = [
+      "Error: expected",
+      `    at <anonymous> (${own}:3:7)`,
+      `    at run (${path.join(dir, "node_modules", "vitest", "dist", "run.js")}:10:5)`,
+      "    at new Promise (<anonymous>)",
+      "    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)",
+    ].join("\n");
+    const frames = framesOf(stack)?.split("\n") ?? [];
+    assert.equal(frames.length, 1);
+    assert.match(frames[0], /^at <anonymous> \(.*a\.test\.js:3:7\)$/);
+  });
+
+  it("names the source position a compiled frame came from, through its source map", () => {
+    const compiled = path.join(dir, "a.test.js");
+    /* One mapping: generated line 1, column 0 -> source line 5, column 2. */
+    fs.writeFileSync(`${compiled}.map`, JSON.stringify({ version: 3, sources: ["a.test.ts"], names: [], mappings: "AAIE" }));
+    assert.match(framesOf(`Error\n    at file://${compiled}:1:1`) ?? "", /^at \(.*a\.test\.ts:5:3\)$/);
+  });
+
+  it("keeps a frame that names its source by reference, as it stands", () => {
+    assert.equal(framesOf(`Error\n    at ${path.join(dir, "tests", "fabr:./tests/a.spec.ts")}:6:41`), "at (tests/a.spec.ts:6:41)");
+  });
+
+  it("has nothing to say of a stack with no frame of the code under test", () => {
+    assert.equal(framesOf("Error: x\n    at new Promise (<anonymous>)"), undefined);
+    assert.equal(framesOf(undefined), undefined);
   });
 });

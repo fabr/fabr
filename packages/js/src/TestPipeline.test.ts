@@ -32,8 +32,16 @@ import {
   PackageFileSet,
 } from "@fabr-build/core";
 import { IPackageLayout, ReadName } from "./Layout";
-import { selectCompiledSetupFile, selectCompiledTestFiles, snapshotWriteBacks } from "./TestPipeline";
-import { filesToRun, readsOf } from "./TestRunAction";
+import {
+  type ITestFramework,
+  recordOf,
+  selectCompiledSetupFile,
+  selectCompiledTestFiles,
+  snapshotWriteBacks,
+  TEST_FRAMEWORKS,
+  testTargetOf,
+} from "./TestPipeline";
+import { filesToRun, readsOf, withArtifactsOf } from "./TestRunAction";
 
 /** A FileSet with the given names (contents irrelevant to selection). */
 function fileSetOf(...names: string[]): FileSet {
@@ -167,6 +175,127 @@ describe("snapshotWriteBacks", () => {
   it("ignores collected files that are not records", () => {
     const tests = sourceSetOf("/proj", "foo.test.ts");
     expect(snapshotWriteBacks(fileSetOf("ctrf-report.json", "foo.snap"), tests, EMPTY_FILESET)).to.deep.equal([]);
+  });
+});
+
+describe("records named for the compiled test file (playwright)", () => {
+  const records = TEST_FRAMEWORKS.get("playwright")!.records;
+  const compiledOf = new Map([
+    ["tests/login.spec.ts", "tests/login.spec.js"],
+    ["tests/nested/cart.spec.tsx", "tests/nested/cart.spec.js"],
+  ]);
+  const withContent = (rows: Array<[string, string]>): FileSet =>
+    new FileSet(new Map<string, IFile>(rows.map(([name, text]) => [name, MemoryFile.from(text)])));
+
+  it("finds a record's test by a directory that is, or begins with, the test's file name, never by the file itself", () => {
+    const renames = new Map([["tests/login.spec.ts", "tests/login.spec.js"]]);
+    expect(recordOf("tests/login.spec.ts-snapshots/home-chromium-linux.png", renames)).to.deep.equal({
+      test: "tests/login.spec.ts",
+      name: "tests/login.spec.js-snapshots/home-chromium-linux.png",
+    });
+    /* `{testFilePath}` as a directory of a custom snapshotPathTemplate. */
+    expect(recordOf("__screenshots__/tests/login.spec.ts/home.png", renames)?.name).to.equal(
+      "__screenshots__/tests/login.spec.js/home.png"
+    );
+    /* A longer name sharing the prefix is another test's. */
+    expect(recordOf("tests/login.spec.tsx-snapshots/a.png", renames)).to.equal(undefined);
+    expect(recordOf("tests/login.spec.ts", renames)).to.equal(undefined);
+  });
+
+  it("pairs a record with the test its directories lead to, where two tests share a compiled name", () => {
+    const toSource = new Map([
+      ["tests/a/login.spec.js", "tests/a/login.spec.ts"],
+      ["tests/b/login.spec.js", "tests/b/login.spec.tsx"],
+    ]);
+    expect(recordOf("tests/a/login.spec.js-snapshots/x.png", toSource)).to.deep.equal({
+      test: "tests/a/login.spec.js",
+      name: "tests/a/login.spec.ts-snapshots/x.png",
+    });
+    expect(recordOf("tests/b/login.spec.js-snapshots/x.png", toSource)?.name).to.equal("tests/b/login.spec.tsx-snapshots/x.png");
+  });
+
+  it("stages the declared records under the compiled file's name", () => {
+    const staged = records.stage(
+      fileSetOf("tests/login.spec.ts-snapshots/home.png", "tests/nested/cart.spec.tsx-snapshots/a.txt"),
+      compiledOf
+    );
+    expect([...staged].map(([name]) => name)).to.deep.equal([
+      "tests/login.spec.js-snapshots/home.png",
+      "tests/nested/cart.spec.js-snapshots/a.txt",
+    ]);
+  });
+
+  it("collects the directories named for each compiled test, and each staged record by name", () => {
+    const staged = fileSetOf("custom/home.png");
+    expect(records.collected(staged, compiledOf)).to.deep.equal([
+      "**/login.spec.js-*/**",
+      "**/login.spec.js/**",
+      "**/cart.spec.js-*/**",
+      "**/cart.spec.js/**",
+      "custom/home.png",
+    ]);
+  });
+
+  it("offers each changed record back under the source's name, beside its own test", () => {
+    const tests = sourceSetOf("/proj", "tests/login.spec.ts", "tests/nested/cart.spec.tsx");
+    const staged = withContent([["tests/login.spec.js-snapshots/home.png", "old"]]);
+    const collected = withContent([
+      ["tests/login.spec.js-snapshots/home.png", "new"],
+      ["tests/login.spec.js-snapshots/menu.png", "created"],
+      ["tests/nested/cart.spec.js-snapshots/a.txt", "created"],
+    ]);
+    const candidates = records.writeBacks(collected, staged, tests, compiledOf);
+    expect(candidates.map(({ files }) => [...files].map(([name]) => name))).to.deep.equal([
+      ["tests/login.spec.ts-snapshots/home.png", "tests/login.spec.ts-snapshots/menu.png"],
+      ["tests/nested/cart.spec.tsx-snapshots/a.txt"],
+    ]);
+    /* Each file belongs to its test, which the driver locates to place it. */
+    const [login, cart] = candidates.map(({ belongsTo }) => belongsTo.makeProjector());
+    expect(login("tests/login.spec.ts-snapshots/home.png")).to.equal("tests/login.spec.ts");
+    expect(cart("tests/nested/cart.spec.tsx-snapshots/a.txt")).to.equal("tests/nested/cart.spec.tsx");
+    expect(candidates[0].origin).to.equal(tests.origin);
+  });
+
+  it("offers nothing for a record the run left as staged", () => {
+    const tests = sourceSetOf("/proj", "tests/login.spec.ts");
+    const staged = withContent([["tests/login.spec.js-snapshots/home.png", "same"]]);
+    expect(records.writeBacks(staged, staged, tests, compiledOf)).to.deep.equal([]);
+  });
+
+  it("finds the test of a record a template places under the test's path", () => {
+    const tests = sourceSetOf("/proj", "tests/login.spec.ts", "other/login.spec.ts");
+    const collected = withContent([["__screenshots__/tests/login.spec.js/home.png", "new"]]);
+    const [candidate] = records.writeBacks(
+      collected,
+      EMPTY_FILESET,
+      tests,
+      new Map([
+        ["tests/login.spec.ts", "tests/login.spec.js"],
+        ["other/login.spec.ts", "other/login.spec.js"],
+      ])
+    );
+    expect(candidate.belongsTo.makeProjector()("__screenshots__/tests/login.spec.ts/home.png")).to.equal("tests/login.spec.ts");
+  });
+});
+
+describe("testTargetOf", () => {
+  const framework = (name: string): ITestFramework => TEST_FRAMEWORKS.get(name)!;
+
+  it("pins the module format the framework loads, keeping the target's own ES level and environment", () => {
+    expect(testTargetOf({ version: "es2022", module: "dual", environment: "browser" }, framework("vitest"))).to.deep.equal({
+      version: "es2022",
+      module: "esm",
+      environment: "browser",
+    });
+  });
+
+  it("raises an ES level below the framework's minimum to the minimum, and leaves a higher one", () => {
+    expect(testTargetOf({ version: "es2015", module: "commonjs", environment: "node" }, framework("playwright")).version).to.equal(
+      "es2017"
+    );
+    expect(testTargetOf({ version: "es2022", module: "commonjs", environment: "node" }, framework("playwright")).version).to.equal(
+      "es2022"
+    );
   });
 });
 
@@ -328,5 +457,33 @@ describe("readsOf", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("withArtifactsOf", () => {
+  it("names each attachment where the target's result holds it, and leaves out one outside the run's directory", () => {
+    const report: ITestReport = {
+      results: {
+        tool: { name: "fixture" },
+        summary: { tests: 1, passed: 0, failed: 1, pending: 0, skipped: 0, other: 0, start: 0, stop: 0 },
+        tests: [
+          {
+            name: "a",
+            status: "failed",
+            duration: 0,
+            attachments: [
+              { name: "trace", contentType: "application/zip", path: "a-chromium/trace.zip" },
+              { name: "stray", contentType: "text/plain", path: "../elsewhere.txt" },
+            ],
+          },
+          { name: "b", status: "passed", duration: 0 },
+        ],
+      },
+    };
+    const [a, b] = withArtifactsOf(report, "artifacts/tests/a.spec.js").results.tests;
+    expect(a.attachments).to.deep.equal([
+      { name: "trace", contentType: "application/zip", path: "artifacts/tests/a.spec.js/a-chromium/trace.zip" },
+    ]);
+    expect(b.attachments).to.equal(undefined);
   });
 });

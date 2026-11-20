@@ -37,6 +37,7 @@ import {
   Semaphore,
   SILENT_REPORT,
   dependenciesOn,
+  deleteTreeSync,
 } from "@fabr-build/core";
 import { PNP } from "../Layout";
 import { createNodeExecAction, NODE_EXEC_ACTION } from "../NodeExecAction";
@@ -358,7 +359,7 @@ function incrementalScenarios(): void {
        * a cold build bounds nothing, and a case that only ever builds cold
        * proves nothing about bounding. */
       recordEngagement(compile);
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     });
 
     /** The same sources compiled from nothing, in a store of their own — the
@@ -1028,7 +1029,7 @@ function incrementalScenarios(): void {
     });
 
     afterEach(() => {
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     });
 
     /* These cases build their own Compiles, so engagement is recorded from the
@@ -1427,7 +1428,7 @@ describe("incremental compiles against a bounded program", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /** What a cold compile of the CURRENT sources produces, in its own store —

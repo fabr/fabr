@@ -31,7 +31,8 @@
  *
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
  *              [--name-pattern=<regex>] [--setup=<module|./staged path>]…
- *              [--pnp=<file>] [--reads=<file>] <test files…>
+ *              [--pnp=<file>] [--reads=<file>] [--artifacts=<dir>]
+ *              <test files…>
  *
  * and writes its CTRF report to `--report`; its exit status counts only where
  * it wrote none.
@@ -56,6 +57,15 @@
  * - `--reads`: where to write what the test processes loaded or read (js-tools'
  *   `testRunner/Reads.ts`), from which the test step decides what a change
  *   reaches.
+ * - `--artifacts`: where to keep the files of its tests the runner's report
+ *   attaches to them, for a framework whose runner keeps any
+ *   ({@link ITestFramework.artifacts}).
+ * - `--interactive`: under `fabr run`, run the framework's own interactive run
+ *   instead of a test run, writing no report: the runner is started in the
+ *   installation, its first operand the compiled tree, where it then works
+ *   as in a test run, the test files after it and, after `--`, the
+ *   arguments the framework's command is given. A runner that has no
+ *   interactive run refuses it.
  */
 
 import {
@@ -72,8 +82,12 @@ import {
   FileSet,
   Flag,
   IFile,
+  mapComputable,
+  parseJson,
+  toJsonObject,
   IWriteBackCandidate,
   MemoryFile,
+  Name,
   PackageFileSet,
   PackageSources,
   parseName,
@@ -86,12 +100,14 @@ import {
   TargetContext,
   TEST_EXPECTATIONS,
   TEST_FLAKE_RETRIES,
+  TEST_FILE_PATTERN,
   TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
   type TestStability,
   toEnvironment,
   toFlakeRetries,
   toTestStability,
+  selectTestFiles,
   TREE_MOUNT,
   UPDATE_EXPECTATIONS,
   WriteBackFileSet,
@@ -102,13 +118,14 @@ import {
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { PNP_DATA_FILE, PNP_PRELOAD, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
-import { pnpPreloadOf } from "./Layout";
+import { layoutProgram, pnpPreloadOf } from "./Layout";
 import { createTestRunAction, type IMeasuredFiles } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
 import {
   compileContents,
   DECLARATION_FILE,
+  esLevelOrder,
   type ICompiledContents,
   formatJSTarget,
   PinnedJSTarget,
@@ -197,28 +214,207 @@ export interface ITestFramework {
    * (its install's `test-globals.d.ts`); otherwise an ordinary `@types`
    * package the target declares does, as `@types/jest` does for jest. */
   globalsTypes: boolean;
+  /** How the runner names a test file's recorded expectations. */
+  records: ITestRecords;
+  /** The lowest ES level the tests, and the package a js_package's tests
+   * test, are emitted at, where the framework has one. */
+  minimumEsLevel?: string;
+  /** Whether the runner is given a directory for the files it keeps of its
+   * tests (`--artifacts`), which the target's result then holds: for a
+   * framework whose runner schedules the test files (`scheduler: "runner"`). */
+  artifacts?: boolean;
+  /**
+   * Which schedules the test files across processes: `fabr`, one runner
+   * invocation per file within fabr's process limit; or the `runner` itself,
+   * given every file in one invocation, across its own workers. A run the
+   * runner schedules is not measured for coverage.
+   */
+  scheduler: "fabr" | "runner";
+  /** Whether its tests drive a browser, which a `browser_test` supplies: only
+   * a `browser_test` may name it. */
+  browser?: boolean;
+}
+
+/**
+ * How a framework's runner names the recorded expectations of a test file. The
+ * declared records are staged in the compiled tree as the runner reads them,
+ * an update run collects what the runner wrote, and the records it changed are
+ * offered back to the source tree under their sources' names.
+ *
+ * `compiledOf` maps each test source's name to its compiled file's (`a/Foo.spec.ts`
+ * → `a/Foo.spec.js`); both are named in the compiled tree's namespace.
+ */
+export interface ITestRecords {
+  /** Name the declared records as the runner reads them. */
+  stage(expectations: FileSet, compiledOf: ReadonlyMap<string, string>): FileSet;
+  /** Get the patterns, within the compiled tree, of the files an update run
+   * collects: `staged` is what {@link stage} made. */
+  collected(staged: FileSet, compiledOf: ReadonlyMap<string, string>): string[];
+  /**
+   * Make the write-back candidates from what an update run collected, named in
+   * the compiled tree. `staged` is what {@link stage} made of the declared
+   * records, `tests` the declared test sources.
+   */
+  writeBacks(collected: FileSet, staged: FileSet, tests: FileSet, compiledOf: ReadonlyMap<string, string>): IWriteBackCandidate[];
+}
+
+/** No records: a runner that compares against none (Cypress) collects nothing and offers nothing back. */
+const NO_RECORDS: ITestRecords = {
+  stage: expectations => expectations,
+  collected: () => [],
+  writeBacks: () => [],
+};
+
+/**
+ * Records named jest's way: one `__snapshots__/<test source name>.snap` beside
+ * each test file, staged as declared. A record a runner names for the compiled
+ * file is matched to its test by stem ({@link snapshotWriteBacks}).
+ */
+const SNAPSHOT_RECORDS: ITestRecords = {
+  stage: expectations => expectations,
+  collected: () => [`${SNAPSHOT_DIR}/*.snap`, `**/${SNAPSHOT_DIR}/*.snap`],
+  writeBacks: (collected, staged, tests) => snapshotWriteBacks(collected, tests, staged),
+};
+
+/**
+ * Records in a directory named for the compiled test file: Playwright's
+ * `<test file>-snapshots/` beside it by default, or any directory its
+ * `snapshotPathTemplate` names with `{testFileName}` or `{testFilePath}`. A
+ * directory of a record's path that is a test source's file name, or begins
+ * with it followed by `-`, is staged under the compiled file's name, and
+ * offered back under the source's ({@link recordOf}).
+ *
+ * An update run collects every file under such a directory, and each declared
+ * record by its name, so a record the template places in no directory named
+ * for its test is updated but never created.
+ */
+const TEST_FILE_RECORDS: ITestRecords = {
+  stage: (expectations, compiledOf) => expectations.remap(name => recordOf(name, compiledOf)?.name ?? name),
+  collected: (staged, compiledOf) => [
+    ...[...new Set([...compiledOf.values()].map(name => escapeGlob(posix.basename(name))))].flatMap(base => [
+      `**/${base}-*/**`,
+      `**/${base}/**`,
+    ]),
+    ...[...staged].map(([name]) => escapeGlob(name)),
+  ],
+  writeBacks: (collected, staged, tests, compiledOf) => {
+    const sourceOf = new Map([...compiledOf].map(([source, compiled]) => [compiled, source]));
+    const byTest = new Map<string, Map<string, IFile>>();
+    for (const [name, file] of collected) {
+      const record = staged.getFile(name)?.hash === file.hash ? undefined : recordOf(name, sourceOf);
+      const test = record === undefined ? undefined : sourceOf.get(record.test);
+      if (record !== undefined && test !== undefined) {
+        byTest.set(test, (byTest.get(test) ?? new Map<string, IFile>()).set(record.name, file));
+      }
+    }
+    return [...byTest].map(([test, files]) => ({
+      files: new FileSet(files),
+      belongsTo: parseName("**").withRenameTo(Name.fromLiteral(test)),
+      origin: tests.origin,
+    }));
+  },
+};
+
+/**
+ * Find the test file a record named `name` belongs to, among the keys of
+ * `renames`: the test whose file name is one of the record's directories, or
+ * begins one followed by `-`, preferring the test whose own directories lead
+ * to that one (`a/Foo.spec.ts-snapshots/x.png` is `a/Foo.spec.ts`'s), then the
+ * first test by name.
+ *
+ * @return that test, and the record's name with that directory renamed for
+ *   the test's value in `renames` (`a/Foo.spec.js-snapshots/x.png`); undefined
+ *   where no test's name is among the record's directories.
+ */
+export function recordOf(name: string, renames: ReadonlyMap<string, string>): { test: string; name: string } | undefined {
+  const parts = name.split("/");
+  let best: { test: string; index: number; depth: number } | undefined;
+  for (const test of [...renames.keys()].sort()) {
+    const base = posix.basename(test);
+    const testDirs = posix.dirname(test) === "." ? [] : posix.dirname(test).split("/");
+    parts.slice(0, -1).forEach((part, index) => {
+      if (part !== base && !part.startsWith(`${base}-`)) {
+        return;
+      }
+      const before = parts.slice(0, index);
+      const leads =
+        testDirs.length <= before.length && testDirs.every((dir, i) => before[before.length - testDirs.length + i] === dir);
+      const depth = leads ? testDirs.length + 1 : 0;
+      if (best === undefined || depth > best.depth) {
+        best = { test, index, depth };
+      }
+    });
+  }
+  if (best === undefined) {
+    return undefined;
+  }
+  const { test, index } = best;
+  const renamed = [...parts];
+  renamed[index] = posix.basename(renames.get(test)!) + parts[index].slice(posix.basename(test).length);
+  return { test, name: renamed.join("/") };
+}
+
+/** @return `name` with every glob metacharacter escaped, so it matches only itself. */
+function escapeGlob(name: string): string {
+  return name.replace(/[*?[\]{}()!+@\\]/g, char => `\\${char}`);
 }
 
 /**
  * The test frameworks, by the name a target selects one with. `node` and `jest`
  * load tests as CommonJS (the jest layer's mocking intercepts call-time
- * `require`); `vitest` loads them as ES modules.
+ * `require`); `vitest` loads them as ES modules; `playwright` as CommonJS, with
+ * its records named for the compiled test file; `cypress` bundles the compiled
+ * CommonJS itself, and compares against no records.
  */
 export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
-  ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs", globalsTypes: true }],
-  ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs", globalsTypes: false }],
-  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm", globalsTypes: false }],
+  ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs", globalsTypes: true, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
+  ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs", globalsTypes: false, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
+  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm", globalsTypes: false, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
+  [
+    "playwright",
+    {
+      runner: "JS_PLAYWRIGHT_RUNNER",
+      module: "commonjs",
+      globalsTypes: false,
+      records: TEST_FILE_RECORDS,
+      minimumEsLevel: "es2017",
+      artifacts: true,
+      scheduler: "runner",
+      browser: true,
+    },
+  ],
+  [
+    "cypress",
+    {
+      runner: "JS_CYPRESS_RUNNER",
+      module: "commonjs",
+      globalsTypes: false,
+      records: NO_RECORDS,
+      artifacts: true,
+      scheduler: "runner",
+      browser: true,
+    },
+  ],
 ]);
 
 /**
- * Get the test framework the target's STRING property `property` names, or
- * fail naming the frameworks there are.
+ * Get the test framework the target's STRING property `property` names, of
+ * those that drive a browser where `browserTest`, else of the others; fail
+ * naming the frameworks there are, or where a browser test framework is named
+ * by a target that supplies no browser.
  */
-export function testFramework(context: TargetContext, property: string): Computable<ITestFramework> {
+export function testFramework(context: TargetContext, property: string, browserTest = false): Computable<ITestFramework> {
   return context.getRequiredProperty(property).then(name => {
-    const framework = TEST_FRAMEWORKS.get(name.toString());
-    if (framework === undefined) {
-      throw new FabrError(`'${name.toString()}' is not a test framework (${[...TEST_FRAMEWORKS.keys()].join(", ")})`);
+    const written = name.toString();
+    const framework = TEST_FRAMEWORKS.get(written);
+    const offered = [...TEST_FRAMEWORKS].filter(([, each]) => (each.browser ?? false) === browserTest).map(([key]) => key);
+    if (framework?.browser === true && !browserTest) {
+      throw new FabrError(`'${written}' tests drive a browser, which a browser_test supplies`).withHelp(
+        "declare them as a browser_test, with `include @fabr-build/js:lib/BROWSER_TEST.fabr;`"
+      );
+    }
+    if (framework === undefined || (framework.browser ?? false) !== browserTest) {
+      throw new FabrError(`'${written}' is not a ${browserTest ? "browser " : ""}test framework (${offered.join(", ")})`);
     }
     return framework;
   });
@@ -266,6 +462,15 @@ export interface ITestSettings {
   /** The package name a js_package[test]'s sources may import themselves by; a
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
+  /** Environment variables the target sets over those `envProperty` declares. */
+  env?: ReadonlyMap<string, string>;
+  /** Options the target gives the runner before its own (a browser test's
+   * browser), a path among them relative to the directory the runner starts
+   * in: the compiled tests under `fabr test`, the install under `fabr run`. */
+  runnerArgs?: ReadonlyArray<RunnableArgument>;
+  /** Installs the target links into a test run beside the runner's install, by
+   * name, which `runnerArgs` name as `../<name>/<path>`. */
+  links?: ReadonlyMap<string, FileSet>;
 }
 
 /**
@@ -295,19 +500,20 @@ export function testRequirements(written: TestRequirements): ResolutionSpec<Test
 
 /**
  * Make the overrides a js_package's tests require the package under: built,
- * with `JS_TARGET`'s module format set to the one the framework the target's
- * STRING property `property` names loads, where the package is not already
- * built in it. A package already in that format is the build `fabr build`
- * makes.
+ * with `JS_TARGET` set to the test target of the framework the target's STRING
+ * property `property` names ({@link testTargetOf}: its module format, at no
+ * lower an ES level than its minimum), where the package is not already built
+ * for it. A package already built for it is the build `fabr build` makes.
  */
 export function packageBuildOverrides(context: TargetContext, property: string): Computable<Constraints> {
   return Computable.forAll(
     [testFramework(context, property), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)],
     (framework, target) => {
       const jsTarget = parseJSTarget(target);
-      return jsTarget.module === framework.module
+      const tested = testTargetOf(jsTarget, framework);
+      return jsTarget.module === tested.module && jsTarget.version === tested.version
         ? BUILD_OVERRIDE
-        : BUILD_OVERRIDE.with(Constraints.of({ JS_TARGET: formatJSTarget(testTargetOf(jsTarget, framework)) }));
+        : BUILD_OVERRIDE.with(Constraints.of({ JS_TARGET: formatJSTarget(tested) }));
     }
   );
 }
@@ -324,6 +530,9 @@ export function packageBuildOverrides(context: TargetContext, property: string):
  *
  * The last argument is the target's {@link TestRequirements}, materialized. The
  * runner and the compile's tools are not among them: they resolve apart.
+ *
+ * With `interactive`, yield the installation as a program instead, the
+ * framework's own run over the tests ({@link planInteractiveRun}).
  *
  * Yields empty content where there are no test files. Throws where tests are
  * declared but the compile has no compilable source.
@@ -342,7 +551,8 @@ export function compileAndRunTests(
     test_resources: testResources,
     resources: shipped,
     expectations: expectationSets,
-  }: TestContents
+  }: TestContents,
+  interactive = false
 ): Computable<RuleResult> {
   const deps = [...runtimeDeps, ...compileDeps];
   const tests = FileSet.unionAll(...testSets);
@@ -360,24 +570,38 @@ export function compileAndRunTests(
   const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
   const declarations =
     tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
-  /* The declared test sources' stems (path minus extension): planTestRun picks
-   * their compiled files out of the compiled tree by stem. */
-  const testStems = new Set([...tests].map(([name]) => stripExtension(name)));
-  /* The runner is a tool: it resolves apart from the tests' packages. */
-  return Computable.forAll(
-    [
-      context.getGlobalRunnable(framework.runner),
-      context.getGlobalString(TEST_EXPECTATIONS),
-      context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
-      context.getMap(settings.envProperty),
-      context.getGlobalString(COVERAGE),
-      context.getGlobalString(TEST_NAME_PATTERN),
-      context.getRequiredProperty(settings.stabilityProperty),
-      context.getGlobalString(TEST_FLAKE_RETRIES),
-    ],
-    (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries): Computable<RuleResult> =>
-      (coverage === COVERAGE_ON ? context.getGlobalRunnable("JS_COVERAGE_DRIVER") : Computable.resolve(undefined)).then(
-        (coverageDriver): Computable<RuleResult> => {
+  return context.getGlobalString(TEST_FILE_PATTERN).then((filePattern): Computable<RuleResult> => {
+    /* The tests a run runs (TEST_FILE_PATTERN): where none is selected, nothing
+     * runs and no runner is fetched. */
+    const selected = selectTestFiles(tests, filePattern);
+    if (selected.isEmpty()) {
+      return Computable.resolve(EMPTY_FILESET);
+    }
+    /* The selected test sources' stems (path minus extension): planTestRun picks
+     * their compiled files out of the compiled tree by stem. */
+    const testStems = new Set([...selected].map(([name]) => stripExtension(name)));
+    /* The runner is a tool: it resolves apart from the tests' packages. */
+    return Computable.forAll(
+      [
+        context.getGlobalRunnable(framework.runner),
+        context.getGlobalString(TEST_EXPECTATIONS),
+        context.getGlobalString("JS_TARGET", BUILD_OVERRIDE),
+        context
+          .getMap(settings.envProperty)
+          .then(
+            declared =>
+              new Map([...declared, ...[...(settings.env ?? [])].map(([name, value]): [string, string[]] => [name, [value]])])
+          ),
+        context.getGlobalString(COVERAGE),
+        context.getGlobalString(TEST_NAME_PATTERN),
+        context.getRequiredProperty(settings.stabilityProperty),
+        context.getGlobalString(TEST_FLAKE_RETRIES),
+      ],
+      (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries): Computable<RuleResult> =>
+        (coverage === COVERAGE_ON && framework.scheduler === "fabr"
+          ? context.getGlobalRunnable("JS_COVERAGE_DRIVER")
+          : Computable.resolve(undefined)
+        ).then((coverageDriver): Computable<RuleResult> => {
           const jsTarget = parseJSTarget(target);
           /* In the installation the packages are laid out for the run, and the
            * loose resource files among the deps (`.json`, a template) are staged
@@ -396,7 +620,7 @@ export function compileAndRunTests(
                  * to run. */
                 throw new FabrError("Test target declares test files but none is a compilable source");
               }
-              return planTestRun(context, {
+              return (interactive ? planInteractiveRun : planTestRun)(context, {
                 /* The tests' output and the package's files as one tree, the
                  * package's file taken where both have one (a JSON source both
                  * import, which the package's compile emits and the tests' passes
@@ -410,6 +634,9 @@ export function compileAndRunTests(
                 resources,
                 runner,
                 tests,
+                records: framework.records,
+                artifacts: framework.artifacts ?? false,
+                scheduler: framework.scheduler,
                 testStems,
                 testTarget,
                 /* The environment follows the `dom` source flag among `deps` and
@@ -423,6 +650,8 @@ export function compileAndRunTests(
                 expectations: FileSet.unionAll(...expectationSets),
                 env,
                 packageName: settings.packageName,
+                runnerArgs: settings.runnerArgs ?? [],
+                links: settings.links,
                 update: expectations === UPDATE_EXPECTATIONS,
                 namePattern: namePattern === "" ? undefined : namePattern,
                 stability: toTestStability(stability.toString()),
@@ -431,9 +660,9 @@ export function compileAndRunTests(
               });
             }
           );
-        }
-      )
-  );
+        })
+    );
+  });
 }
 
 /** The compile a test run makes: what it compiles, against what, and for which target. */
@@ -450,11 +679,15 @@ interface ITestCompile {
 
 /**
  * @return the target a test target's tests compile for: the format their
- * framework's runner loads, whatever the package itself is built as.
- * Component-wise — the ES version and the environment are the target's own.
+ * framework's runner loads, whatever the package itself is built as, at no
+ * lower an ES level than the framework's minimum. Component-wise — the
+ * environment, and an ES level above the minimum, are the target's own.
  */
-function testTargetOf(jsTarget: ReturnType<typeof parseJSTarget>, framework: ITestFramework): PinnedJSTarget {
-  return { ...jsTarget, module: framework.module };
+export function testTargetOf(jsTarget: ReturnType<typeof parseJSTarget>, framework: ITestFramework): PinnedJSTarget {
+  const { minimumEsLevel } = framework;
+  const version =
+    minimumEsLevel !== undefined && esLevelOrder(jsTarget.version) < esLevelOrder(minimumEsLevel) ? minimumEsLevel : jsTarget.version;
+  return { ...jsTarget, version, module: framework.module };
 }
 
 /**
@@ -585,8 +818,18 @@ interface ITestRun {
   compileSrcs: FileSet;
   resources: FileSet;
   runner: RunnableFileSet;
+  /** The options the target gives the runner ({@link ITestSettings.runnerArgs}). */
+  runnerArgs: ReadonlyArray<RunnableArgument>;
+  /** The installs linked beside the runner ({@link ITestSettings.links}). */
+  links?: ReadonlyMap<string, FileSet>;
   /** The declared test sources, for mapping refreshed snapshots back to them. */
   tests: FileSet;
+  /** How the runner names the tests' records. */
+  records: ITestRecords;
+  /** Whether the runner keeps files of the tests ({@link ITestFramework.artifacts}). */
+  artifacts: boolean;
+  /** Which schedules the test files across processes ({@link ITestFramework.scheduler}). */
+  scheduler: ITestFramework["scheduler"];
   testStems: Set<string>;
   testTarget: PinnedJSTarget;
   /** Whether the suite needs a DOM (the `dom` source flag), named to the runner
@@ -641,57 +884,26 @@ interface ITestRun {
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
   const preload = run.layout === "pnp" ? pnpPreloadOf(context) : Computable.resolve(undefined);
   return Computable.forAll([run.compiled, preload] as const, (compiledTree, pnpPreload) => {
-    /* Empty where the declared tests compiled to no runnable file: an error. */
-    const testFiles = selectCompiledTestFiles(compiledTree, run.testStems);
-    const setupFile = selectCompiledSetupFile(compiledTree);
-    if (testFiles.length === 0) {
-      throw new FabrError("Test target declares test files but none produced a runnable .js output");
-    }
-    const packageJson = moduleTypeFile(run.testTarget.module, { name: "fabr-test", private: true });
-    /* Everything the compiled code sees as a sibling: its own output, the
-     * sources tsc passed through (a `./x.json` import), and loose resource deps,
-     * where the compile emitted none of that name (tsc writes an imported JSON
-     * file out again, reformatted). */
-    const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources.minus(compiledTree));
-    /* Laid out as the compile laid it out, output under `build/` and sources
-     * under `src/`, so a map naming its source by a relative path still finds
-     * it; {@link SOURCE_LOCATIONS_FILE} records where each source with a source
-     * path is staged, for a runner opening the source a map's `fabr:` entry
-     * names. `node_modules` and `package.json` stay at the root, where node
-     * finds them from `build/`. `build/` is also the runner's working
-     * directory, so a test's `./x` paths, from the working directory or from
-     * `__dirname`, mean what they mean in the source tree. */
+    /* The step lays out the packages (the action's `deps`) as `layout` says,
+     * under `pnp` a table at the root, beside which the PnP runtime's preload
+     * goes for the runner to load. */
+    const { files, testFiles, setupFile, compiledOf, expectations } = testInstallation(
+      run,
+      compiledTree,
+      pnpPreload === undefined ? EMPTY_FILESET : FileSet.layout({ [PNP_PRELOAD]: pnpPreload.file })
+    );
     const coverage =
       run.coverage && measuredRun(run.coverage, compiledTree, new Set([...testFiles, ...(setupFile ? [setupFile] : [])]));
-    const pnp = run.layout === "pnp";
-    /* The run's own files; the step lays out the packages (the action's
-     * `deps`) as `layout` says, under `pnp` a table at the root, beside which
-     * the PnP runtime's preload goes for the runner to load. */
-    const files = FileSet.layout({
-      "package.json": packageJson,
-      ...(pnpPreload === undefined ? {} : { [PNP_PRELOAD]: pnpPreload.file }),
-      /* Resources and records join the compiled tree, the working directory, so
-       * a test's `./x` finds them as in the source tree. */
-      [COMPILE_OUT_DIR]: [runtime, run.testResources, run.expectations],
-      [COMPILE_SRC_DIR]: [run.compileSrcs],
-      /* Where each staged source is, by its source path: the compile's maps
-       * name a source by its reference, and a runner reading one (the jest
-       * flavour's docblock) opens it from here. */
-      [SOURCE_LOCATIONS_FILE]: sourceLocations(run.compileSrcs),
-    });
     /* The runner's interpreter is reached through the tree pool by its content
      * hash (`RunnableFileSet.launchedBy`), so no host path enters the action's
      * key. The command line carries no report or test files: the step runs it
      * once per file, appending those. */
     const argv = run.runner.toCommandLine(
       [
-        `--env=${run.needsDom ? "jsdom" : "node"}`,
+        ...run.runnerArgs,
+        ...runnerOptions(run, setupFile),
         ...(run.update ? ["--update-snapshots"] : []),
         ...(run.namePattern === undefined ? [] : [`--name-pattern=${run.namePattern}`]),
-        /* `./`-prefixed: the runner contract distinguishes a path within the
-         * installation from a bare module name by exactly that prefix. */
-        ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
-        ...(pnp ? [`--pnp=../${PNP_DATA_FILE}`] : []),
       ],
       /* The runner stays at the install root while the working directory is the
        * compiled tree, so its entry, and the pool its node is in, are reached one
@@ -699,28 +911,30 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       { base: `../${RUNNER_STAGE_DIR}`, pool: `../${TREE_MOUNT}` }
     );
     /* The report (and, measured, the coverage report); under `update`, the
-     * refreshed snapshot files too, collected through the `build/` mount
-     * (`dir:glob` names results relative to `dir`) so they keep their names in
-     * the compiled tree. The patterns are in the action's config, so the two
-     * modes never share a cache entry. */
+     * refreshed records too, named with the `build/` mount so they stay apart
+     * from the report and the kept files, which the reshape strips. The
+     * patterns are in the action's config, so the two modes never share a
+     * cache entry. */
     const outputs = [
       TEST_REPORT_FILENAME,
       ...(coverage ? [COVERAGE_REPORT_FILENAME] : []),
-      ...(run.update ? [`${COMPILE_OUT_DIR}:${SNAPSHOT_DIR}/*.snap`, `${COMPILE_OUT_DIR}:**/${SNAPSHOT_DIR}/*.snap`] : []),
+      ...(run.update ? run.records.collected(expectations, compiledOf).map(pattern => `${COMPILE_OUT_DIR}/${pattern}`) : []),
     ];
     /* Under `update` the runner rewrites the declared `expectations`, so stage
      * them as writable copies: every other file is staged as a read-only
      * hardlink into the content store, and writing through one would corrupt
      * the entry other builds share. */
-    const records = run.update ? run.expectations : EMPTY_FILESET;
+    const records = run.update ? expectations : EMPTY_FILESET;
     /* The writable set is named by install name, under the mount; `records`
      * keeps the compiled tree's names, which reshapeTestResult compares in. */
     const writable = FileSet.layout({ [COMPILE_OUT_DIR]: [records] });
     return createTestRunAction({
-      /* The runner's install, a measured run's driver's and the PnP runtime the
-       * preload loads from the pool are trees of the pool linked into the
-       * installation, each one line of the key. */
+      /* The runner's install, the installs the target links beside it, a
+       * measured run's driver's and the PnP runtime the preload loads from the
+       * pool are trees of the pool linked into the installation, each one line
+       * of the key. */
       links: {
+        ...Object.fromEntries(run.links ?? []),
         [RUNNER_STAGE_DIR]: run.runner,
         ...(coverage?.links ?? {}),
         ...(pnpPreload === undefined ? {} : { [PNP_RUNTIME_STAGE_DIR]: pnpPreload.runtime }),
@@ -735,10 +949,148 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       outputs,
       env: toEnvironment(run.env),
       coverage: coverage && { argv: coverage.argv, measured: coverage.measured },
-      retries: run.stability === "flaky" ? run.flakeRetries : 0,
+      retries: run.stability === "flaky" && run.scheduler === "fabr" ? run.flakeRetries : 0,
       uncached: run.stability === "unstable",
-    }).withReshape(result => reshapeTestResult(result, run.tests, records));
+      artifacts: run.artifacts,
+      scheduler: run.scheduler,
+    }).withReshape(result => reshapeTestResult(result, run, records, compiledOf));
   });
+}
+
+/** A test run's own files, and what the runner is told of them ({@link testInstallation}). */
+interface ITestInstallation {
+  files: FileSet;
+  /** The compiled test files, by their names in the compiled tree, sorted. */
+  testFiles: string[];
+  /** The compiled setup script, if the suite has one. */
+  setupFile?: string;
+  /** The compiled test file of each test source. */
+  compiledOf: Map<string, string>;
+  /** The declared records, named as the runner reads them. */
+  expectations: FileSet;
+}
+
+/**
+ * Lay out a test run's own files: a minimal `package.json`, `root` (what lays
+ * out its packages beside it, where the run lays them out itself), the
+ * compiled tree with the resources and the recorded expectations under
+ * {@link COMPILE_OUT_DIR}, the compile's sources under {@link COMPILE_SRC_DIR}
+ * and the source-locations table.
+ *
+ * Throws where the tests compiled to no runnable file, and where the root has
+ * two setup scripts.
+ */
+function testInstallation(run: ITestRun, compiledTree: FileSet, root: FileSet): ITestInstallation {
+  /* Empty where the declared tests compiled to no runnable file: an error. */
+  const testFiles = selectCompiledTestFiles(compiledTree, run.testStems);
+  const setupFile = selectCompiledSetupFile(compiledTree);
+  if (testFiles.length === 0) {
+    throw new FabrError("Test target declares test files but none produced a runnable .js output");
+  }
+  const packageJson = moduleTypeFile(run.testTarget.module, { name: "fabr-test", private: true });
+  const compiledOf = compiledTestsOf(run.tests, testFiles);
+  const expectations = run.records.stage(run.expectations, compiledOf);
+  /* Everything the compiled code sees as a sibling: its own output, the
+   * sources tsc passed through (a `./x.json` import), and loose resource deps,
+   * where the compile emitted none of that name (tsc writes an imported JSON
+   * file out again, reformatted). */
+  const runtime = FileSet.unionAll(compiledTree, stripPackageJson(run.copied), run.resources.minus(compiledTree));
+  /* Laid out as the compile laid it out, output under `build/` and sources
+   * under `src/`, so a map naming its source by a relative path still finds
+   * it; {@link SOURCE_LOCATIONS_FILE} records where each source with a source
+   * path is staged, for a runner opening the source a map's `fabr:` entry
+   * names. `node_modules` and `package.json` stay at the root, where node
+   * finds them from `build/`. `build/` is also the runner's working
+   * directory, so a test's `./x` paths, from the working directory or from
+   * `__dirname`, mean what they mean in the source tree. */
+  const files = FileSet.unionAll(
+    root,
+    FileSet.layout({
+      "package.json": packageJson,
+      /* Resources and records join the compiled tree, the working directory, so
+       * a test's `./x` finds them as in the source tree. */
+      [COMPILE_OUT_DIR]: [runtime, run.testResources, expectations],
+      [COMPILE_SRC_DIR]: [run.compileSrcs],
+      /* Where each staged source is, by its source path: the compile's maps
+       * name a source by its reference, and a runner reading one (the jest
+       * flavour's docblock) opens it from here. */
+      [SOURCE_LOCATIONS_FILE]: sourceLocations(run.compileSrcs),
+    })
+  );
+  return { files, testFiles, setupFile, compiledOf, expectations };
+}
+
+/** Make the runner options a run gives every invocation: its environment, its setup script, its PnP table and, for a runner scheduling its files itself, its retries. */
+function runnerOptions(run: ITestRun, setupFile: string | undefined): string[] {
+  return [
+    `--env=${run.needsDom ? "jsdom" : "node"}`,
+    /* `./`-prefixed: the runner contract distinguishes a path within the
+     * installation from a bare module name by exactly that prefix. */
+    ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
+    ...(run.layout === "pnp" ? [`--pnp=../${PNP_DATA_FILE}`] : []),
+    /* A runner scheduling its files itself retries a failed test within its
+     * run, as many times as the target's stability allows, whatever its
+     * framework's own config says; fabr reruns only files it schedules. */
+    ...(run.scheduler === "runner" ? [`--retries=${run.stability === "flaky" ? run.flakeRetries : 0}`] : []),
+  ];
+}
+
+/**
+ * Make the program `fabr run` runs a compiled test target as: the test run's
+ * installation ({@link testInstallation}) with its packages laid out as
+ * `layout` says ({@link layoutProgram}; under `pnp` the runner loads the
+ * preload itself, from `--pnp`), launched in the installation by the
+ * runner, from the tree pool, as `<runner> <options> --interactive
+ * build <test files> -- <the caller's arguments>`, which runs the framework's
+ * own interactive run over the tests. The compiled tree and its sources are
+ * the program's served content, which `fabr run -w` updates in place.
+ */
+function planInteractiveRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
+  return Computable.forAll(
+    [
+      run.compiled.then(compiled => withStagedSources(compiled, run.compileSrcs)),
+      layoutProgram(context, run.packages, run.layout),
+    ] as const,
+    (compiledTree, program) => {
+      const { files, testFiles, setupFile } = testInstallation(run, compiledTree, program.files);
+      /* What the compile made of the suite, which an edit changes, where the packages and the runner stay. */
+      const served = files.remap(name =>
+        name.startsWith(`${COMPILE_OUT_DIR}/`) || name.startsWith(`${COMPILE_SRC_DIR}/`) || name === SOURCE_LOCATIONS_FILE
+          ? name
+          : undefined
+      );
+      return RunnableFileSet.forEntry(files, COMPILE_OUT_DIR)
+        .launchedBy(run.runner, context.execution.buildCache, [...run.runnerArgs, ...runnerOptions(run, setupFile), "--interactive"])
+        .then(launched => launched.withServedContent(files, served, [...testFiles, "--"], toEnvironment(run.env)));
+    }
+  );
+}
+
+/**
+ * Make the compiled tree's source maps name each source the compile staged
+ * (`compileSrcs`, under {@link COMPILE_SRC_DIR} beside the tree) by its path
+ * from the map, in place of its `fabr:` reference, which names nothing a
+ * program reading the map from the installation can open (Playwright's code
+ * frames, its UI's source view).
+ */
+function withStagedSources(compiled: FileSet, compileSrcs: FileSet): Computable<FileSet> {
+  const staged = new Map(
+    [...compileSrcs.sourcePaths].map(([name, sourcePath]) => [`fabr:${sourcePath}`, `${COMPILE_SRC_DIR}/${name}`])
+  );
+  const maps = [...compiled].filter(([name]) => name.endsWith(".map"));
+  return mapComputable(maps, ([name, file]) =>
+    file.readString().then((text): [string, IFile] => {
+      const map = parseJson(text, name, toJsonObject);
+      const from = posix.join(COMPILE_OUT_DIR, posix.dirname(name));
+      const sources = Array.isArray(map.sources)
+        ? map.sources.map(source => {
+            const location = typeof source === "string" ? staged.get(source) : undefined;
+            return location === undefined ? source : posix.relative(from, location);
+          })
+        : map.sources;
+      return [name, MemoryFile.from(JSON.stringify({ ...map, sources }))];
+    })
+  ).then(rewritten => FileSet.unionAll(compiled.minus(new FileSet(new Map(rewritten))), new FileSet(new Map(rewritten))));
 }
 
 /**
@@ -781,18 +1133,38 @@ function measuredRun(
 }
 
 /**
- * Split the run's output into the target's content, the report and coverage
- * report, and its write-back candidates, the refreshed snapshot files paired
- * with the tests they belong beside ({@link snapshotWriteBacks}, given
- * `recorded`, the records the run was staged with). With no candidate (every
- * `check` run), the plain report.
+ * Split the run's output into the target's content, the report, coverage
+ * report and the files the run kept of its tests, and its write-back candidates, the refreshed records paired with the
+ * tests they belong beside (`run.records`' {@link ITestRecords.writeBacks},
+ * given `recorded`, the records the run was staged with). With no candidate
+ * (every `check` run), the plain report.
  */
-function reshapeTestResult(result: FileSet, tests: FileSet, recorded: FileSet): FileSet {
+function reshapeTestResult(
+  result: FileSet,
+  run: Pick<ITestRun, "tests" | "records">,
+  recorded: FileSet,
+  compiledOf: ReadonlyMap<string, string>
+): FileSet {
+  /* Records are collected under the compiled tree's mount, apart from the
+   * report and the kept files at the result's root. */
   const { report = EMPTY_FILESET, snapshots } = result.partition(name =>
-    name === TEST_REPORT_FILENAME || name === COVERAGE_REPORT_FILENAME ? "report" : "snapshots"
+    name.startsWith(`${COMPILE_OUT_DIR}/`) ? "snapshots" : "report"
   );
-  const candidates = snapshots ? snapshotWriteBacks(snapshots, tests, recorded) : [];
+  const records = snapshots?.remap(name => name.slice(COMPILE_OUT_DIR.length + 1));
+  const candidates = records ? run.records.writeBacks(records, recorded, run.tests, compiledOf) : [];
   return candidates.length === 0 ? report : new WriteBackFileSet(report, candidates);
+}
+
+/** Pair each test source in `tests` with its compiled file among `testFiles`,
+ * by stem. A source with no compiled file is left out. */
+function compiledTestsOf(tests: FileSet, testFiles: ReadonlyArray<string>): Map<string, string> {
+  const byStem = new Map(testFiles.map(name => [stripExtension(name), name]));
+  return new Map(
+    [...tests].flatMap(([name]): Array<[string, string]> => {
+      const compiled = byStem.get(stripExtension(name));
+      return compiled === undefined ? [] : [[name, compiled]];
+    })
+  );
 }
 
 /**

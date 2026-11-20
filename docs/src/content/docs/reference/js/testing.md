@@ -3,17 +3,18 @@ title: Testing
 description: How fabr runs JavaScript and TypeScript tests with node:test, jest or vitest — what to declare for each framework, what works, and what behaves differently from running the framework yourself.
 ---
 
-`fabr test` compiles a target's tests and runs them with one of three test frameworks: Node.js's
-built-in `node:test` (the default), jest, or vitest. Fabr compiles the tests itself and starts the
-test processes itself, so none of the frameworks reads its own configuration file. What you'd
-normally put in `jest.config.js` or `vitest.config.ts` either comes from your build file or has a
-fixed value, as described on this page.
+`fabr test` compiles a target's tests and runs them. Tests that run in Node.js use one of three
+frameworks: Node.js's built-in `node:test` (the default), jest, or vitest. Fabr compiles the tests
+and starts the test processes itself, so none of the three reads its own configuration file: what
+you'd normally put in `jest.config.js` or `vitest.config.ts` either comes from your build file or
+has a fixed value, as described on this page. Tests that drive a browser, with Playwright or
+Cypress, are a `browser_test`, described in [Browser tests](/reference/js/browser-testing/).
 
-If you're converting an existing suite, go to the section for your framework:
-[jest](#jest) or [vitest](#vitest). Each lists what to declare, what works, and what differs from
-running that framework's own command.
+If you're converting an existing suite, go to the section for your framework: [jest](#jest) or
+[vitest](#vitest), or for Playwright and Cypress, [Browser tests](/reference/js/browser-testing/). Each lists what to
+declare, what works, and what differs from running that framework's own command.
 
-## The three frameworks
+## Choosing a framework
 
 |                                                      | `node` (default)                                              | `jest`                                                  | `vitest`                              |
 | ---------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------- |
@@ -26,6 +27,9 @@ running that framework's own command.
 | Stylesheet and image imports in tested code          | work                                                          | work                                                    | work                                  |
 | Needs, as the [Node.js version](#the-nodejs-version) | 23.4 or later for snapshots                                   | 22.15 or later                                          | 22.15 or later                        |
 | Configuration file                                   | none                                                          | `jest.config.js` is not read                            | `vitest.config.ts` is not read        |
+
+Tests that drive a browser use Playwright or Cypress, in a `browser_test` target: see
+[Browser tests](/reference/js/browser-testing/).
 
 Choose a framework for the whole project with the `JS_TEST_FRAMEWORK` setting, or for one target
 with its `test_framework` property:
@@ -106,6 +110,7 @@ fabr test mylib        # compile and run mylib's tests
 fabr test -w mylib     # ...and again whenever a source changes
 fabr test -u mylib     # ...and record or update snapshots
 fabr test -t 'dates parse' mylib   # ...but only the tests whose names match
+fabr test -T 'src/dates/**' mylib  # ...or only the test files whose paths match
 fabr test --coverage mylib   # ...and measure code coverage
 ```
 
@@ -119,12 +124,23 @@ vitest the tests not selected are counted as skipped. The summary ends `(filtere
 test in any target matches, the run stops with `No test's name matches the pattern '…'`. The
 pattern is part of what is cached, so a filtered run and a full one are cached separately.
 
+`-T` takes a glob pattern, matched against each test file's path in your project, as test results
+name it: `src/dates/**` runs the test files under `src/dates`, and `**/login.spec.ts` that file
+wherever it is. The test files it leaves out don't run at all, under every framework; the tests
+are still compiled together, so a filtered run reuses the compile of a full one. With `-t` as
+well, only the tests in the selected files whose names match run. If no test file in any target
+matches, the run stops with `No test file matches the pattern '…'`. A run after a filtered one
+runs every test file of the target once, rather than only those a change reaches.
+
 A failing run prints a line for each failed test and fails the command, naming the test file by its path in
 your project, as in `greets by name (src/greet.test.ts): 'Hello, x!' == 'Hello, world!'`. Under
 jest and vitest the line is followed by the detail the framework itself shows, such as a matcher's
 diff and the stack trace, with stack frames naming your TypeScript sources.
 
-Some things differ from running a test framework's own command:
+Some things differ from running a test framework's own command. (A browser test runs its files
+together, as its framework does, so for one the items below about which files run again,
+processes and timeouts are its framework's instead: see
+[Browser tests](/reference/js/browser-testing/#how-a-browser-test-differs-from-other-test-targets).)
 
 - **A run is cached, passing or failing.** If nothing the tests depend on has changed, `fabr test`
   reports the previous result without running them again; a failing run's failures are reported
@@ -141,9 +157,10 @@ Some things differ from running a test framework's own command:
   shell command, say), a Node.js process with an environment that leaves out the test's
   `NODE_OPTIONS`, or a worker thread runs again on every change, since what those read can't be
   recorded.
-- **You select tests by target and by name, not by file.** `fabr test -t` selects by name, as
-  `jest -t` does; there is no equivalent of passing a file path, and arguments aren't passed
-  through to the framework. To run a subset routinely, give it its own target.
+- **You select tests by target, by name and by file, not by arguments to the framework.**
+  `fabr test -t` selects by name, as `jest -t` does, and `fabr test -T` by file, where jest takes
+  a path pattern; arguments aren't passed through to the framework. To run a subset routinely,
+  give it its own target.
 - **Each test file runs in its own process,** in parallel up to the number of processors, so test
   files share no state. Framework options that control workers or isolation don't apply.
 - **A test file's process ends once its results are reported,** even if the tests left a timer,
@@ -158,13 +175,13 @@ A target's `test_stability` (`stability` on a `js_test`) says how far fabr can t
 | Value              | For                                                                                      | What fabr does                                                                                            |
 | ------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `stable` (default) | Tests whose results depend only on their inputs.                                         | Caches the run, and runs again only the test files a change reaches.                                      |
-| `flaky`            | Tests that sometimes fail with the same inputs, such as browser tests.                   | Runs a failed test file again, up to `TEST_FLAKE_RETRIES` more times (2 by default), then caches the run. |
+| `flaky`            | Tests that sometimes fail with the same inputs, such as browser tests.                   | Retries a failed test, up to `TEST_FLAKE_RETRIES` more times (2 by default), then caches the run.        |
 | `unstable`         | Tests whose results depend on something outside the build, such as evals of an AI model. | Runs every test file every time, and never caches the run.                                                |
 
 ```
-js_test browser {
-  tests = e2e:**/*.test.ts;
-  deps = e2e:**/*.ts app @npm:playwright:1.48.0;
+js_test api {
+  tests = test:**/*.test.ts;
+  deps = test:**/*.ts app;
   stability = flaky;
 }
 ```
@@ -172,12 +189,14 @@ js_test browser {
 A test that passes only on a retry counts as passed, and the summary names it:
 
 ```
-browser: 24 tests passed (1 flaky)
-  opens the menu (e2e/menu.test.ts): passed after 1 retry
+api: 24 tests passed (1 flaky)
+  lists the orders (test/orders.test.ts): passed after 1 retry
 ```
 
-A cached flaky run is reported as it was, flaky tests included. A retry runs the whole test file
-again, not just the test that failed. To see a flaky target's failures without retries, set
+Under node, jest and vitest, a retry runs the whole test file again, not just the test that
+failed. In a [browser test](/reference/js/browser-testing/#how-a-browser-test-differs-from-other-test-targets), the
+framework retries just the failed test, within the run. A cached flaky run is reported as it was,
+flaky tests included. To see a flaky target's failures without retries, set
 `-DTEST_FLAKE_RETRIES=0`.
 
 An `unstable` target's tests run in full each time `fabr test` is run. Under `fabr test -w` they
@@ -325,9 +344,13 @@ flag to compile.
 ### A setup file
 
 A source file named `setupTests` (`setupTests.ts`, `setupTests.js`) at the root of the target's
-source tree is loaded in every test process before the test file, after the framework's globals
-exist. It is the equivalent of jest's `setupFilesAfterEnv` and vitest's `setupFiles`, limited to
-one file. With `srcs = src:**/*.ts`, the root is `src/`, so the file is `src/setupTests.ts`.
+source tree is your suite's setup file. With `srcs = src:**/*.ts`, the root is `src/`, so the file
+is `src/setupTests.ts`. When it runs depends on the framework:
+
+| Framework              | `setupTests` runs                                                                                                                                                         | The equivalent of                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| node, jest, vitest     | In every test process, before the test file, after the framework's globals exist.                                                                                        | jest's `setupFilesAfterEnv`, vitest's `setupFiles`      |
+| Playwright, Cypress    | Where the framework runs setup: once before any test as Playwright's `globalSetup`, or before every spec as a Cypress support file. See [Browser tests](/reference/js/browser-testing/#how-a-browser-test-differs-from-other-test-targets). | Playwright's `globalSetup`, Cypress's `supportFile`    |
 
 The file has to be compiled with the tests without being one of them:
 
@@ -342,7 +365,8 @@ the root is an error.
 
 All three frameworks keep snapshots where jest does, in `__snapshots__/<test file>.snap` beside
 the test file, for example `src/__snapshots__/render.test.ts.snap`. Declare them as the target's
-`test_expectations`:
+`test_expectations`. (A Playwright suite keeps its screenshots as Playwright does; see
+[Screenshots and snapshots](/reference/js/browser-testing/#screenshots-and-snapshots) in Browser tests.)
 
 ```
 js_package mylib {
@@ -376,7 +400,8 @@ Two limits apply:
 
 ## Coverage
 
-`fabr test --coverage` measures which code the tests ran, under every framework. It prints one line
+`fabr test --coverage` measures which code the tests ran, under `node:test`, jest and vitest (a
+[browser test](/reference/js/browser-testing/) isn't measured). It prints one line
 for all the targets tested, such as `Coverage: lines 91.23% (104/114), functions 100.00% (32/32),
 branches 85.47% (100/117)`, and writes an lcov report to `coverage/lcov.info`, or to
 `<dir>/lcov.info` with `--coverage=<dir>`, saying where it wrote it. The report names each source
@@ -645,8 +670,9 @@ vitest release may change how it behaves.
 ## Using your own test runner
 
 Each framework's tests are run by a program fabr installs with itself: `fabr-test-runner`,
-`fabr-jest-runner` and `fabr-vitest-runner`, from the `@fabr-build/js-tools` package. Each is
-named by a setting, `JS_NODE_TEST_RUNNER`, `JS_JEST_RUNNER` or `JS_VITEST_RUNNER`, which you can
+`fabr-jest-runner`, `fabr-vitest-runner`, `fabr-playwright-runner` and `fabr-cypress-runner`, from
+the `@fabr-build/js-tools` package. Each is named by a setting, `JS_NODE_TEST_RUNNER`,
+`JS_JEST_RUNNER`, `JS_VITEST_RUNNER`, `JS_PLAYWRIGHT_RUNNER` or `JS_CYPRESS_RUNNER`, which you can
 point at a program of your own, usually a [`js_script`](/reference/js/targets/#js_script):
 
 ```
@@ -658,19 +684,22 @@ JS_NODE_TEST_RUNNER = my_runner;
 ```
 
 Replacing one framework's runner leaves the other frameworks as they are. Fabr still compiles the
-tests, in the module format the framework's row of [the table above](#the-three-frameworks) gives,
-and runs your program once for each test file, with the compiled tests as its working directory:
+tests, in the module format the framework's row of [the table above](#choosing-a-framework) gives,
+and runs your program once for each test file (for Playwright, once over all of them), with the
+compiled tests as its working directory:
 
 ```
 <runner> --report=<file> --env=<node|jsdom> [--update-snapshots] [--name-pattern=<regex>]
-         [--setup=<file>]… [--pnp=<file>] [--reads=<file>] <test file>
+         [--setup=<file>]… [--pnp=<file>] [--reads=<file>] [--artifacts=<dir>] [--retries=<n>]
+         <test file>
 ```
 
 - **`--env`** is `jsdom` for a target with the [`dom` flag](#dom-tests) in its `deps` or
   `test_deps` (not `compile_deps`), and `node` otherwise.
 - **`--update-snapshots`** is passed by `fabr test -u`.
 - **`--name-pattern`** is passed by `fabr test -t`: run only the tests whose full names match.
-- **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file.
+- **`--setup`** names a [`setupTests`](#a-setup-file) file to load before the test file (under a
+  browser test framework, where [its framework](#a-setup-file) runs it).
 - **`--pnp`** names the PnP table the test processes resolve packages through, where the
   install has one in place of `node_modules` (see [How tests find their
   packages](#how-tests-find-their-packages)). Beside the table is `.fabr-pnp.cjs`, a module that,
@@ -684,6 +713,19 @@ and runs your program once for each test file, with the compiled tests as its wo
 answered>}`, `to` left out where nothing did. A runner that can't say what was read, as when a
   test started a program other than Node.js, or that doesn't support the option, writes no file,
   and its test files run again on every change.
+- **`--artifacts`** names a directory for the files the runner keeps of its tests, given only to
+  the runner of a browser test (`JS_PLAYWRIGHT_RUNNER`, `JS_CYPRESS_RUNNER`). A test's CTRF `attachments` name each
+  file by its path within the directory; they are kept with the result and copied out by
+  [`fabr test --artifacts`](/reference/js/browser-testing/#traces-and-screenshots).
+- **`--retries`** says how many more times a failed test runs within the run, given only to the
+  runner of a framework that schedules its test files itself (Playwright, Cypress), where fabr
+  doesn't run the files again itself. A test that passes on a retry is reported with `"flaky":
+  true` and its `retries`.
+- **`--interactive`** is given only to the runner of a browser test, under `fabr run`
+  ([Running a suite interactively](/reference/js/browser-testing/#running-a-suite-interactively)). The runner is
+  started in the install, given `--interactive` and then the compiled tests' directory, the test
+  files and, after `--`, the arguments for the framework's own command; it changes to the
+  compiled tests' directory and runs the framework interactively, writing no report.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.

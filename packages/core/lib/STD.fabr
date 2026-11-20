@@ -23,6 +23,12 @@ default TEST_EXPECTATIONS = check;
 # `fabr test -t PATTERN` sets it for one run.
 default TEST_NAME_PATTERN = "";
 
+# The glob pattern selecting the test files a test run runs: a file runs where
+# the pattern matches its source path, relative to the project
+# (`packages/app/src/date.test.ts`). Empty runs every file.
+# `fabr test -T PATTERN` sets it for one run.
+default TEST_FILE_PATTERN = "";
+
 # How many more times a test file of a target whose `test_stability` is `flaky`
 # is run after it fails. A test that passes on a later run is reported as flaky.
 # `0` runs flaky targets as stable ones.

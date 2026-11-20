@@ -63,7 +63,7 @@ import {
  * failed, and its task ends as failed. A run that wrote no usable report fails
  * with the runner's own output.
  */
-const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 5, run: runTests };
+const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 6, run: runTests };
 
 /** One run of the runner: its report, or the failure no report explains, and
  * the source files it ran (undefined for every class). */
@@ -76,6 +76,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   const measured = outputs.includes(COVERAGE_REPORT_FILENAME);
   const retries = typeof action.config.flake_retries === "string" ? Number(action.config.flake_retries) : 0;
   const env = Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
+  /* The source files the run is limited to (TEST_FILE_PATTERN); undefined for every class. */
+  const selected = Array.isArray(action.config.select_files) ? stringListConfig(action, "select_files") : undefined;
   /* Run `files` (every class where undefined) as run number `index`. Keep the
    * runner's output for a failure rather than streaming it: the report carries
    * the outcome. */
@@ -105,11 +107,13 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     if (!failed || runs.length > retries) {
       return Computable.resolve(runs);
     }
-    return runOnce(runs.length, "error" in last ? undefined : failedFiles(last.report)).then(next => attempt([...runs, next]));
+    return runOnce(runs.length, "error" in last ? selected : (failedFiles(last.report) ?? selected)).then(next =>
+      attempt([...runs, next])
+    );
   };
   return ctx
     .admit(report, () => writeFileSet(ctx.workDir, staged))
-    .then(() => runOnce(0, undefined))
+    .then(() => runOnce(0, selected))
     .then(first => attempt([first]))
     .then(runs => {
       const last = runs[runs.length - 1];
@@ -261,7 +265,8 @@ export function createTestRunAction(
   argv: readonly RunnableArgument[],
   measured: boolean,
   env: ReadonlyMap<string, string>,
-  { retries, uncached }: ITestRunStability
+  { retries, uncached }: ITestRunStability,
+  selected?: readonly string[]
 ): BuildAction {
   return new BuildAction(
     JAVA_TEST_STEP,
@@ -271,6 +276,7 @@ export function createTestRunAction(
       outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])],
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
       ...(retries > 0 ? { flake_retries: String(retries) } : {}),
+      ...(selected === undefined ? {} : { select_files: [...selected] }),
     },
     { uncached }
   );

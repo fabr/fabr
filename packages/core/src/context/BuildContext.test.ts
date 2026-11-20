@@ -40,7 +40,7 @@ import {
   Resolved,
 } from "../core/Repository";
 import { dependencyName, isPackage, PackageFileSet, ResolvedNode, UsedFor } from "../core/PackageFileSet";
-import { buildOperation, describeOperation, resolvedName } from "../Fabr";
+import { buildOperation, describeOperation, prepareOperation, resolvedName } from "../Fabr";
 import { materializeTargets, TargetRef } from "../core/TargetRef";
 import { ResolvedTarget } from "./ResolvedTarget";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -98,6 +98,7 @@ import chaiAsPromised from "chai-as-promised";
 import { BuildCache } from "../core/BuildCache";
 import { catalogRepositoryRegistration } from "../rules/CatalogRepository";
 import { toPosix } from "../support/Paths";
+import { deleteTreeSync } from "../core/FSWrapper";
 
 /** The requirements of a repository whose type states none. */
 const NO_REQUIREMENTS = new ResolvedRequirements(new Map(), [], false);
@@ -112,7 +113,7 @@ const testLog = new LogFormatter(LogLevel.Info, console.error);
  * test here that does not need its own. A registry's resolution is memoized
  * through it, so it is written to even where nothing is built. */
 const cacheRoot = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-context-test-"));
-afterAll(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
+afterAll(() => deleteTreeSync(cacheRoot));
 const execution = new ExecutionContext(new BuildCache(cacheRoot, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
 
 /** Make a name as the driver hands one over. Every {@link BuildContext} method
@@ -2349,7 +2350,7 @@ describe("BuildContext", () => {
       root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-defaults-test-"));
       runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
     });
-    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+    afterEach(() => deleteTreeSync(root));
 
     /** Build target `t` from a source declaring the targetdefs and the target,
      * yielding its content (for the rules that turn a property into a file). */
@@ -2968,7 +2969,7 @@ describe("BuildContext", () => {
     });
     afterEach(() => {
       registryRequirements.clear();
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     });
 
     const input =
@@ -3071,7 +3072,7 @@ describe("BuildContext", () => {
       root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-format-test-"));
       formatExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
     });
-    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+    afterEach(() => deleteTreeSync(root));
 
     const input =
       "targetdef test_registry { }\ntargetdef test_versioned_registry { }\ntargetdef test_catalog { deps = PACKAGES; }\n" +
@@ -3139,7 +3140,7 @@ describe("BuildContext", () => {
       registryRequirements.set("b@1.0.0", [{ name: "y", versionConstraint: "1.0.0" }]);
       registryRequirements.set("y@1.0.0", [{ name: "x", versionConstraint: "^1.0.0" }]);
     });
-    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+    afterEach(() => deleteTreeSync(root));
 
     const input =
       "targetdef test_registry { }\n" +
@@ -3203,7 +3204,7 @@ describe("BuildContext", () => {
       expect(run.getConstraint("TARGET")).to.equal("arm64-apple-darwin");
       expect(run.getConstraint(BUILD_OPERATION)).to.equal("run");
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     }
   });
 
@@ -3218,7 +3219,7 @@ describe("BuildContext", () => {
       await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("t"));
       expect(lastCommandLine).to.deep.equal([{ installFile: "bin/tool" }, "x"]);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     }
   });
 
@@ -3251,7 +3252,7 @@ describe("BuildContext", () => {
       expect(leafRuns).to.equal(1);
       expect(second).to.deep.equal([]);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     }
   });
 
@@ -3309,7 +3310,7 @@ describe("BuildContext", () => {
       expect(wrapRuns).to.equal(2);
       expect(warm.origin?.parent?.kind).to.equal("composed-marker");
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      deleteTreeSync(root);
     }
   });
 
@@ -3638,7 +3639,7 @@ describe("discovered dependencies", () => {
     runExecution = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
     compileRuns = 0;
   });
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => deleteTreeSync(root));
 
   const input = "targetdef test_compile { includes = STRING; }\n" + "test_compile t { includes = a.h; }\n";
 
@@ -5323,6 +5324,11 @@ describe("declared rules and repositories", () => {
   });
 });
 
+/* A rule reading the global `READ_BY_RULE`, as a test rule reads its runner. */
+registerRule("test_global_reader", {}, context =>
+  context.getGlobalString("READ_BY_RULE").then(value => new FileSet(new Map([["f.txt", MemoryFile.from(value)]])))
+);
+
 describe("rules written in .fabr", () => {
   /* Makes a `lintable` of its own, as a rule's code makes a sub-target. */
   registerRule("test_maker", {}, context => context.subTarget("lintable", { content: "made" }));
@@ -5372,6 +5378,51 @@ describe("rules written in .fabr", () => {
         (err: Error) => err
       );
   }
+
+  it("gives the block's targets its own declaration of a global, in place of the file's", async () => {
+    const model = modelOf(
+      "targetdef test_global_reader { }\ndefault READ_BY_RULE = outer;\n" +
+        "rule lintable pkg = reader { READ_BY_RULE = inner; test_global_reader reader { } }\n" +
+        "lintable a { }\ntest_global_reader plain { }\n"
+    );
+    expect(await textOf(model, "a")).to.equal("inner");
+    expect(await textOf(model, "plain")).to.equal("outer");
+  });
+
+  it("answers for a target's build action with a target outside the block where that is its result", async () => {
+    const model = modelOf(
+      "targetdef test_parent { content = STRING; }\n" +
+        "test_parent shared { content = outside; }\n" +
+        "rule lintable pkg = shared { }\nlintable a { }\n"
+    );
+    const runs = leafRuns;
+    expect((await model.getConfig(Constraints.of({}), execution).getAction(writtenOnCommandLine("a")))?.config.data).to.equal(
+      "outside"
+    );
+    expect(leafRuns).to.equal(runs);
+  });
+
+  it("answers for a target's build action with its result's, where the result is one whole target, not performing it", async () => {
+    const model = modelOf(
+      "targetdef test_parent { content = STRING; }\n" +
+        "rule lintable pkg = inner { test_parent inner { content = ${pkg.content}; } }\n" +
+        "targetdef test_selection { content = STRING; }\n" +
+        "rule test_selection f = inner:out.txt { test_parent inner { content = ${f.content}; } }\n" +
+        "lintable a { content = hello; }\ntest_selection b { content = files; }\n"
+    );
+    const config = model.getConfig(Constraints.of({}), execution);
+    const runs = leafRuns;
+    expect((await config.getAction(writtenOnCommandLine("a")))?.config.data).to.equal("hello");
+    expect(leafRuns).to.equal(runs);
+    /* A selection of files from a target is no one target's build. */
+    expect(await config.getAction(writtenOnCommandLine("b"))).to.equal(undefined);
+    /* Preparing builds what the action reads and performs nothing, and builds
+     * outright a target that has no one action. */
+    await prepareOperation(config, [writtenOnCommandLine("a")]);
+    expect(leafRuns).to.equal(runs);
+    await prepareOperation(config, [writtenOnCommandLine("b")]);
+    expect(leafRuns).to.equal(runs + 1);
+  });
 
   it("builds a target as the one sub-target of a short-form rule, reading the target's properties through the parameter", async () => {
     const model = modelOf(

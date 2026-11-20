@@ -46,6 +46,8 @@ import {
   updateFileTime,
   writeFile,
   writeFileAtomic,
+  deleteTreeSync,
+  setDirectoriesReadOnly,
 } from "./FSWrapper";
 import {
   ActionFileInputs,
@@ -473,7 +475,7 @@ export class BuildCache {
     this.reapWorkTrees();
     /* A tree already at this path is a dead process's that had this pid. */
     try {
-      fs.rmSync(this.ownWorkRoot, { recursive: true, force: true });
+      deleteTreeSync(this.ownWorkRoot);
     } catch {
       /* Best-effort. */
     }
@@ -1137,10 +1139,13 @@ export class BuildCache {
    * concurrent demand for the same tree joins the write in flight.
    *
    * The tree's files are hardlinks to blobs, so they carry the blobs' read-only
-   * modes, not the modes the manifest records. Throws an internal error where a
-   * file lives outside the cache or is a host program's link.
-   *
-   * Where a tree's symlinks point into other trees, write those trees first.
+   * modes, not the modes the manifest records; its directories are made
+   * read-only once it is placed, so a process running from it cannot change
+   * what every other user of the tree sees. Throws an internal error where a
+   * file lives outside the cache or is a host program's link. A symlink in
+   * `files` stays within the tree (writeFileSet drops one leaving it), so
+   * trees do not link to one another; a step links trees into its own work
+   * directory instead (linkTrees).
    */
   public ensureTree(files: FileSet): Computable<string> {
     /* Memoized on the FileSet. */
@@ -1179,11 +1184,15 @@ export class BuildCache {
         .then(() => this.storeContent(files))
         .then(backed => writeFileSet(temp, files.origin === undefined ? backed : backed.withOrigin(files.origin)))
         .then(() =>
-          rename(temp, entry).catch(err => {
-            if (!fs.existsSync(entry)) {
-              throw err;
+          rename(temp, entry).then(
+            /* Placed: from now on nothing may add, remove or rename an entry of it. */
+            () => setDirectoriesReadOnly(entry),
+            err => {
+              if (!fs.existsSync(entry)) {
+                throw err;
+              }
             }
-          })
+          )
         )
         /* On success the rename has already moved it. */
         .finally(() => this.releaseWorkDir(temp))
@@ -1978,34 +1987,7 @@ export class BuildCache {
    * dirs are not counted.
    */
   private soleLiveFabr(): boolean {
-    let owners: string[];
-    try {
-      owners = fs.readdirSync(this.workRoot);
-    } catch {
-      return true;
-    }
-    for (const owner of owners) {
-      const dir = path.resolve(this.workRoot, owner);
-      /* A kept work dir's holder has a work tree of its own. */
-      if (dir === this.ownWorkRoot || keptDirOf(owner) !== undefined) {
-        continue;
-      }
-      const pid = thisHostPid(owner);
-      if (pid !== undefined) {
-        if (isProcessAlive(pid)) {
-          return false;
-        }
-      } else {
-        try {
-          if (this.now() - fs.statSync(dir).mtimeMs <= GC_GRACE_MS) {
-            return false;
-          }
-        } catch {
-          /* Gone since the listing: not live. */
-        }
-      }
-    }
-    return true;
+    return liveFabrsOf(this.workRoot, this.now(), this.ownWorkRoot).length === 0;
   }
 
   /**
@@ -2375,7 +2357,7 @@ export class BuildCache {
       const dir = path.resolve(this.workRoot, owner);
       if (dir !== this.ownWorkRoot && isReapable(owner)) {
         try {
-          fs.rmSync(dir, { recursive: true, force: true });
+          deleteTreeSync(dir);
         } catch {
           /* Best-effort. */
         }
@@ -2775,6 +2757,52 @@ function holderOf(file: string): number | undefined {
     return undefined;
   }
   return Number.isInteger(pid) && pid > 0 && isProcessAlive(pid) ? pid : undefined;
+}
+
+/**
+ * @return the work trees under `workRoot` of the live fabr processes using the
+ * store, by name (`<host>-<pid>`), `own` left out: one of this host's whose
+ * process is alive, or another host's changed within {@link GC_GRACE_MS} of
+ * `now`. Kept work dirs are not counted: a holder has a work tree of its own.
+ */
+function liveFabrsOf(workRoot: string, now: number, own?: string): string[] {
+  let owners: string[];
+  try {
+    owners = fs.readdirSync(workRoot);
+  } catch {
+    return [];
+  }
+  return owners.filter(owner => {
+    const dir = path.resolve(workRoot, owner);
+    if (dir === own || keptDirOf(owner) !== undefined) {
+      return false;
+    }
+    const pid = thisHostPid(owner);
+    if (pid !== undefined) {
+      return isProcessAlive(pid);
+    }
+    try {
+      return now - fs.statSync(dir).mtimeMs <= GC_GRACE_MS;
+    } catch {
+      /* Gone since the listing: not live. */
+      return false;
+    }
+  });
+}
+
+/**
+ * Remove the build cache at `root` and everything in it, its read-only trees
+ * included, where no fabr process is using it ({@link liveFabrsOf}).
+ *
+ * @return the work trees of the live processes using it (`<host>-<pid>`),
+ *   where there are any and nothing was removed; otherwise empty.
+ */
+export function purgeCache(root: string): string[] {
+  const live = liveFabrsOf(path.resolve(root, "work"), Date.now());
+  if (live.length === 0) {
+    deleteTreeSync(root);
+  }
+  return live;
 }
 
 /** @return the name of this host's kept work dir that the `work/` entry `name`

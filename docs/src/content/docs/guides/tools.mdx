@@ -204,6 +204,11 @@ When you start a program with `fabr run`:
 - It has your terminal and your environment variables. A `js_script`'s `env` adds variables, and
   replaces any of the same name your shell sets.
 - Its exit status is `fabr run`'s.
+- Its packages and installed files are read-only: they're shared by every build that uses them.
+  A program that writes into its own install, such as a library that caches data beside its
+  code or a tool that downloads a component on first use, fails with "Permission denied". Do
+  that work in a [build step](#build-steps-and-code-generation) instead: its output is then the
+  program's install, fetched or built once and reused.
 
 [`fabr run`](/reference/command-line/#run) has the details, and `fabr run -w` restarts the
 program when what it is built from changes; see

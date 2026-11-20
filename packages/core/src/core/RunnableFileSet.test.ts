@@ -194,6 +194,22 @@ describe("RunnableFileSet arguments naming install files", () => {
   });
 });
 
+describe("RunnableFileSet.withArguments", () => {
+  it("places an argument naming a file beside the install wherever the install is placed", () => {
+    const runner = RunnableFileSet.forEntry(new Map(), "run.js").withArguments([
+      { join: "", parts: ["--browser=", { installFile: "../.fabr-browser/chrome/chrome" }] },
+    ]);
+    expect(toArgv(runner.toCommandLine([], { base: "../.runner" }))).to.deep.equal([
+      "../.runner/run.js",
+      "--browser=../.fabr-browser/chrome/chrome",
+    ]);
+    expect(toArgv(runner.toCommandLine([], { base: "../.runner" }), "/work/build")).to.deep.equal([
+      path.resolve("/work/.runner/run.js"),
+      `--browser=${path.resolve("/work/.fabr-browser/chrome/chrome")}`,
+    ]);
+  });
+});
+
 describe("manifestArguments and toArgv", () => {
   const cc = new HostLink("cc-hash", "/usr/bin/cc");
   const args = [

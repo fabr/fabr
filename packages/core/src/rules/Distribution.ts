@@ -189,7 +189,7 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
   }
 
   /** Select the version `written` names: itself where it is exact, else the
-   *  lowest published version satisfying it, re-reading a held list that has none. */
+   *  one {@link selectFrom} selects, re-reading a held list that has none. */
   private select(written: string | undefined, target: string): Computable<V> {
     let constraint: C;
     try {
@@ -208,7 +208,7 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
     if (exact !== undefined) {
       return Computable.resolve(exact);
     }
-    const lowest = (versions: V[]): V | undefined => lowestSatisfying(this.domain, versions, constraint);
+    const lowest = (versions: V[]): V | undefined => this.selectFrom(versions, constraint);
     return this.publishedVersions(target, false).then(held => {
       const found = lowest(held);
       return found !== undefined
@@ -223,6 +223,15 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
             return relisted;
           });
     });
+  }
+
+  /**
+   * Select the version a range names from `versions`, the published versions:
+   * the lowest satisfying `constraint`, a stable version only, unless the
+   * constraint's own minimum is a prerelease. Undefined where none does.
+   */
+  protected selectFrom(versions: V[], constraint: C): V | undefined {
+    return lowestSatisfying(this.domain, versions, constraint);
   }
 
   /** List the versions published for `target`, as {@link listVersions} reads them, once a run each way. */

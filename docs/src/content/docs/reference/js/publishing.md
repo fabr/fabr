@@ -369,7 +369,10 @@ A package is published with one wherever npm accepts it, which is where:
 - the repository is public, and
 - the package is public, or is new and published with `access = public` (as `@npm` is).
 
-Elsewhere it is published without one. Where a package gets one, it must also name its repository,
+Elsewhere it is published without one. `fabr sync` says which packages got one, on each one's
+line: `✓ Publishing @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
+
+Where a package gets one, it must also name its repository,
 matching the workflow's, in its `metadata`:
 
 ```

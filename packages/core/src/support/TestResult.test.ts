@@ -18,9 +18,11 @@
  */
 
 import { expect } from "chai";
-import { FileSet } from "../core/FileSet";
+import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import {
+  getTestArtifacts,
+  selectTestFiles,
   formatFlakyTests,
   formatTestSummary,
   getTestReport,
@@ -189,5 +191,34 @@ describe("toFlakeRetries", () => {
     expect(toFlakeRetries("0")).to.equal(0);
     expect(toFlakeRetries("3")).to.equal(3);
     expect(() => toFlakeRetries("-1")).to.throw("TEST_FLAKE_RETRIES must be a number of retries, not '-1'");
+  });
+});
+
+describe("selectTestFiles", () => {
+  const tests = new FileSet(
+    new Map<string, IFile>([
+      ["dates/a.test.ts", MemoryFile.from("")],
+      ["b.test.ts", MemoryFile.from("")],
+    ])
+  );
+
+  it("keeps the files whose source path (here, with none, their name) the glob matches, and all of them for an empty pattern", () => {
+    expect([...selectTestFiles(tests, "dates/**")].map(([name]) => name)).to.deep.equal(["dates/a.test.ts"]);
+    expect([...selectTestFiles(tests, "**/b.test.ts")].map(([name]) => name)).to.deep.equal(["b.test.ts"]);
+    expect(selectTestFiles(tests, "")).to.equal(tests);
+  });
+});
+
+describe("getTestArtifacts", () => {
+  it("takes the files under each result's artifacts directory, named within it, and nothing else", () => {
+    const result = new FileSet(
+      new Map<string, IFile>([
+        ["ctrf-report.json", MemoryFile.from("{}")],
+        ["artifacts/failed/trace.zip", MemoryFile.from("trace")],
+        ["artifacts/shot.png", MemoryFile.from("png")],
+      ])
+    );
+    expect([...getTestArtifacts([result])].map(([name]) => name)).to.deep.equal(["failed/trace.zip", "shot.png"]);
+    expect(getTestArtifacts([]).isEmpty()).to.equal(true);
   });
 });

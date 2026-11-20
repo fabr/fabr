@@ -38,6 +38,7 @@ import {
   Semaphore,
   SILENT_REPORT,
   dependenciesOn,
+  deleteTreeSync,
 } from "@fabr-build/core";
 import { assembleNodeModules } from "./NodeModules";
 import { NODE_MODULES, PNP } from "./Layout";
@@ -196,7 +197,7 @@ describe("createNodeExecAction layouts", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   const sources = new FileSet(new Map<string, IFile>([["src/index.ts", MemoryFile.from("export const x = 1;")]]));
@@ -302,7 +303,7 @@ describe("the js exec step's build state", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /** A tool that only produces the output its action collects. */
@@ -553,7 +554,7 @@ describe("js_compile discovered dependencies", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   function action(deps: PackageFileSet[], report: IReport, tool = REPORT_TOOL): BuildAction {

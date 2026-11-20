@@ -18,7 +18,7 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { startFabrWatch } from "./harness";
+import { startFabrWatch, removeTree } from "./harness";
 
 /* Stopping a one-shot `fabr run` — SIGTERM from a supervisor or CI job, the
  * ordinary way to stop a running program — must take the launched program with
@@ -92,7 +92,7 @@ describe("e2e: interrupting a one-shot run", () => {
       expect(keptInstalls(cache).installs, "the install is kept").to.have.lengthOf(1);
       expect(keptInstalls(cache).holds, "and no longer held").to.have.lengthOf(0);
     } finally {
-      fs.rmSync(cache, { recursive: true, force: true });
+      removeTree(cache);
     }
   });
 });

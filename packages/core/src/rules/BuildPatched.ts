@@ -304,4 +304,4 @@ function applyChange(root: string, links: FileSet, change: FilePatch, patch: str
   }
 }
 
-export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 4, run: runPatch, stage: stagePatchStep };
+export const PATCH_ACTION: IBuildActionDefinition = { id: "core:patch", version: 5, run: runPatch, stage: stagePatchStep };

@@ -71,6 +71,13 @@ export interface IRunnerOptions {
    * the installation has one in place of a `node_modules` tree: listed among
    * the reads, since each process loaded it before recording began. */
   pnp?: string;
+  /** Where to keep the files of the tests the report attaches to them (a
+   * trace, a screenshot), if asked for: each attachment's path is within it. */
+  artifacts?: string;
+  /** How many more times a failed test runs within the run, for a runner that
+   * schedules its files itself (its framework's own retries); undefined where
+   * not given. */
+  retries?: number;
   /** The test files to run. */
   files: string[];
 }
@@ -92,6 +99,10 @@ export function parseRunnerArgs(argv: string[]): IRunnerOptions {
       options.setup.push(arg.substring("--setup=".length));
     } else if (arg.startsWith("--reads=")) {
       options.reads = arg.substring("--reads=".length);
+    } else if (arg.startsWith("--artifacts=")) {
+      options.artifacts = arg.substring("--artifacts=".length);
+    } else if (arg.startsWith("--retries=")) {
+      options.retries = Number(arg.substring("--retries=".length));
     } else if (arg.startsWith("--pnp=")) {
       options.pnp = path.resolve(arg.substring("--pnp=".length));
     } else if (arg.startsWith("-")) {
@@ -103,6 +114,33 @@ export function parseRunnerArgs(argv: string[]): IRunnerOptions {
     }
   }
   return options;
+}
+
+/** The option asking a runner for its framework's interactive run (the runner contract's `--interactive`). */
+const INTERACTIVE_OPTION = "--interactive";
+
+/**
+ * Enter the interactive run `argv` asks for (`--interactive`): change to the
+ * compiled tree, its first operand, where the run then works as a test run
+ * does. A path among the runner's own options that is resolved on reading is
+ * read before this.
+ *
+ * @return the runner's arguments, without the option and the tree, and those
+ *   after `--`, which the framework's command is given; or undefined where
+ *   `argv` asks for no interactive run.
+ */
+export function enterInteractiveRun(argv: string[]): { argv: string[]; frameworkArgs: string[] } | undefined {
+  if (!argv.includes(INTERACTIVE_OPTION)) {
+    return undefined;
+  }
+  const separator = argv.indexOf("--");
+  const own = (separator < 0 ? argv : argv.slice(0, separator)).filter(arg => arg !== INTERACTIVE_OPTION);
+  const tree = own.findIndex(arg => !arg.startsWith("-"));
+  if (tree < 0) {
+    throw new Error(`${INTERACTIVE_OPTION} needs the compiled tests' directory`);
+  }
+  process.chdir(own[tree]);
+  return { argv: own.filter((_, i) => i !== tree), frameworkArgs: separator < 0 ? [] : argv.slice(separator + 1) };
 }
 
 /** The output each test file wrote to stderr, which supplies the trace of a

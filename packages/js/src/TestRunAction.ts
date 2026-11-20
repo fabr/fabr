@@ -25,7 +25,7 @@
  */
 
 import * as fs from "fs";
-import { join } from "path";
+import { join, posix } from "path";
 import {
   ActionContext,
   BuildAction,
@@ -65,7 +65,9 @@ import {
   stringListConfig,
   TaskProgress,
   variableEntry,
+  TEST_ARTIFACTS_DIR,
   TEST_REPORT_FILENAME,
+  type ITestResult,
   testFailureOf,
   toArgv,
   toError,
@@ -102,7 +104,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
-const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 13, run: runTests, stage: stageTests };
+const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 14, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
 function declaredEnv(action: BuildAction): Record<string, string> {
@@ -114,9 +116,10 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
   const argv = toArgv(commandLineConfig(action, "argv"));
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
     cwd: COMPILE_OUT_DIR,
-    commands: testFiles.map((file, index) => ({
-      stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocationOf(action, argv, file, index)] }],
-    })),
+    commands: (scheduledByRunner(action)
+      ? [runnerInvocationOf(action, argv, testFiles)]
+      : testFiles.map((file, index) => invocationOf(action, argv, file, index))
+    ).map(invocation => ({ stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocation] }] })),
     env: new Map(Object.entries(declaredEnv(action))),
   }));
 }
@@ -175,6 +178,26 @@ function invocationOf(action: BuildAction, argv: string[], file: string, index: 
   ];
 }
 
+/** @return true if the runner schedules the action's test files itself ({@link ITestRunInputs.scheduler}), otherwise false. */
+function scheduledByRunner(action: BuildAction): boolean {
+  return action.config.scheduler === "runner";
+}
+
+/** @return the runner's one invocation over every test file, where it schedules them itself: `argv` less its interpreter, the report, the artifacts directory, then the files. */
+function runnerInvocationOf(action: BuildAction, argv: string[], testFiles: string[]): string[] {
+  return [
+    ...argv.slice(1),
+    `--report=${invocationReport(0)}`,
+    ...(keepsArtifacts(action) ? [`--artifacts=../${ARTIFACTS_RAW_DIR}/0`] : []),
+    ...testFiles,
+  ];
+}
+
+/** @return true if the action's runner is given a directory for the files it keeps of its tests, otherwise false. */
+function keepsArtifacts(action: BuildAction): boolean {
+  return action.config.artifacts === "on";
+}
+
 /** Read the `flake_retries` config member: how many further runs a failed test file gets. */
 function flakeRetriesOf(action: BuildAction): number {
   return typeof action.config.flake_retries === "string" ? Number(action.config.flake_retries) : 0;
@@ -182,6 +205,9 @@ function flakeRetriesOf(action: BuildAction): number {
 
 /** Run the test-run step ({@link JS_TEST_STEP}). */
 function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
+  if (scheduledByRunner(action)) {
+    return runScheduledByRunner(action, ctx, report);
+  }
   const workDir = ctx.workDir;
   const argv = toArgv(commandLineConfig(action, "argv"));
   const outputs = stringListConfig(action, "outputs");
@@ -251,6 +277,56 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
   );
 }
 
+/**
+ * Run the runner once over every test file of the action, as a framework that
+ * schedules its own tests across its own workers wants
+ * ({@link ITestRunInputs.scheduler}); a failed test is retried within the run
+ * by the runner (its `--retries`). Nothing is kept for the next run, which
+ * runs every file again; the files the runner kept of its tests are held
+ * under {@link TEST_ARTIFACTS_DIR}.
+ */
+function runScheduledByRunner(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
+  const workDir = ctx.workDir;
+  const cwd = join(workDir, COMPILE_OUT_DIR);
+  const argv = toArgv(commandLineConfig(action, "argv"));
+  const env = declaredEnv(action);
+  return testFilesOf(action).then(testFiles =>
+    stageInstall(
+      action,
+      workDir,
+      tree => ctx.ensureTree(tree),
+      work => ctx.admit(report, work)
+    )
+      .then(() => {
+        const tally = new RunTally(1, report.progress);
+        const invocation = runnerInvocationOf(action, argv, testFiles);
+        return execute(ctx.processLimit, findExecutable(argv[0], cwd), invocation, cwd, env, report)
+          .then(
+            () => undefined,
+            (err: Error) => err
+          )
+          .then(error => judgeRun(cwd, [argv[0], ...invocation], invocationReport(0), testFiles.join(" "), error))
+          .then((run): ITestReport => {
+            if ("error" in run) {
+              throw run.error;
+            }
+            tally.add(run);
+            return keepsArtifacts(action) ? withArtifactsOf(run.report, TEST_ARTIFACTS_DIR) : run.report;
+          });
+      })
+      .then(merged => {
+        fs.writeFileSync(join(workDir, TEST_REPORT_FILENAME), JSON.stringify(merged, undefined, 2));
+        const failure = testFailureOf(merged);
+        if (failure !== undefined) {
+          report.fail(failure);
+        }
+        return getResultFileSets(workDir, [stringListConfig(action, "outputs"), `${ARTIFACTS_RAW_DIR}/0:**`]).then(
+          ([result, kept]) => ({ result: FileSet.unionAll(result, kept.mountedAt(TEST_ARTIFACTS_DIR)) })
+        );
+      })
+  );
+}
+
 /** @return the coverage documents this run recorded (named `<test file index>/<document>`), by test file. */
 function recordedByTestFile(recorded: FileSet, testFiles: string[]): Map<string, FileSet> {
   const byFile = new Map<string, Map<string, IFile>>();
@@ -278,6 +354,9 @@ function selectionOf(latest: ReadonlyArray<ILatestRun>): { discoveredDeps?: Disc
   const rows = [...new Set(latest.flatMap(run => [...run.deps!]))].sort();
   return { discoveredDeps: new Map([["deps", rows.map(row => splitDepsPath(row))]]) };
 }
+
+/** Where the runner keeps the files of its tests, a directory per test file, by its index. */
+const ARTIFACTS_RAW_DIR = ".fabr-artifacts";
 
 /** Where a measured run's test processes record their coverage, a directory per test file, by its index. */
 const COVERAGE_RAW_DIR = ".fabr-coverage-raw";
@@ -778,16 +857,19 @@ function runRetried(
   directories: DirectoryRows
 ): Computable<IFileRun> {
   const retries = flakeRetriesOf(action);
-  const attempt = (earlier: Array<ITestReport | undefined>): Computable<IFileRun> =>
-    runOneFile(ctx, action, taskReport, argv, env, file, index, layout, directories).then((run): IFileRun | Computable<IFileRun> => {
-      const failed = "error" in run || run.report.results.summary.failed > 0;
-      if (failed && earlier.length < retries) {
-        /* What the failed run's processes recorded is not this file's coverage. */
-        fs.rmSync(join(ctx.workDir, COVERAGE_RAW_DIR, String(index)), { recursive: true, force: true });
-        return attempt([...earlier, "error" in run ? undefined : run.report]);
+  const attempt = (earlier: Array<ITestReport | undefined>): Computable<IFileRun> => {
+    return runOneFile(ctx, action, taskReport, argv, env, file, index, layout, directories).then(
+      (run): IFileRun | Computable<IFileRun> => {
+        const failed = "error" in run || run.report.results.summary.failed > 0;
+        if (failed && earlier.length < retries) {
+          /* What the failed run's processes recorded is not this file's coverage. */
+          fs.rmSync(join(ctx.workDir, COVERAGE_RAW_DIR, String(index)), { recursive: true, force: true });
+          return attempt([...earlier, "error" in run ? undefined : run.report]);
+        }
+        return "error" in run ? run : { ...run, report: retriedReport(earlier, run.report) };
       }
-      return "error" in run ? run : { ...run, report: retriedReport(earlier, run.report) };
-    });
+    );
+  };
   return attempt([]);
 }
 
@@ -851,6 +933,26 @@ function judgeRun(workDir: string, invocation: string[], reportName: string, fil
     return { file, error: new ExecutionError(`$ ${invocation.join(" ")}\n${detail}`) };
   }
   return { file, report };
+}
+
+/** @return `report` with each attachment, named within the invocation's
+ * directory of kept files, named where the target's result holds it, under
+ * `dir` ({@link TEST_ARTIFACTS_DIR}).
+ * An attachment naming a path outside that directory is left out. */
+export function withArtifactsOf(report: ITestReport, dir: string): ITestReport {
+  const placed = (test: ITestResult): ITestResult => {
+    if (test.attachments === undefined) {
+      return test;
+    }
+    const attachments = test.attachments.flatMap(attachment => {
+      const within = posix.normalize(attachment.path);
+      return within.startsWith("../") || within === ".." || posix.isAbsolute(within)
+        ? []
+        : [{ ...attachment, path: `${dir}/${within}` }];
+    });
+    return { ...test, attachments };
+  };
+  return { results: { ...report.results, tests: report.results.tests.map(placed) } };
 }
 
 function isMissingFile(err: unknown): boolean {
@@ -965,6 +1067,15 @@ export interface ITestRunInputs {
   retries: number;
   /** Whether every test file runs on every demand, the result never cached (an `unstable` target's). */
   uncached: boolean;
+  /** Whether the runner is given a directory for the files it keeps of its
+   * tests (`--artifacts`), which the result then holds under
+   * {@link TEST_ARTIFACTS_DIR}: where the runner schedules the files
+   * (`scheduler`), one invocation's directory. */
+  artifacts?: boolean;
+  /** Which schedules the test files across processes: `fabr`, one invocation
+   * per file; or the `runner`, given every file in one invocation, across its
+   * own workers. Under the runner, every file runs whenever the run does. */
+  scheduler?: "fabr" | "runner";
 }
 
 /** Make the test-run action ({@link JS_TEST_STEP}). */
@@ -982,6 +1093,8 @@ export function createTestRunAction({
   coverage,
   retries,
   uncached,
+  artifacts = false,
+  scheduler = "fabr",
 }: ITestRunInputs): BuildAction {
   return new BuildAction(
     JS_TEST_STEP,
@@ -1007,6 +1120,8 @@ export function createTestRunAction({
       ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
       ...(coverage ? { coverage_argv: coverage.argv } : {}),
       ...(retries > 0 ? { flake_retries: String(retries) } : {}),
+      ...(artifacts ? { artifacts: "on" } : {}),
+      ...(scheduler === "runner" ? { scheduler } : {}),
     },
     /* Each test file's last run is kept, and what changed since decides which
      * files run again. The packages are discoverable: the runs report what they

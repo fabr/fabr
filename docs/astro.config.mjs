@@ -108,6 +108,7 @@ export default defineConfig({
             { label: "TypeScript compilation", link: "/reference/js/typescript/" },
             { label: "Stylesheets", link: "/reference/js/stylesheets/" },
             { label: "Testing", link: "/reference/js/testing/" },
+            { label: "Browser tests", link: "/reference/js/browser-testing/" },
             { label: "Bundling", link: "/reference/js/bundling/" },
             { label: "Publishing packages", link: "/reference/js/publishing/" },
             ...generated("JavaScript reference"),

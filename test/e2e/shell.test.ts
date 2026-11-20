@@ -62,6 +62,17 @@ describe("e2e: fabr shell", () => {
     expect(result.stderr).to.contain("with MARKER=here");
   });
 
+  withShell("stages the test run of a target whose type only tests, with no operation written", () => {
+    const tested = {
+      ...STUB_TSC,
+      "PROJECT.fabr": "plugin @fabr-build/js;\n" + STUB_TSC_CONFIG + "\njs_test suite { tests = src:**/*.test.ts; }\n",
+      "src/a.test.ts": 'describe("a", () => { it("is one", () => {}); });\n',
+    };
+    const result = runFabr(tested, ["shell", "suite"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.match(/--report=\S+ --reads=\S+ a\.test\.js/);
+  });
+
   withShell("errors on a target that yields content, not a build command", () => {
     const result = runFabr(project, ["shell", "ff"]);
     expect(result.status).to.equal(1);

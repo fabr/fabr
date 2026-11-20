@@ -80,6 +80,24 @@ describe("getResultFileSet", () => {
     expect(fs.existsSync(path.join(work, ".eslintrc"))).to.equal(true);
   });
 
+  it("collects a symlink whose target is relative and inside the tree, as the link, and deletes any other", async () => {
+    fs.mkdirSync(path.join(work, "Versions", "A"), { recursive: true });
+    fs.writeFileSync(path.join(work, "Versions", "A", "Lib"), "binary");
+    fs.symlinkSync("A", path.join(work, "Versions", "Current"));
+    fs.symlinkSync("Versions/Current/Lib", path.join(work, "Lib"));
+    fs.symlinkSync("../outside", path.join(work, "escapes"));
+    fs.symlinkSync(path.join(work, "Versions", "A", "Lib"), path.join(work, "absolute"));
+
+    const result = await toPromise(getResultFileSet(work, "**"));
+
+    expect([...result].map(([name]) => name).sort()).to.deep.equal(["Lib", "Versions/A/Lib", "Versions/Current"]);
+    expect(result.getFile("Lib")).to.be.instanceOf(SymlinkFile);
+    expect((result.getFile("Versions/Current") as SymlinkFile).target).to.equal("A");
+    expect(
+      fs.existsSync(path.join(work, "escapes")) || fs.lstatSync(path.join(work, "absolute"), { throwIfNoEntry: false }) !== undefined
+    ).to.equal(false);
+  });
+
   it("collects under a subdir and names results relative to it (string dir:glob)", async () => {
     /* The plain-string path (the exec/test-report callers): `dir:glob` selects
      * under dir, names relative to it. */

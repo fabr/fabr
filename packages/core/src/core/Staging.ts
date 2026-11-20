@@ -43,6 +43,7 @@ import {
   symlink,
   walkTree,
   writeFile,
+  deleteTreeSync,
 } from "./FSWrapper";
 import { Name } from "./Name";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
@@ -93,7 +94,7 @@ export function removeTempTree(dir: string): void {
  * here: it also runs from the exit hook. */
 function rmTempTree(dir: string): void {
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    deleteTreeSync(dir);
   } catch {
     /* A later run reaps a dead process's work tree. */
   }
@@ -166,9 +167,9 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
          * target against the parent's real path: path.resolve alone is lexical
          * and does not follow a symlinked parent. */
         realRoot ??= fs.realpathSync(path.resolve(targetDir));
-        const resolved = path.resolve(fs.realpathSync(dirname), file.target);
-        const inside = resolved === realRoot || resolved.startsWith(realRoot + path.sep);
-        return inside ? stage(symlink(file.target, targetName), name) : undefined;
+        return linkResolvesWithin(realRoot, fs.realpathSync(dirname), file.target)
+          ? stage(symlink(file.target, targetName), name)
+          : undefined;
       }
       if (filepath) {
         /* A hardlink has the read-only blob's mode (0o444/0o555); a copy is
@@ -198,6 +199,14 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
 function stagedPermissions(mode: number): number {
   const readOnly = readOnlyPermissions(mode);
   return (mode & 0o077) === 0 ? readOnly & 0o700 : readOnly;
+}
+
+/** @return true if a symlink to `target`, in the directory whose real path is
+ * `realDir`, resolves inside `realRoot` (a real path), otherwise false. Real
+ * paths, since a lexical resolve does not follow a symlinked parent. */
+function linkResolvesWithin(realRoot: string, realDir: string, target: string): boolean {
+  const resolved = path.resolve(realDir, target);
+  return resolved === realRoot || resolved.startsWith(realRoot + path.sep);
 }
 
 /** Make a staged entry with its resolved destination and that destination's
@@ -378,7 +387,9 @@ function asExecutionError<T>(operation: Computable<T>): Computable<T> {
 /**
  * Collect the files a build step wrote under `targetDir` that `output`
  * selects, each named as `output` projects it, and delete every other file
- * there (a symlink is removed, never its target; directories stay). `output`
+ * there (a symlink is removed, never its target; directories stay). A symlink
+ * whose target is relative and inside `targetDir` is collected as a
+ * {@link SymlinkFile} with that target as written; any other is not collected. `output`
  * is a `dir:glob` string (select under `dir`, named relative to it), a
  * {@link Name} projection (`:`-strip, slash-retain, and an optional
  * `sel -> tmpl` rename), or several of these, of which the first to select a
@@ -407,27 +418,33 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
   /* The path each output name came from, per selection, for a conflict message. */
   const sources = selections.map(() => new Map<string, string>());
   /* Every non-directory entry of the tree, with the name each selection collects
-   * it under (none: that selection drops it). */
-  const found: Array<{ abspath: string; rel: string; names: Array<string | undefined> }> = [];
+   * it under (none: that selection drops it), and for a symlink, its target. */
+  const found: Array<{ abspath: string; rel: string; names: Array<string | undefined>; link?: string }> = [];
 
   /* Walk without following symlinks (walkTree recurses into real directories
    * only): a linked file would be visited twice, and a link may form a cycle.
-   * Only regular files are collected; a symlink is deleted as a link. */
+   * Regular files are collected, and a symlink whose target is relative and
+   * inside the tree, as the link; any other symlink is deleted as a link. */
   return walkTree(targetDir, (entry, abspath) => {
     if (!entry.isDirectory()) {
       const rel = toPosix(path.relative(targetDir, abspath));
-      found.push({ abspath, rel, names: projectors.map(project => (entry.isFile() ? project(rel) : undefined)) });
+      const link = entry.isSymbolicLink() ? linkWithin(targetDir, abspath) : undefined;
+      const collectable = entry.isFile() || link !== undefined;
+      found.push({ abspath, rel, names: projectors.map(project => (collectable ? project(rel) : undefined)), link });
     }
   })
     .then(() =>
-      mapComputable(found, ({ abspath, rel, names }) => {
+      mapComputable(found, ({ abspath, rel, names, link }) => {
         if (names.every(name => name === undefined)) {
           return asExecutionError(deleteFile(abspath));
         }
-        return hashFile(abspath).then(({ hash, mime }) => {
-          /* A file at its place in the work dir (storeContent later moves it
-           * into the pool), keyed in the set by its projected name. */
-          const file = new FSFile(abspath, rel, fs.statSync(abspath), hash, mime);
+        const collected: Computable<IFile> =
+          link !== undefined
+            ? Computable.resolve(new SymlinkFile(link))
+            : /* A file at its place in the work dir (storeContent later moves it
+               * into the pool), keyed in the set by its projected name. */
+              hashFile(abspath).then(({ hash, mime }) => new FSFile(abspath, rel, fs.statSync(abspath), hash, mime));
+        return collected.then(file => {
           names.forEach((name, i) => {
             if (name === undefined) {
               return;
@@ -448,6 +465,18 @@ export function getResultFileSets(targetDir: string, selections: ReadonlyArray<O
       })
     )
     .then(() => results.map(result => new FileSet(result)));
+}
+
+/**
+ * @return the target of the symlink at `abspath`, `/`-separated, where it is
+ * relative and resolves inside `root` ({@link linkResolvesWithin}); otherwise
+ * undefined.
+ */
+function linkWithin(root: string, abspath: string): string | undefined {
+  const target = fs.readlinkSync(abspath);
+  return !path.isAbsolute(target) && linkResolvesWithin(fs.realpathSync(root), fs.realpathSync(path.dirname(abspath)), target)
+    ? toPosix(target)
+    : undefined;
 }
 
 /**

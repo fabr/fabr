@@ -24,6 +24,7 @@ import {
   parseJson,
   preferredOperation,
   TEST_EXPECTATIONS,
+  TEST_FILE_PATTERN,
   TEST_NAME_PATTERN,
   toJsonObject,
   UPDATE_EXPECTATIONS,
@@ -68,7 +69,7 @@ export enum Mode {
 }
 
 /** The heading a command is listed under in the help. */
-type CommandGroup = "Building" | "Inspecting" | "Project";
+type CommandGroup = "Building" | "Inspecting" | "Project" | "Cache";
 
 /** One command: its help entry, and the options it accepts. The command line
  * accepts the commands {@link COMMAND_SPECS} lists. */
@@ -116,7 +117,13 @@ const OPTION_SPECS: OptionSpec[] = [
   { flag: "-w", usage: "-w", summary: "Watch mode: rebuild or re-run as inputs change" },
   { flag: "-u", usage: "-u, --update", summary: "Update recorded test expectations (snapshots) from the run" },
   { flag: "-t", usage: "-t PATTERN", summary: "Run only the tests whose names match the regular expression PATTERN" },
+  { flag: "-T", usage: "-T PATTERN", summary: "Run only the test files whose source paths match the glob PATTERN" },
   { flag: "--coverage", usage: "--coverage[=DIR]", summary: "Measure code coverage and write DIR/lcov.info, coverage/ by default" },
+  {
+    flag: "--artifacts",
+    usage: "--artifacts=DIR",
+    summary: "Copy the files the test runs kept of their tests (traces, screenshots) into DIR",
+  },
   {
     flag: "--retry-failed",
     usage: "--retry-failed",
@@ -186,9 +193,23 @@ const COMMAND_SPECS: CommandSpec[] = [
   {
     name: "test",
     group: "Building",
-    synopsis: "[-w] [-u] [-t PATTERN] [--coverage[=DIR]] [--retry-failed] [--report FILE [--format ctrf|junit]] <targets>",
+    synopsis:
+      "[-w] [-u] [-t PATTERN] [-T PATTERN] [--coverage[=DIR]] [--artifacts=DIR] [--retry-failed] [--report FILE [--format ctrf|junit]] <targets>",
     summary: "Build and run targets' tests",
-    accepts: ["-w", "-u", "-t", "--coverage", "--retry-failed", "--report", "--format", ...STEP_OPTIONS, "--trace", "-f"],
+    accepts: [
+      "-w",
+      "-u",
+      "-t",
+      "-T",
+      "--coverage",
+      "--artifacts",
+      "--retry-failed",
+      "--report",
+      "--format",
+      ...STEP_OPTIONS,
+      "--trace",
+      "-f",
+    ],
     requiresTarget: true,
   },
   {
@@ -307,6 +328,14 @@ const COMMAND_SPECS: CommandSpec[] = [
     summary: "Serve targets to an editor (Build Server Protocol)",
     accepts: ["-q"],
   },
+  {
+    name: "cache",
+    group: "Cache",
+    synopsis: "purge",
+    summary: "Remove fabr's cache (purge)",
+    accepts: [],
+    requiresTarget: true,
+  },
 ];
 
 const COMMAND_BY_NAME = new Map(COMMAND_SPECS.map(c => [c.name, c]));
@@ -374,6 +403,10 @@ export interface Options {
   /** For `test --coverage[=<dir>]`: the directory the coverage report is written
    * to, a plain filesystem path resolved against the invocation cwd. */
   coverageDir?: string;
+  /** For `test --artifacts=<dir>`: the directory the files the test runs kept
+   * of their tests are copied into, a plain filesystem path resolved against
+   * the invocation cwd. */
+  artifactsDir?: string;
   /** For `--trace[=<file>]`: where the run's trace is written, a plain
    * filesystem path resolved against the invocation cwd. */
   traceFile?: string;
@@ -583,13 +616,13 @@ const DEFAULT_COVERAGE_DIR = "coverage";
  * @return the number of arguments after `arg` the option consumed.
  */
 function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[], command?: string): number {
-  if (arg === "-t") {
-    /* Sets TEST_NAME_PATTERN, as a -D would. */
+  if (arg === "-t" || arg === "-T") {
+    /* Sets TEST_NAME_PATTERN or TEST_FILE_PATTERN, as a -D would. */
     if (next === undefined) {
       usageError(`Option '${arg}' requires a pattern`, command);
     }
-    options.properties.set(TEST_NAME_PATTERN, next);
-    seenFlags.push({ raw: arg, flag: "-t" });
+    options.properties.set(arg === "-t" ? TEST_NAME_PATTERN : TEST_FILE_PATTERN, next);
+    seenFlags.push({ raw: arg, flag: arg });
     return 1;
   } else if (arg === "-w") {
     options.mode = Mode.Watch;
@@ -647,6 +680,12 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
       usageError("Option '--coverage=' requires a directory", command);
     }
     seenFlags.push({ raw: arg, flag: "--coverage" });
+  } else if (arg === "--artifacts" || arg.startsWith("--artifacts=")) {
+    options.artifactsDir = arg.slice("--artifacts=".length);
+    if (!arg.startsWith("--artifacts=") || !options.artifactsDir) {
+      usageError("Option '--artifacts' requires a directory: --artifacts=DIR", command);
+    }
+    seenFlags.push({ raw: arg, flag: "--artifacts" });
   } else if (arg === "--trace" || arg.startsWith("--trace=")) {
     options.traceFile = arg === "--trace" ? DEFAULT_TRACE_FILE : arg.slice("--trace=".length);
     if (!options.traceFile) {
@@ -814,6 +853,9 @@ export function parseCommandLine(args: string[]): Options {
       usageError("cp requires at least one source and a destination directory", "cp");
     }
     options.dest = options.targets.pop();
+  }
+  if (options.command === "cache" && (options.targets.length !== 1 || options.targets[0] !== "purge")) {
+    usageError(`The 'cache' command takes 'purge'`, "cache");
   }
   if (options.targets.length === 0 && !options.deferred) {
     if (!commandGiven) {

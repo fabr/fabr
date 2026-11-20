@@ -42,6 +42,7 @@ import {
   sbom,
   BuildModel,
   buildOperation,
+  prepareOperation,
   describeOperation,
   Computable,
   mapComputable,
@@ -56,6 +57,7 @@ import {
   formatTestFailures,
   formatTestSummary,
   IFile,
+  getTestArtifacts,
   getTestReport,
   ITestReport,
   mergeTestReports,
@@ -99,7 +101,10 @@ import {
   MemoryFile,
   mergeCoverage,
   parseLcov,
+  TEST_FILE_PATTERN,
   TEST_NAME_PATTERN,
+  purgeCache,
+  declName,
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
@@ -128,6 +133,8 @@ const DIAG_COVERAGE = Diagnostic.Info<{ lines: string; functions: string; branch
 const DIAG_COVERAGE_WRITTEN = Diagnostic.Info<{ file: string }>("Coverage report written to {file}");
 const DIAG_TRACE_UNWRITTEN = Diagnostic.Warn<{ file: string; message: string }>("Could not write the trace to {file}: {message}");
 const DIAG_TEST_REPORT_WRITTEN = Diagnostic.Info<{ file: string }>("Test report written to {file}");
+const DIAG_ARTIFACTS_WRITTEN = Diagnostic.Info<{ count: number; dir: string }>("Copied {count} test artifact(s) to {dir}");
+const DIAG_ARTIFACTS_NONE = Diagnostic.Info<Record<string, never>>("No test run kept any artifacts");
 const DIAG_COVERAGE_NONE = Diagnostic.Warn<Record<string, never>>("No test target measured any coverage");
 /* Measured files whose source maps name no source, which the report leaves out. */
 const DIAG_COVERAGE_UNPLACEABLE = Diagnostic.Warn<{ count: number; examples: string }>(
@@ -195,6 +202,23 @@ function flushAndExit(code: number): void {
   process.stderr.write("", done);
 }
 
+/**
+ * Run `fabr cache purge`: remove the build cache ({@link purgeCache}), or,
+ * where another fabr process is using it, remove nothing and fail naming them.
+ */
+function purgeBuildCache(): Promise<void> {
+  const root = getBuildCacheRoot();
+  const live = purgeCache(root);
+  if (live.length > 0) {
+    process.stderr.write(
+      `error: fabr's cache at ${root} is in use by other fabr processes (${live.join(", ")}); stop them and try again\n`
+    );
+    return new Promise(() => flushAndExit(1));
+  }
+  process.stderr.write(`Removed fabr's cache at ${root}\n`);
+  return new Promise(() => flushAndExit(0));
+}
+
 /** A command's work on the loaded model, run by {@link runWith}. `execution`
  * holds the run's log, cache and progress; `site` is where the invocation was
  * run, which a name given on the command line is written in. Resolves a
@@ -251,6 +275,8 @@ export function runFabr(options: Options): Promise<void> {
       return runWith(options, (model, execution, site) => shellTarget(model, options, execution, site));
     case "sync":
       return runWith(options, (model, execution, site) => syncTargets(model, options, execution, site));
+    case "cache":
+      return purgeBuildCache();
     case "build-server": {
       /* One server for the run, across every model a reload makes. */
       return getSourceRoot().then(root => {
@@ -349,25 +375,33 @@ function runBuild(
   operation = "build"
 ): Computable<void> {
   markForced(model, options, execution, names);
-  /* `build` of a target whose type only runs builds its program, not starting it. */
-  const operationFor = (name: string): string => (operation === "build" && runsOnly(model, name) ? "run" : operation);
+  /* `build` of a target whose type only runs builds its program, not starting
+   * it, and of one whose type only tests builds what its test run needs, not
+   * running it. */
+  const operationFor = (name: string): string => (operation === "build" ? buildingOperation(model, name) : operation);
   const operations = [...new Set(names.map(operationFor))];
   return Computable.forAll(
-    operations.map(each =>
-      buildOperation(
-        configFor(model, options, execution, each),
-        names.filter(name => operationFor(name) === each).map(name => options.commandLine.refFor(name, site))
-      )
-    ),
+    operations.map(each => {
+      const config = configFor(model, options, execution, each);
+      const refs = names.filter(name => operationFor(name) === each).map(name => options.commandLine.refFor(name, site));
+      return each === "test" ? prepareOperation(config, refs) : buildOperation(config, refs);
+    }),
     () => undefined
   );
 }
 
-/** @return true if `name` names a target whose type has a rule for `run` and none for `build`, otherwise false. */
-function runsOnly(model: BuildModel, name: string): boolean {
+/**
+ * @return the operation `fabr build` and `fabr shell` build `name` under:
+ * `build`, or where the type of the target it names has no rule for `build`,
+ * `run` where it has one for `run`, else `test` where it has one for `test`.
+ */
+function buildingOperation(model: BuildModel, name: string): string {
   const target = model.getReferencedTarget(name);
   const operations = target === undefined ? [] : model.getOperations(target.type);
-  return operations.includes("run") && !operations.some(operation => operation === "build" || operation === "*");
+  if (operations.some(operation => operation === "build" || operation === "*")) {
+    return "build";
+  }
+  return operations.includes("run") ? "run" : operations.includes("test") ? "test" : "build";
 }
 
 /** Run `fabr test <targets>` through core's {@link testOperation}, then, each
@@ -398,7 +432,8 @@ function runTest(
         names,
         reports,
         tested.map(({ failures }) => failures.length > 0),
-        options.properties.get(TEST_NAME_PATTERN) || undefined
+        options.properties.get(TEST_NAME_PATTERN) || undefined,
+        options.properties.get(TEST_FILE_PATTERN) || undefined
       );
       const failures = [...unbuilt, ...(failure === undefined ? [] : [failure])];
       return (
@@ -410,6 +445,9 @@ function runTest(
         .then(() =>
           options.coverageDir === undefined ? undefined : reportCoverage(model, execution, site, options.coverageDir, results)
         )
+        .then(() =>
+          options.artifactsDir === undefined ? undefined : writeTestArtifacts(model, execution, options.artifactsDir, names, results)
+        )
         .then(() => {
           if (failures.length > 0) {
             throw MultiError.of(failures);
@@ -417,6 +455,40 @@ function runTest(
         });
     });
   });
+}
+
+/**
+ * Copy the files each tested name's runs kept of its tests into `dir`, under
+ * `<target>/`, the name of the target it names as declared (the name as written
+ * where it names none), each named as its report's attachments name it beneath
+ * the artifacts directory. Each name's directory is emptied first, so it holds
+ * this run's files alone. Runs whether or not tests failed: those are the runs
+ * whose files are wanted.
+ */
+function writeTestArtifacts(
+  model: BuildModel,
+  execution: ExecutionContext,
+  dir: string,
+  names: string[],
+  results: SourceRef[][]
+): Computable<void> {
+  const declared = (name: string): string => {
+    const target = model.getReferencedTarget(name);
+    return target === undefined ? name : declName(target);
+  };
+  const all = results.map((sources, i): [string, FileSet] => [declared(names[i]), getTestArtifacts(sources)]);
+  for (const [name] of all) {
+    fs.rmSync(path.resolve(dir, name), { recursive: true, force: true });
+  }
+  const kept = all.filter(([, files]) => !files.isEmpty());
+  if (kept.length === 0) {
+    execution.log.log(DIAG_ARTIFACTS_NONE, {});
+    return Computable.resolve(undefined);
+  }
+  const laidOut = FileSet.unionAll(...kept.map(([name, files]) => files.mountedAt(name)));
+  return writeFileSet(path.resolve(dir), laidOut, { copy: true }).then(() =>
+    execution.log.log(DIAG_ARTIFACTS_WRITTEN, { count: laidOut.size, dir })
+  );
 }
 
 /** Write the run's test results, every name's merged into one report, to `file`, as CTRF or (`junit`) JUnit XML. */
@@ -702,10 +774,11 @@ function programKey(site: IInvocationSite, options: Options, target: string): st
 }
 
 /**
- * Run `fabr shell <target>`: get the target's build action under `build`,
- * without running it, and resolve a {@link Takeover} that stages its sandbox
- * and opens a shell in it ({@link shellInto}), the shell's exit status the
- * run's.
+ * Run `fabr shell <target>`: get the target's build action, without running
+ * it, under the operation `fabr build` builds it under
+ * ({@link buildingOperation}), and resolve a {@link Takeover} that stages its
+ * sandbox and opens a shell in it ({@link shellInto}), the shell's exit status
+ * the run's.
  */
 function shellTarget(
   model: BuildModel,
@@ -713,7 +786,7 @@ function shellTarget(
   execution: ExecutionContext,
   site: IInvocationSite
 ): Computable<void | Takeover> {
-  const config = configFor(model, options, execution, "build");
+  const config = configFor(model, options, execution, buildingOperation(model, options.targets[0]));
   return config.getAction(options.commandLine.refFor(options.targets[0], site)).then<void | Takeover>(action => {
     /* A takeover, like run's program: the shell starts once the evaluation
      * has settled. */
@@ -1681,18 +1754,19 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
  * freshly run or cached), and return the failure of the names whose tests
  * failed, or undefined where none did: their summaries and failed tests, which
  * the failure is reported as. A name with no report that `unbuilt` marks as
- * having a target that failed to build logs nothing. A run given `-t` marks
- * each summary filtered, and fails where its pattern ran no test in any of the
- * targets and every target was built.
+ * having a target that failed to build logs nothing. A run given `-t` or `-T`
+ * marks each summary filtered, and fails where its patterns ran no test in any
+ * of the targets and every target was built.
  */
 function reportTestResults(
   log: Log,
   names: string[],
   reports: (ITestReport | undefined)[],
   unbuilt: boolean[],
-  namePattern: string | undefined
+  namePattern: string | undefined,
+  filePattern: string | undefined
 ): TestsFailedError | undefined {
-  const filtered = namePattern === undefined ? "" : " (filtered)";
+  const filtered = namePattern === undefined && filePattern === undefined ? "" : " (filtered)";
   const failures: string[] = [];
   let failed = 0;
   let tests = 0;
@@ -1712,12 +1786,21 @@ function reportTestResults(
       });
     }
   });
-  const ran = reports.reduce(
-    (count, report) => count + (report ? report.results.summary.passed + report.results.summary.failed : 0),
-    0
-  );
-  if (namePattern !== undefined && ran === 0 && !unbuilt.some(failed => failed)) {
-    throw new FabrError(`No test's name matches the pattern '${namePattern}'`);
+  /* A file pattern alone matched a file where the file reported any test,
+   * skipped ones included; a name pattern, where a test ran. */
+  const filesOnly = filePattern !== undefined && namePattern === undefined;
+  const ran = reports.reduce((count, report) => {
+    const summary = report?.results.summary;
+    return count + (summary === undefined ? 0 : filesOnly ? summary.tests : summary.passed + summary.failed);
+  }, 0);
+  if ((namePattern !== undefined || filePattern !== undefined) && ran === 0 && !unbuilt.some(failed => failed)) {
+    throw new FabrError(
+      filePattern === undefined
+        ? `No test's name matches the pattern '${namePattern}'`
+        : namePattern === undefined
+          ? `No test file matches the pattern '${filePattern}'`
+          : `No test matches both the file pattern '${filePattern}' and the name pattern '${namePattern}'`
+    );
   }
   return failures.length === 0 ? undefined : new TestsFailedError(failures.join("\n"), failed, tests);
 }

@@ -39,6 +39,7 @@ Your project can't be converted as it stands if it relies on any of these.
 | [Optional dependencies required as `*` are dropped](#optional-npm-dependencies-required-only-as--are-left-out-silently) | Such a dependency is missing, with no warning. |
 | [No lock between fabr processes](#concurrent-fabr-processes-duplicate-work-rather-than-sharing-it) | Two builds at once may each do the same work; deleting the cache under `fabr run` removes the running program. |
 | [A default import can be read too early in an import cycle](#a-default-import-of-a-package-can-be-read-too-early-in-an-import-cycle) | In ES-module output, a cycle that reads a package's default import before its module has started running throws a `ReferenceError`. |
+| [Browsers need the machine's own libraries](#browsers-need-the-machines-own-libraries) | On Linux, a browser fails to start where the machine lacks a library it needs, and a library change goes unnoticed. |
 | [On Windows, processes, file modes and links fall short](#on-windows-processes-file-modes-and-links-fall-short) | A step's leftover processes outlive it; executable modes are lost; incremental builds can need Developer Mode. |
 
 ### Programs a shell script starts are not tracked
@@ -55,7 +56,22 @@ cache.** Fabr reuses results built with the old one.
 **Workaround:** write the step as a `js_script` where you can, so that it runs on the Node.js
 release [`NODE`](/reference/js/dependencies/#the-nodejs-version) names, or name each program as a
 command of its own (`@host:protoc`). Otherwise, keep the programs scripts use the same on machines
-that should produce the same results, and delete the cache after changing them.
+that should produce the same results, and delete the cache after changing them
+([`fabr cache purge`](/reference/command-line/#cache-purge)).
+
+### Browsers need the machine's own libraries
+
+A [`browser_test`](/reference/js/browser-testing/#the-browser) fetches its browser, and Cypress's app,
+into fabr's cache, but each loads shared libraries from the machine it runs on: on Linux,
+libraries such as `libnss3` and `libgbm`, and for Cypress, the Xvfb display server it starts when
+there is no display. Fabr records nothing about them, so **a missing library fails the
+browser's launch, and a different version of one can change results without invalidating the
+cache.**
+
+**Workaround:** on Linux, install the libraries with Playwright's own command,
+`fabr run @npm:@playwright/test:1.64.0 install-deps chromium` (with your suite's version), or
+Cypress's documented list of packages, or run your tests in an image that has them, such as
+Playwright's `mcr.microsoft.com/playwright` or Cypress's `cypress/base`.
 
 ### A default import of a package can be read too early in an import cycle
 
@@ -98,8 +114,9 @@ builds of the same unbuilt change at once, for example in two worktrees of one b
 different changes, or of one already built, share the cache as usual.
 
 Relatedly, `fabr run` installs the program it runs in the cache, and keeps the install there to
-reuse on the next run, so deleting the cache while `fabr run` or `fabr run -w` is running deletes
-the files of the program it is running. Stop the program first.
+reuse on the next run, so deleting the cache by hand while `fabr run` or `fabr run -w` is running
+deletes the files of the program it is running. Stop the program first; `fabr cache purge`
+refuses while it runs.
 
 ### Windows-specific limitations.
 

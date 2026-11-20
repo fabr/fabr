@@ -153,6 +153,16 @@ together. Display names (`@DisplayName`) are not matched. The summary ends `(fil
 test in any target matches, the run fails. Selecting by name needs the JUnit Platform launcher
 1.12 (JUnit 5.12) or later.
 
+```sh
+fabr test -T 'src/test/java/com/example/dates/**' app
+```
+
+runs only the test classes in the source files whose paths in your project match the glob
+pattern, `**/DateTest.java` matching that file wherever it is. The tests are still compiled
+together, so a filtered run reuses the compile of a full one. With `-t` as well, only the matching
+methods of those classes run. If no test file in any target matches, the run fails with
+`No test file matches the pattern '…'`.
+
 ## Flaky and unstable tests
 
 A target's `test_stability` (`stability` on a `java_test`) says how far fabr can trust its

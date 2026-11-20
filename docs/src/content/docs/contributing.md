@@ -70,7 +70,8 @@ assertions so that the same files run under jest in `yarn dist` and under `fabr 
 
 The cache is at `~/Library/Caches/fabr` on macOS, `$XDG_CACHE_HOME/fabr` (`~/.cache/fabr` by
 default) on Linux and `%LOCALAPPDATA%\fabr` on Windows, or wherever `FABR_CACHE_DIR` says. Deleting
-it is always safe.
+it is always safe: use `./fabr cache purge`, since on macOS and Linux its trees' directories are
+read-only and `rm -rf` stops at them.
 
 ## Conventions
 

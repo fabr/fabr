@@ -26,7 +26,9 @@
  */
 
 import * as fs from "node:fs";
+import { SourceMap, SourceMapPayload } from "node:module";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { takeCoverage } from "node:v8";
 import type { ITestReport, ITestResult, ITestSummary } from "@fabr-build/core";
 import { getMapSource, referenceOfEntry, SOURCE_LOCATIONS_FILE } from "../support/SourceMap";
@@ -34,7 +36,7 @@ import { posixRelative, toPosix } from "../support/Paths";
 
 /** The directories a test installation mounts the compile's sources and output
  * under. Keep in sync with BuildJSCompile's COMPILE_SRC_DIR and COMPILE_OUT_DIR. */
-const INSTALL_MOUNTS = ["src", "build"];
+export const INSTALL_MOUNTS = ["src", "build"];
 
 /** Memo of {@link reportPathOf}, by compiled file (the node:test flavour asks
  * once per test). */
@@ -49,14 +51,16 @@ const reportPaths = new Map<string, string>();
  *   (`packages/x/src/Foo.test.ts`).
  * - A map entry naming the source by a path gives that path relative to the
  *   install, its mount (`src/`) stripped.
- * - With no map (a release build emits none), the compiled file's path relative
- *   to the install, its mount (`build/`) stripped.
+ * - With no map (a release build emits none), the source path the installation
+ *   records for the staged source of the compiled file's stem
+ *   ({@link stagedSourceOf}), else the compiled file's path relative to the
+ *   install, its mount (`build/`) stripped.
  */
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {
     const entry = getMapSource(file);
-    const reference = entry === undefined ? undefined : referenceOfEntry(entry);
+    const reference = entry === undefined ? stagedSourceOf(file)?.sourcePath : referenceOfEntry(entry);
     name =
       reference !== undefined ? reference.replace(/^\.\//, "") : stripMount(posixRelative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
@@ -80,12 +84,17 @@ function stripMount(relative: string): string {
  * Get where the source a compiled file was emitted from is staged, as an
  * absolute path, from its `.js.map`: the path a path entry names, or for a
  * reference the location the installation records for it
- * ({@link SOURCE_LOCATIONS_FILE}). Undefined where there is no map, or the
- * installation records no location for the reference.
+ * ({@link SOURCE_LOCATIONS_FILE}). With no map, the staged source of the
+ * compiled file's stem ({@link stagedSourceOf}). Undefined where neither names
+ * one.
  */
 export function sourcePathOf(compiled: string): string | undefined {
   const entry = getMapSource(compiled);
-  const reference = entry === undefined ? undefined : referenceOfEntry(entry);
+  if (entry === undefined) {
+    const staged = stagedSourceOf(compiled);
+    return staged === undefined ? undefined : path.resolve(installRoot(), staged.location);
+  }
+  const reference = referenceOfEntry(entry);
   if (reference === undefined) {
     return entry;
   }
@@ -109,6 +118,45 @@ export function withStagedSources(stack: string): string {
     const at = stagedSources().get(reference);
     return at === undefined ? frame : `${path.resolve(installRoot(), at)}:${line}:${column}`;
   });
+}
+
+/**
+ * Find the source the installation stages for a compiled file by stem: the
+ * source under the sources mount (`src/`) whose path, less its extension, is
+ * the compiled file's under the output mount (`build/`), and the source path
+ * the installation records it under ({@link SOURCE_LOCATIONS_FILE}).
+ * Undefined where it stages none.
+ */
+export function stagedSourceOf(compiled: string): { sourcePath: string; location: string } | undefined {
+  const [mount, ...rest] = posixRelative(installRoot(), compiled).split("/");
+  if (mount !== INSTALL_MOUNTS[1] || rest.length === 0) {
+    return undefined;
+  }
+  return sourcesByStem().get(stemOfPath(rest.join("/")));
+}
+
+let byStem: ReadonlyMap<string, { sourcePath: string; location: string }> | undefined;
+
+/** Get the installation's staged sources by their path under the sources
+ * mount, less its extension: the first by source path where two share one. */
+function sourcesByStem(): ReadonlyMap<string, { sourcePath: string; location: string }> {
+  if (byStem === undefined) {
+    const rows = new Map<string, { sourcePath: string; location: string }>();
+    for (const [sourcePath, location] of [...stagedSources()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
+      const [mount, ...rest] = location.split("/");
+      const stem = stemOfPath(rest.join("/"));
+      if (mount === INSTALL_MOUNTS[0] && rest.length > 0 && !rows.has(stem)) {
+        rows.set(stem, { sourcePath, location });
+      }
+    }
+    byStem = rows;
+  }
+  return byStem;
+}
+
+/** @return a `/`-separated path without its file name's final extension. */
+function stemOfPath(name: string): string {
+  return name.replace(/\.[^./]+$/, "");
 }
 
 let staged: ReadonlyMap<string, string> | undefined;
@@ -271,4 +319,70 @@ export function endAfterReport(status: number): never {
 /** @return the libuv requests this process still has in flight. */
 function pendingRequests(): string[] {
   return process.getActiveResourcesInfo().filter(name => /Req(Wrap|Callback|Promise)$/.test(name));
+}
+
+/** One stack frame's location: `file:line:column`, bare or parenthesized; the
+ * file a path or a `file:` URL, with a Windows drive where it has one. */
+const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?(?:\/?[A-Za-z]:)?[\\/][^():]+):(\d+):(\d+)\)?$/;
+
+/** A `fabr:` reference read as a path relative to a compiled file, either
+ * separator: as a location reported through a source map another transform
+ * chained names its source (`/w/build/tests/fabr:./tests/a.spec.ts`). */
+const REFERENCE_IN_PATH = /(?:^|[\\/])fabr:(?:\.[\\/])?(.+)$/;
+
+/** @return the source path the `fabr:` reference read as part of `file` names,
+ * `/`-separated, or undefined where `file` holds none. */
+export function referenceInPath(file: string): string | undefined {
+  const reference = REFERENCE_IN_PATH.exec(file);
+  return reference === null ? undefined : reference[1].split("\\").join("/");
+}
+
+/** One stack frame's location: `at <name> (<file>:<line>:<column>)` or bare. */
+const ANY_FRAME = /^\s*(at (?:.*? )?)\(?(.+?):(\d+):(\d+)\)?$/;
+
+/** A path through a `node_modules` directory, either separator. */
+const IN_NODE_MODULES = /[\\/]node_modules[\\/]/;
+
+/**
+ * Filter a stack to its frames in the code under test — those inside a
+ * dependency, and those with no file of their own, dropped — each naming the
+ * SOURCE position its compiled one came from, where the compiled file has a
+ * source map.
+ */
+export function framesOf(stack: string | undefined): string | undefined {
+  const frames = (stack ?? "")
+    .split("\n")
+    .filter(line => !IN_NODE_MODULES.test(line))
+    .flatMap(line => {
+      const frame = ANY_FRAME.exec(line);
+      const reference = frame === null ? undefined : referenceInPath(frame[2]);
+      if (frame !== null && reference !== undefined) {
+        const [, prefix, , lineNumber, column] = frame;
+        return [`${prefix}(${reference}:${lineNumber}:${column})`];
+      }
+      const located = FRAME_LOCATION.exec(line);
+      if (!located) {
+        return [];
+      }
+      const [, prefix, file, lineNumber, column] = located;
+      const compiled = file.startsWith("file://") ? fileURLToPath(file) : file;
+      const position = sourcePositionOf(compiled, Number(lineNumber), Number(column));
+      return [`${prefix}(${reportPathOf(compiled)}:${position.line}:${position.column})`];
+    });
+  return frames.length > 0 ? frames.join("\n") : undefined;
+}
+
+/** Map a compiled position to the source position (1-based) it came from, or
+ * keep the compiled position where the file has no usable source map. */
+function sourcePositionOf(compiled: string, line: number, column: number): { line: number; column: number } {
+  try {
+    const map = new SourceMap(JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8")) as SourceMapPayload);
+    const entry = map.findEntry(line - 1, column - 1) as { originalLine?: number; originalColumn?: number };
+    if (entry.originalLine !== undefined && entry.originalColumn !== undefined) {
+      return { line: entry.originalLine + 1, column: entry.originalColumn + 1 };
+    }
+  } catch {
+    /* No map, or not one node can read. */
+  }
+  return { line, column };
 }

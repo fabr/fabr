@@ -236,7 +236,7 @@ before the tests finish writes no file.
 A failed test run is cached like a passing one, so running the same commit again, as a CI retry
 does, reports the same failures without running the tests. To run them again, add
 `--retry-failed`. For a target whose tests are known to be flaky, declare it
-[`flaky`](/reference/js/testing/#flaky-and-unstable-tests) instead, so its failed test files are
+[`flaky`](/reference/js/testing/#flaky-and-unstable-tests) instead, so its failed tests are
 retried as part of the run.
 
 Each target's own report is also kept as `ctrf-report.json`, which `fabr cp` copies out, failures

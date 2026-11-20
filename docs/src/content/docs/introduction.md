@@ -129,8 +129,9 @@ produce the same output. Three things follow.
   requirements written in your build file and in the packages you use. Nothing needs recording,
   so nothing can drift.
 - **The cache is never an input.** Fabr keeps what it has built and downloaded in a cache, and
-  reuses a result whenever the inputs that produced it are unchanged. Deleting the cache changes
-  how long the next build takes and nothing else. It is at `~/Library/Caches/fabr` on macOS,
+  reuses a result whenever the inputs that produced it are unchanged. Deleting the cache, with
+  [`fabr cache purge`](/reference/command-line/#cache-purge), changes how long the next build
+  takes and nothing else. It is at `~/Library/Caches/fabr` on macOS,
   `~/.cache/fabr` on Linux and `%LOCALAPPDATA%\fabr` on Windows, or wherever `FABR_CACHE_DIR` says;
   keep it on a local disk rather than a network filesystem.
 

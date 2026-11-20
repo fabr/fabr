@@ -17,6 +17,9 @@
   "@fabr-build/plugin": {
     "libs": [
       "build/lib/JS.fabr"
+    ],
+    "optional_libs": [
+      "build/lib/BROWSER_TEST.fabr"
     ]
   },
   "peerDependencies": {

@@ -45,7 +45,10 @@ import {
   RuleResult,
   TargetContext,
   TEST_FLAKE_RETRIES,
+  TEST_FILE_PATTERN,
   TEST_NAME_PATTERN,
+  selectTestFiles,
+  testFilePathOf,
   toEnvironment,
   toFlakeRetries,
   toTestStability,
@@ -100,11 +103,36 @@ const COVERAGE_DIR = ".coverage";
  * classpath; nothing where no tests are declared.
  */
 export function runJavaTests(context: TargetContext, settings: IJavaTestSettings, inputs: IJavaTestInputs): Computable<RuleResult> {
-  const { tests, compile, runtime } = inputs;
+  const { tests } = inputs;
   if (tests.isEmpty()) {
     /* No tests declared: trivially green, with nothing to run. */
     return Computable.resolve(EMPTY_FILESET);
   }
+  /* The source files of the tests a run runs (TEST_FILE_PATTERN), as the
+   * runner's sources table names them; undefined for every test. Where none is
+   * selected, nothing is compiled or run. */
+  return context
+    .getGlobalString(TEST_FILE_PATTERN)
+    .then(pattern =>
+      pattern === "" ? undefined : [...selectTestFiles(tests, pattern)].map(([name]) => testFilePathOf(tests, name)).sort()
+    )
+    .then(selected =>
+      selected !== undefined && selected.length === 0
+        ? Computable.resolve(EMPTY_FILESET)
+        : runSelectedTests(context, settings, inputs, selected)
+    );
+}
+
+/**
+ * Make the test run's action as {@link runJavaTests} does, limited to the
+ * source files `selected` names, or every test where it is undefined.
+ */
+function runSelectedTests(
+  context: TargetContext,
+  settings: IJavaTestSettings,
+  { tests, compile, runtime, ...inputs }: IJavaTestInputs,
+  selected: string[] | undefined
+): Computable<RuleResult> {
   const classes = processorsOf(context).then(processors =>
     context.subTarget(
       "java_compile",
@@ -188,7 +216,8 @@ export function runJavaTests(context: TargetContext, settings: IJavaTestSettings
           argv,
           measured !== undefined,
           env,
-          trusted
+          trusted,
+          selected
         );
       });
     }
@@ -288,7 +317,7 @@ function sourcesTable(sets: readonly FileSet[]): Computable<string> {
           sources.map(({ set, name }, index) => {
             const declared = packageOf(texts[index]).replace(/\./g, "/");
             const fileName = path.posix.basename(name);
-            const sourcePath = (set.sourcePathOf(name) ?? name).replace(/^\.\//, "");
+            const sourcePath = testFilePathOf(set, name);
             return `${declared === "" ? fileName : `${declared}/${fileName}`}\t${sourcePath}\n`;
           })
         ),

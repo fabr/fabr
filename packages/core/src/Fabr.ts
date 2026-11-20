@@ -321,6 +321,27 @@ export function testOperation(config: BuildContext, refs: INameValue[]): Computa
   );
 }
 
+/**
+ * Build everything the build action of each of `refs` reads, under `config`'s
+ * operation, and perform none of the actions (the `build` verb on a target
+ * whose type only tests: everything its test run needs, short of running
+ * it). A target whose rule yields no one build action is built outright.
+ * Names are refused as for {@link buildOperation}: rejects where any name is
+ * refused, or where any target fails to build.
+ */
+export function prepareOperation(config: BuildContext, refs: INameValue[]): Computable<void> {
+  return requireAllDeclared(config, refs).then(() =>
+    Computable.forAll(
+      refs.map(ref =>
+        config
+          .getAction(ref)
+          .then(action => (action === undefined ? config.materialize(ref).then(sources => refuseNamespaces(sources)) : undefined))
+      ),
+      () => undefined
+    )
+  );
+}
+
 /** A name as written, and what it resolved to. */
 export interface ResolvedName {
   readonly title: string;

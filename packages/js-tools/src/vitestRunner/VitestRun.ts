@@ -26,12 +26,9 @@
  * target's dependencies, at the version the project chose.
  */
 
-import * as fs from "node:fs";
-import { SourceMap, SourceMapPayload } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
-import { reportPathOf, snapshotPathOf } from "../testRunner/Report";
+import { framesOf, reportPathOf, snapshotPathOf } from "../testRunner/Report";
 import { IRunnerOptions, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { posixRelative } from "../support/Paths";
 
@@ -158,49 +155,4 @@ const SNAPSHOT_MISMATCH = /^Snapshot `.*` mismatched$/;
  * (`fabr test -u`). */
 function withFabrRemedy(message: string): string {
   return SNAPSHOT_MISMATCH.test(message) ? `${message}. Run 'fabr test -u' to record the new value.` : message;
-}
-
-/** One stack frame's location: `file:line:column`, bare or parenthesized; the
- * file a path or a `file:` URL, with a Windows drive where it has one. */
-const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?(?:\/?[A-Za-z]:)?[\\/][^():]+):(\d+):(\d+)\)?$/;
-
-/** A path through a `node_modules` directory, either separator. */
-const IN_NODE_MODULES = /[\\/]node_modules[\\/]/;
-
-/**
- * Filter a stack to its frames in the code under test — those inside a
- * dependency, and those with no file of their own, dropped — each naming the
- * SOURCE position its compiled one came from, where the compiled file has a
- * source map.
- */
-export function framesOf(stack: string | undefined): string | undefined {
-  const frames = (stack ?? "")
-    .split("\n")
-    .filter(line => !IN_NODE_MODULES.test(line))
-    .flatMap(line => {
-      const located = FRAME_LOCATION.exec(line);
-      if (!located) {
-        return [];
-      }
-      const [, prefix, file, lineNumber, column] = located;
-      const compiled = file.startsWith("file://") ? fileURLToPath(file) : file;
-      const position = sourcePositionOf(compiled, Number(lineNumber), Number(column));
-      return [`${prefix}(${reportPathOf(compiled)}:${position.line}:${position.column})`];
-    });
-  return frames.length > 0 ? frames.join("\n") : undefined;
-}
-
-/** Map a compiled position to the source position (1-based) it came from, or
- * keep the compiled position where the file has no usable source map. */
-function sourcePositionOf(compiled: string, line: number, column: number): { line: number; column: number } {
-  try {
-    const map = new SourceMap(JSON.parse(fs.readFileSync(`${compiled}.map`, "utf8")) as SourceMapPayload);
-    const entry = map.findEntry(line - 1, column - 1) as { originalLine?: number; originalColumn?: number };
-    if (entry.originalLine !== undefined && entry.originalColumn !== undefined) {
-      return { line: entry.originalLine + 1, column: entry.originalColumn + 1 };
-    }
-  } catch {
-    /* No map, or not one node can read. */
-  }
-  return { line, column };
 }

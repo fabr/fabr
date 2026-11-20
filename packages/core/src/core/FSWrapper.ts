@@ -146,17 +146,100 @@ export function updateFileTime(filepath: string, time: Date): Computable<void> {
   });
 }
 
-/** Remove `filepath` and everything under it; absence is success. */
+/** Remove `filepath` and everything under it, a read-only directory among it
+ * included ({@link setDirectoriesWritable}); absence is success. */
 export function deleteTree(filepath: string): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
-    fs.rm(filepath, { recursive: true, force: true }, err => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve();
-      }
-    });
+    const remove = (retried: boolean): void =>
+      fs.rm(filepath, { recursive: true, force: true }, err => {
+        if (err && !retried) {
+          /* A read-only directory refuses removal of its entries (reported as
+           * EACCES, or on macOS as ENOTEMPTY for the directory above). */
+          setDirectoriesWritable(filepath, true);
+          remove(true);
+        } else if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    remove(false);
   });
+}
+
+/** Remove `filepath` and everything under it, as {@link deleteTree} does, now.
+ * Throws where it cannot. */
+export function deleteTreeSync(filepath: string): void {
+  try {
+    fs.rmSync(filepath, { recursive: true, force: true });
+  } catch {
+    /* Refused for a read-only directory, as {@link deleteTree} retries. */
+    setDirectoriesWritable(filepath, true);
+    fs.rmSync(filepath, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Make every directory under `dir`, `dir` itself included, read-only, so that
+ * no entry can be added, removed or renamed: what keeps a tree as it was made
+ * ({@link setDirectoriesWritable} undoes it). Files and symlinks are left as
+ * they are. Does nothing on Windows, where a directory's read-only attribute
+ * does not stop changes to its entries but does stop its removal.
+ */
+export function setDirectoriesReadOnly(dir: string): Computable<void> {
+  if (process.platform === "win32") {
+    return Computable.resolve(undefined);
+  }
+  return Computable.from<fs.Dirent[]>((resolve, reject) =>
+    fs.readdir(dir, { withFileTypes: true }, (err, entries) => (err ? reject(err) : resolve(entries)))
+  )
+    .then(entries =>
+      mapComputable(
+        entries.filter(entry => entry.isDirectory()),
+        entry => setDirectoriesReadOnly(path.join(dir, entry.name))
+      )
+    )
+    .then(() =>
+      Computable.from<void>((resolve, reject) =>
+        fs.stat(dir, (statErr, stat) =>
+          statErr ? reject(statErr) : fs.chmod(dir, stat.mode & 0o7777 & ~0o222, err => (err ? reject(err) : resolve()))
+        )
+      )
+    );
+}
+
+/**
+ * Make every directory under `dir`, `dir` itself included, writable by its
+ * owner (`writable`), or none of them writable by anyone (as
+ * {@link setDirectoriesReadOnly} does, now). Files and symlinks are left as
+ * they are. Does nothing where `dir` is not a directory, or on Windows.
+ */
+export function setDirectoriesWritable(dir: string, writable: boolean): void {
+  if (process.platform === "win32") {
+    return;
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(dir);
+  } catch {
+    return;
+  }
+  if (!stat.isDirectory()) {
+    return;
+  }
+  /* Writable before descending, read-only after, so the walk can always list
+   * and change what is beneath. */
+  if (writable) {
+    fs.chmodSync(dir, (stat.mode & 0o7777) | 0o700);
+  }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      setDirectoriesWritable(path.join(dir, entry.name), writable);
+    }
+  }
+  if (!writable) {
+    fs.chmodSync(dir, stat.mode & 0o7777 & ~0o222);
+  }
 }
 
 export function rename(from: string, to: string): Computable<void> {

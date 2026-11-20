@@ -27,6 +27,7 @@ can be piped or redirected on its own.
 | [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
 | [`sync`](#sync) | Publish packages and files. |
 | [`build-server`](#build-server) | Serve the project's targets to an editor. |
+| [`cache purge`](#cache-purge) | Remove fabr's cache. |
 | [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
 | `help [command]` | Print the commands, or one command's options. `fabr <command> --help` does the same. |
 
@@ -66,8 +67,11 @@ error: to get at particular files, use `ls`, `cat` or `cp`. fabr checks every na
 so if any of them is wrong, nothing is built.
 
 A target that can only be run, such as a `serve` target, builds everything its program needs
-without starting it, so a later `fabr run` starts at once. A target that can only be tested is an
-error that points at `fabr test`.
+without starting it, so a later `fabr run` starts at once. A target that can only be tested, such
+as a `js_test` or a `browser_test`, builds everything its test run needs (the compiled tests,
+the packages, the test runner and, for a browser test, its browser) without running any test, so a
+later `fabr test` only runs them. In CI, one job can build every suite and hand fabr's cache to the
+jobs that run them.
 
 When nothing has changed since the last build, fabr prints `Already up to date`. This line and the `Built …` line end with how long the build took.
 
@@ -82,7 +86,9 @@ project directory. Targets are named as for [`build`](#build).
 fabr test mylib
 fabr test -u mylib    # also record new and changed snapshots
 fabr test -t 'dates parse' mylib    # run only the tests whose names match
+fabr test -T 'src/dates/**' mylib   # run only the test files whose paths match
 fabr test --coverage mylib    # also measure code coverage
+fabr test --artifacts=out e2e  # and copy out the traces and screenshots the runs kept
 fabr test --retry-failed mylib    # run failed tests again rather than report the cached failure
 fabr test --report results.xml --format junit mylib    # also write the results as JUnit XML
 ```
@@ -101,7 +107,9 @@ with `-w`.
 |---|---|
 | `-u` | New and changed snapshots are written back into your source tree, after a run in which no test failed. Each file is named as it is written. |
 | `-t <pattern>` | Only the tests whose names match the regular expression are run. If no test in any of the targets matches, the command fails with `No test's name matches the pattern '<pattern>'`. |
+| `-T <pattern>` | Only the test files whose paths in your project match the glob pattern are run. If no test file in any of the targets matches, the command fails with `No test file matches the pattern '<pattern>'`. See [Running tests](/reference/js/testing/#running-tests) and, for Java, [Running some of the tests](/reference/java/testing/#running-some-of-the-tests). |
 | `--coverage` | The tests are measured for code coverage: a summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info` with `--coverage=<dir>`. |
+| `--artifacts=<dir>` | The files the test runs kept of their tests, such as a [browser test's](/reference/js/browser-testing/#traces-and-screenshots) traces and screenshots, are copied into `<dir>/<target>/`, whether or not tests failed, replacing what that directory held. |
 | `--report <file>` | The results of every target tested are written to one file, as a [CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test results view. See [Continuous integration](/guides/ci/#test-results). |
 
 Paths are relative to the current directory. The coverage report and `--report` file are written
@@ -430,8 +438,9 @@ what the target sets, such as a test's `test_env`), and the directory is removed
 fabr shell docs_site
 ```
 
-A test run is a build step too: name the target under the `test` operation to get its compiled
-tests and test runner, with the shell opened in the compiled tree. The step runs the runner once
+A test run is a build step too. For a target that can only be tested, such as a `js_test`,
+`fabr shell` opens its test run; for a `js_package`, name it under the `test` operation. The shell
+opens in the compiled tests, beside the test runner. The step runs the runner once
 per test file, so the first few commands are printed; run one of them to repeat a single file's
 run.
 
@@ -547,6 +556,22 @@ Writes everything the other `list-` commands report, as one JSON document. The
 generated from it. `--include-optional` also reads every
 [optional `.fabr` file](/reference/syntax/#plugins-and-includes) of the plugins the project uses, as though
 the project included each one, so that what they declare is listed too.
+
+### `cache purge`
+
+Removes fabr's cache: everything it has built and downloaded. The next build fetches and builds
+again, and produces the same results. The cache is at `~/Library/Caches/fabr` on macOS,
+`$XDG_CACHE_HOME/fabr` (`~/.cache/fabr` by default) on Linux and `%LOCALAPPDATA%\fabr` on
+Windows, or wherever `FABR_CACHE_DIR` says.
+
+```sh
+fabr cache purge
+```
+
+Use it rather than `rm -rf`: on macOS and Linux, fabr makes the directories of the installed trees
+in its cache read-only, so that a program running from one can't change what other builds use,
+and `rm -rf` can't remove their contents. Where another fabr process is using the cache, nothing is removed
+and the command fails, naming the processes; stop them and run it again.
 
 ## Options
 

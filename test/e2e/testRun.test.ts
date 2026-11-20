@@ -54,6 +54,20 @@ function runMarker(): { marker: string; ran(): string[] } {
   };
 }
 
+/** The declarations a browser test fixture shares: `BROWSER_TEST.fabr`, by a
+ * pattern matching it in the devchain's package and in fabr's own; a stand-in
+ * runner for Playwright's, `runner:run.js`; and a local stand-in browser,
+ * `fakebrowser:chrome`, a program whose one entry is named `chrome`, so no
+ * browser is fetched. */
+const BROWSER_FIXTURE =
+  "include @fabr-build/js:**/BROWSER_TEST.fabr;\n" +
+  "js_script fixture_runner { deps = runner:**; entry = runner:run.js; }\n" +
+  "JS_PLAYWRIGHT_RUNNER = fixture_runner;\n" +
+  "script chrome { entry = fakebrowser:chrome; }\n";
+
+/** The stand-in browser's program, never run. */
+const FAKE_BROWSER = "#!/bin/sh\nexit 0\n";
+
 describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
     ...STUB_TSC,
@@ -205,6 +219,175 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
       expect(result.stderr).to.contain("2 tests passed");
       expect(ran(), `the ${run} run runs every file`).to.deep.equal(["a", "b"]);
     }
+  });
+
+  it("builds everything a test target's run needs on `fabr build`, running no test", () => {
+    const { marker, ran } = runMarker();
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_test prepared {\n  tests = src:**/*.test.ts;\n  env = { MARKER = '${marker}'; }\n}\n`,
+      "src/a.test.ts": 'require("fs").appendFileSync(process.env.MARKER, "a\\n");\ndescribe("a", () => { it("is", () => {}); });\n',
+    };
+    const built = runFabr(files, ["-DJS_TARGET=es2020", "build", "prepared"]);
+    expect(built.status, built.stderr).to.equal(0);
+    expect(built.stderr).to.contain("Compiling tests for prepared");
+    expect(built.stderr).not.to.contain("Testing prepared");
+    expect(ran()).to.deep.equal([]);
+    /* The run then only runs the tests: the compile is the one `build` made. */
+    const tested = runFabr(files, ["-DJS_TARGET=es2020", "test", "prepared"]);
+    expect(tested.status, tested.stderr).to.equal(0);
+    expect(tested.stderr).not.to.contain("Compiling tests for prepared");
+    expect(ran()).to.deep.equal(["a"]);
+  });
+
+  it("keeps the files a runner keeps of its tests with the result, and copies them out with --artifacts", () => {
+    /* A runner for a framework whose runs keep files (Playwright's), honouring
+     * the contract: it is given `--artifacts=<dir>`, keeps a file there, and
+     * attaches it to its failed test by its path within the directory. */
+    const runner = `const fs = require("fs"), path = require("path");
+const args = process.argv.slice(2);
+const option = name => (args.find(a => a.startsWith("--" + name + "=")) || "").slice(name.length + 3);
+fs.mkdirSync(path.join(option("artifacts"), "failed"), { recursive: true });
+fs.writeFileSync(path.join(option("artifacts"), "failed", "trace.txt"), "what happened\\n");
+fs.writeFileSync(option("report"), JSON.stringify({ results: { tool: { name: "fixture" }, summary:
+  { tests: 1, passed: 0, failed: 1, pending: 0, skipped: 0, other: 0, start: 0, stop: 1 },
+  tests: [{ name: "fails", status: "failed", duration: 1, message: "on purpose",
+    attachments: [{ name: "trace", contentType: "text/plain", path: "failed/trace.txt" }] }] } }));
+`;
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        BROWSER_FIXTURE +
+        "browser_test browser {\n  tests = src:**/*.spec.ts;\n  browser = chrome;\n}\n",
+      "runner/run.js": runner,
+      "fakebrowser/chrome": FAKE_BROWSER,
+      "src/a.spec.ts": "exports.value = 1;\n",
+      /* Left by an earlier run: the target's directory is emptied first. */
+      "out/browser/stale.txt": "from an earlier run\n",
+    };
+    const kept = "out/browser/failed/trace.txt";
+    for (const run of ["first", "cached"]) {
+      const result = runFabr(files, ["-DJS_TARGET=es2020", "test", "--artifacts=out", "browser"], [kept, "out/browser/stale.txt"]);
+      expect(result.status, `${run}: ${result.stderr}`).to.not.equal(0);
+      expect(result.stderr).to.contain("Copied 1 test artifact(s) to out");
+      expect(result.files?.[kept], `${run}: ${result.stderr}`).to.equal("what happened\n");
+      expect(result.files?.["out/browser/stale.txt"], run).to.equal(undefined);
+    }
+  });
+
+  it("gives a runner that schedules the files itself every file in one invocation, its browser and its retries", () => {
+    /* The runner records each invocation's retries option and test files. */
+    const { marker, ran } = runMarker();
+    const runner = `const fs = require("fs");
+const args = process.argv.slice(2);
+const report = args.find(a => a.startsWith("--report=")).slice("--report=".length);
+const retries = args.find(a => a.startsWith("--retries="));
+const browser = args.filter(a => a.startsWith("--browser")).map(a => a.replace(/=[^=]*$/, m => fs.existsSync(m.slice(1)) ? "=<executable>" : m));
+const files = args.filter(a => !a.startsWith("-"));
+fs.appendFileSync(process.env.MARKER, [retries, ...browser, ...files].join(" ") + "\\n");
+fs.writeFileSync(report, JSON.stringify({ results: { tool: { name: "fixture" }, summary:
+  { tests: 1, passed: 1, failed: 0, pending: 0, skipped: 0, other: 0, start: 0, stop: 1 },
+  tests: [{ name: "settles", status: "passed", duration: 1 }] } }));
+`;
+    const files = (stability: string): Record<string, string> => ({
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        BROWSER_FIXTURE +
+        `browser_test browser {\n  tests = src:**/*.spec.ts;\n  browser = chrome;\n  viewport = 400x800;\n  stability = ${stability};\n  env = { MARKER = '${marker}'; }\n}\n`,
+      "runner/run.js": runner,
+      "fakebrowser/chrome": FAKE_BROWSER,
+      "src/a.spec.ts": "exports.a = 1;\n",
+      "src/b.spec.ts": "exports.b = 1;\n",
+    });
+    const flaky = runFabr(files("flaky"), ["-DJS_TARGET=es2020", "-DTEST_FLAKE_RETRIES=3", "test", "browser"]);
+    expect(flaky.status, flaky.stderr).to.equal(0);
+    /* The browser is linked beside the runner and named by its executable, with its settings. */
+    expect(ran()).to.deep.equal([
+      "--retries=3 --browser=browser=chromium --browser-executable=browser=<executable> --browser-viewport=browser=400x800 a.spec.js b.spec.js",
+    ]);
+    const selected = runFabr(files("stable"), ["-DJS_TARGET=es2020", "test", "-T", "**/b.spec.ts", "browser"]);
+    expect(selected.status, selected.stderr).to.equal(0);
+    expect(ran()).to.deep.equal([
+      "--retries=0 --browser=browser=chromium --browser-executable=browser=<executable> --browser-viewport=browser=400x800 b.spec.js",
+    ]);
+  });
+
+  it("runs a browser test's framework interactively under fabr run, the caller's arguments last", () => {
+    /* The runner records where it starts, whether the browser it is given is there, and its arguments from --interactive on. */
+    const { marker, ran } = runMarker();
+    const runner = `const fs = require("fs");
+const args = process.argv.slice(2);
+const executable = args.find(a => a.startsWith("--browser-executable=")).replace(/^(?:[^=]*=){2}/, "");
+fs.appendFileSync(process.env.MARKER, [fs.existsSync("build/a.spec.js"), fs.existsSync(executable), ...args.slice(args.indexOf("--interactive"))].join(" ") + "\\n");
+`;
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          BROWSER_FIXTURE +
+          `browser_test browser {\n  tests = src:**/*.spec.ts;\n  browser = chrome;\n  env = { MARKER = '${marker}'; }\n}\n`,
+        "runner/run.js": runner,
+        "fakebrowser/chrome": FAKE_BROWSER,
+        "src/a.spec.ts": "exports.a = 1;\n",
+      },
+      ["-DJS_TARGET=es2020", "run", "browser", "--headed"]
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    /* Started in the installation, the browser reached through the tree pool beside it. */
+    expect(ran()).to.deep.equal(["true true --interactive build a.spec.js -- --headed"]);
+  });
+
+  it("refuses a browser test framework on a target that supplies no browser", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_test e2e {\n  framework = playwright;\n  tests = src:**/*.spec.ts;\n}\n",
+        "src/a.spec.ts": "exports.a = 1;\n",
+      },
+      ["-DJS_TARGET=es2020", "test", "e2e"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("'playwright' tests drive a browser, which a browser_test supplies");
+  });
+
+  it("refuses a browser setting its framework does not run, and a second browser", () => {
+    const refused = (framework: string, settings: string): string => {
+      const result = runFabr(
+        {
+          ...STUB_TSC,
+          "PROJECT.fabr":
+            "plugin @fabr-build/js;\n\n" +
+            STUB_TSC_CONFIG +
+            BROWSER_FIXTURE +
+            "script other { entry = fakebrowser:chrome; }\n" +
+            `browser_test e2e {\n  framework = ${framework};\n  tests = src:**/*.spec.ts;\n  ${settings}\n}\n`,
+          "runner/run.js": "",
+          "fakebrowser/chrome": FAKE_BROWSER,
+          "src/a.spec.ts": "exports.a = 1;\n",
+        },
+        ["-DJS_TARGET=es2020", "test", "e2e"]
+      );
+      expect(result.status, result.stderr).to.not.equal(0);
+      return result.stderr;
+    };
+    expect(refused("cypress", "browser = playwright/chromium;")).to.contain(
+      "'playwright/chromium' is a Playwright build, which this framework does not run"
+    );
+    expect(refused("cypress", 'browser = chrome; device = "iPhone 15";')).to.contain("this framework runs no devices");
+    expect(refused("playwright", "browser = chrome other;")).to.contain("a browser test runs in one browser");
+    expect(refused("playwright", "browser = chrome; viewport = wide;")).to.contain("'wide' is not a viewport");
   });
 
   it("refuses a test stability it does not know, naming those there are", () => {
@@ -641,6 +824,25 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(none.stderr).to.contain("No test's name matches the pattern 'nothing like it'");
   });
 
+  it("runs only the test files whose source paths match -T, composing with -t, and fails where none does", () => {
+    const failing = 'const assert = require("node:assert");\ndescribe("b", () => { it("fails", () => { assert.equal(1, 2); }); });\n';
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_test suite { tests = src:**/*.test.ts; }\n",
+      "src/dates/a.test.ts": 'describe("a", () => { it("parses", () => {}); it("formats", () => {}); });\n',
+      "src/b.test.ts": failing,
+    };
+    const matched = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "src/dates/**", "suite"]);
+    expect(matched.status, matched.stderr).to.equal(0);
+    expect(matched.stderr).to.contain("2 tests passed (filtered)");
+    const both = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "**/a.test.ts", "-t", "parses", "suite"]);
+    expect(both.status, both.stderr).to.equal(0);
+    expect(both.stderr).to.contain("1 test passed (filtered)");
+    const none = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "**/nothing*", "suite"]);
+    expect(none.status).to.not.equal(0);
+    expect(none.stderr).to.contain("No test file matches the pattern '**/nothing*'");
+  });
+
   it("runs the tests with the declared environment, and nothing else", () => {
     /* One fixture, both targetdefs: a js_package's `test_env` and a js_test's
      * `env`. Nothing of fabr's own environment arrives, bar the runner's
@@ -867,7 +1069,7 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.status).to.equal(0);
   });
 
-  it("reads a test's files as its results, and refuses to build it", () => {
+  it("reads a test's files as its results", () => {
     const files = {
       ...STUB_TSC,
       "PROJECT.fabr": "plugin @fabr-build/js;\n\n" + STUB_TSC_CONFIG + "\njs_test standalone {\n  tests = it:**/*.test.ts;\n}\n",
@@ -877,8 +1079,5 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     const listed = runFabr(files, ["-DJS_TARGET=es2020", "ls", "standalone"]);
     expect(listed.status, listed.stderr).to.equal(0);
     expect(listed.stdout.split("\n")).to.include("ctrf-report.json");
-    const built = runFabr(files, ["-DJS_TARGET=es2020", "build", "standalone"]);
-    expect(built.status).not.to.equal(0);
-    expect(built.stderr).to.contain("try 'fabr test standalone'");
   });
 });

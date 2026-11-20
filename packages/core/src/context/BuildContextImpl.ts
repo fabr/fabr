@@ -67,7 +67,17 @@ import {
   SelectableRule,
   SubTargetInputs,
 } from "../rules/Types";
-import { BUILD_OPERATION, Constraints, COVERAGE, HOST, operationOf, RUN_OVERRIDE, TARGET } from "../model/Constraints";
+import { compatibilityReader } from "../resolver/Compatibility";
+import {
+  BUILD_OPERATION,
+  COMPATIBILITY_OPERATION,
+  Constraints,
+  COVERAGE,
+  HOST,
+  operationOf,
+  RUN_OVERRIDE,
+  TARGET,
+} from "../model/Constraints";
 import { TaskDescription } from "../model/BuildEvents";
 import { ExecutionContext } from "../model/ExecutionContext";
 import {
@@ -179,7 +189,17 @@ function provided(
   url?: string,
   credential?: Credential
 ): ReturnType<RepositoryProvider> {
-  return implementation.then(made => requirements.then(resolved => made.provider(context, url, credential, resolved)));
+  return implementation.then(made =>
+    requirements.then(resolved =>
+      made
+        .provider(context, url, credential, resolved)
+        .then(repository =>
+          context.operation === COMPATIBILITY_OPERATION && isRepositoryReader(repository)
+            ? compatibilityReader(repository)
+            : repository
+        )
+    )
+  );
 }
 
 /**
@@ -1787,7 +1807,7 @@ export class BuildContextImpl implements InternalBuildContext {
    * target's requirements are read from its resolution where it has been
    * resolved, and are resolved here otherwise. A name that is no target throws.
    */
-  private actionOfTarget(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
+  public actionOfTarget(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     const def = this.lookupDecl(name);
     if (def?.kind !== DeclKind.Target) {
       throw new FabrError(`'${name}' is not a target that runs a command`);
@@ -1796,6 +1816,11 @@ export class BuildContextImpl implements InternalBuildContext {
       /* A value is content: nothing of it is built. */
       if (rule.value) {
         return undefined;
+      }
+      if (rule.action !== undefined) {
+        return rule.action(context).catch(err => {
+          throw context.failure(err);
+        });
       }
       const resolved = this.resolvedTargets.get(declName(context.target))?.then(target => target.resolved);
       const applied = (parts?: ResolvedRequirements): Computable<BuildAction | undefined> =>
@@ -2247,6 +2272,7 @@ export function blockRuleDefinition(block: RuleBlockDefinition): RuleDefinition 
     targetProperties: block.targetProperties,
     requirements: context => Computable.resolve(undefined).then(() => scopeOf(context).requirements(context.stack)),
     evaluate: (context, requirements) => scopeOf(context).evaluate(requirements),
+    action: context => scopeOf(context).action(context.stack),
   };
 }
 
@@ -2350,6 +2376,29 @@ class RuleScope {
     return requirements.resolved.sources.has(EXTENDS_KEY)
       ? requirements.materialize(EXTENDS_KEY)
       : requirements.materialize(RESULT_KEY).then((sets): FileSet => (sets.length === 1 ? sets[0] : FileSet.unionAll(...sets)));
+  }
+
+  /**
+   * Get the build action building the matched target performs, not performed:
+   * where the result is one whole target, that target's, in the configuration
+   * the block resolves it in; otherwise undefined.
+   */
+  public action(stack?: IDependencyStack): Computable<BuildAction | undefined> {
+    return Computable.forAll([this.lookupBlockRequirements(stack), this.resultConfiguration()] as const, ({ result }, constraints) => {
+      const whole = soleWholeTarget([...result]);
+      if (whole === undefined) {
+        return undefined;
+      }
+      /* The block looks its result up in its unresolved configuration, where a
+       * target of the block is its node; the action is the one the resolved
+       * configuration builds. A target outside the block is its own
+       * configuration's. */
+      const source =
+        whole.source instanceof BuildContextImpl && !(whole.source instanceof ScopedBuildContext && whole.source.unresolved)
+          ? whole.source
+          : this.config(constraints);
+      return source.actionOfTarget(whole.name, stack);
+    });
   }
 
   /** Get the matched target's requirements as resolved, which hold what each target of the block the result reaches requires. */

@@ -299,6 +299,7 @@ targetdef js_package {
     # Environment variables for the test processes, which run with no others.
     test_env = MAP;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
+    # Tests that drive a browser are a `browser_test`'s.
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
     # How far the tests' results are trusted: `stable`, `flaky` (a failed test
     # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
@@ -407,6 +408,7 @@ targetdef js_test {
     # test run: `dom` here is the DOM's types alone.
     compile_deps = PACKAGES;
     # The test framework the tests are written for: `node`, `jest` or `vitest`.
+    # Tests that drive a browser are a `browser_test`'s.
     framework = STRING default ${JS_TEST_FRAMEWORK};
     # How far the tests' results are trusted: `stable`, `flaky` (a failed test
     # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
@@ -486,16 +488,23 @@ targetdef node_distribution {
 }
 
 #
-# Web browsers, by their Can I Use names (`safari`, `ios_saf`, `chrome`,
-# `and_chr`, `firefox`, `edge`). `@browser:safari:17.2` is Safari 17.2 or
-# later; `@browser:baseline:2023` is every core browser at the version that
-# supports all of Baseline 2023. A browser has no files: a target requires one
-# to say its output must run there. fabr declares `@browser` for you.
+# Web browsers. Read under `compatibility`, as `BROWSER_TARGET` is, a browser is
+# a runtime the output must run in, by its Can I Use name (`safari`, `ios_saf`,
+# `chrome`, `and_chr`, `firefox`, `edge`): `@browser:safari:17.2` is Safari 17.2
+# or later, and `@browser:baseline:2023` every core browser at the version that
+# supports all of Baseline 2023. Read any other way, it is a browser fabr
+# fetches: `@browser:chrome:156` is the first Chrome for Testing build on
+# Chrome 156's release branch, and under `run` the browser itself. fabr declares `@browser`
+# for you.
 #
 targetdef browser_repository {
     # The browser data packages: `caniuse-lite`'s browser releases and
     # `baseline-browser-mapping`'s Baseline years.
     data = REQUIRED FILES;
+    # Where Chrome for Testing publishes its version list,
+    # `known-good-versions-with-downloads.json`, which names each build's
+    # archive.
+    chrome_url = STRING default "https://googlechromelabs.github.io/chrome-for-testing";
 }
 
 #
@@ -695,6 +704,25 @@ default js_script JS_JEST_RUNNER {
 #
 default js_script JS_VITEST_RUNNER {
     entry = @fabr-build/js-tools:fabr-vitest-runner;
+}
+
+#
+# The program a `browser_test` (`BROWSER_TEST.fabr`) runs its tests with under
+# the `playwright` framework, invoked as `JS_NODE_TEST_RUNNER` is, with its
+# browser linked beside it, and given `--artifacts=<dir>` for the files it
+# keeps of its tests, which each test's CTRF `attachments` name within it.
+#
+default js_script JS_PLAYWRIGHT_RUNNER {
+    entry = @fabr-build/js-tools:fabr-playwright-runner;
+}
+
+#
+# The program a `browser_test` runs its tests with under the `cypress`
+# framework, invoked as `JS_PLAYWRIGHT_RUNNER` is, with its browser and the
+# Cypress app linked beside it.
+#
+default js_script JS_CYPRESS_RUNNER {
+    entry = @fabr-build/js-tools:fabr-cypress-runner;
 }
 
 #

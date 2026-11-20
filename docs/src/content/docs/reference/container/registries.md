@@ -228,7 +228,8 @@ token for Sigstore, each image of a public repository is pushed with a signed
 [SLSA provenance](https://slsa.dev/spec/v1.0/provenance) statement: it says the image, by its
 digest, was built by this workflow run or job, from this repository at this commit. It is signed
 with [Sigstore](https://www.sigstore.dev/) and recorded in its public transparency log, so an image
-from a private repository is pushed without one.
+from a private repository is pushed without one. `fabr sync` marks each image pushed with one, on its
+line: `✓ Publishing @ghcr:acme/app:1.4.2 [provenance] (8.1s)`.
 
 The statement is attached to the image in the registry, as GitHub's `attest-build-provenance` and
 `cosign attest` attach one: as an OCI artifact whose subject is the image, holding the Sigstore

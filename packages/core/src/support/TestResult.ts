@@ -22,6 +22,7 @@ import { FileSet, IFile } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
 import { FabrError, TestsFailedError } from "../core/Errors";
+import { globMatcher } from "./Glob";
 
 /*
  * The test report, the document a test runner writes and a test target
@@ -57,7 +58,22 @@ export interface ITestResult {
   flaky?: boolean;
   /** How many further runs of the test's file were made after the first, where any were. */
   retries?: number;
+  /** The files the run kept of the test (a trace, a screenshot), each named
+   * relative to the report: under {@link TEST_ARTIFACTS_DIR} in a target's. */
+  attachments?: ITestAttachment[];
 }
+
+/** A file a test run kept of a test, as CTRF names one. */
+export interface ITestAttachment {
+  name: string;
+  contentType: string;
+  path: string;
+}
+
+/** The directory of a test target's result that holds the files its run kept
+ * of its tests ({@link ITestResult.attachments}), each named as its attachment
+ * names it. */
+export const TEST_ARTIFACTS_DIR = "artifacts";
 
 export interface ITestSummary {
   tests: number;
@@ -290,6 +306,41 @@ function isCtrfReport(document: unknown): document is ITestReport {
     Array.isArray(tests) &&
     tests.every(isJsonObject)
   );
+}
+
+/** @return the test files among `tests` whose source path, relative to the
+ * project (their name where they have none), the glob `pattern` matches; all
+ * of them where `pattern` is empty. */
+export function selectTestFiles(tests: FileSet, pattern: string): FileSet {
+  if (pattern === "") {
+    return tests;
+  }
+  const matches = globMatcher(pattern);
+  return tests.remap(name => (matches(testFilePathOf(tests, name)) ? name : undefined));
+}
+
+/** @return the path in the project of the file `name` of `tests`, as test
+ * results name it: its source path without the leading `./`, or `name` where
+ * it has none. */
+export function testFilePathOf(tests: FileSet, name: string): string {
+  return (tests.sourcePathOf(name) ?? name).replace(/^\.\//, "");
+}
+
+/** @return the files the test runs among `sources` kept of their tests: those
+ * under {@link TEST_ARTIFACTS_DIR}, named within it. */
+export function getTestArtifacts(sources: SourceRef[]): FileSet {
+  const prefix = `${TEST_ARTIFACTS_DIR}/`;
+  const files = new Map<string, IFile>();
+  for (const source of sources) {
+    if (source instanceof FileSet) {
+      for (const [name, file] of source) {
+        if (name.startsWith(prefix)) {
+          files.set(name.slice(prefix.length), file);
+        }
+      }
+    }
+  }
+  return new FileSet(files);
 }
 
 /** @return the failure a test report states, or undefined where every test passed. */

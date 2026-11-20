@@ -96,6 +96,13 @@ export const UPDATE_EXPECTATIONS = "update";
 export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
 
 /**
+ * The property holding the glob pattern selecting the test files a test run
+ * runs: those whose source path, relative to the project, it matches. Empty
+ * (the default, declared in STD.fabr) runs them all. `fabr test -T` sets it.
+ */
+export const TEST_FILE_PATTERN = "TEST_FILE_PATTERN";
+
+/**
  * The property holding how many further runs a failed test file of a target
  * whose stability is `flaky` gets (2, the default, declared in STD.fabr).
  */
@@ -128,6 +135,15 @@ export const DOC_OPERATION = "doc";
 /** The `sources` operation: the source tree a target is built from, or the
  * sources a registry publishes beside a package. */
 export const SOURCES_OPERATION = "sources";
+
+/**
+ * The `compatibility` operation: a reference names a runtime the output must
+ * be compatible with, at its floor (`@browser:chrome:120`, Chrome 120 and
+ * newer). References read under it combine by union, so the lowest version
+ * required of each package is selected, and nothing is fetched (see
+ * {@link compatibilityReader}).
+ */
+export const COMPATIBILITY_OPERATION = "compatibility";
 
 /**
  * @return true if a registry's reference under `operation` is answered with
@@ -229,6 +245,10 @@ export const BUILD_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "build" });
 /** The override `BUILD_OPERATION=run`, to resolve a target to run it. It
  *  does not set TARGET to HOST; TargetContext.runOverrides does both. */
 export const RUN_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: "run" });
+
+/** The override `BUILD_OPERATION=compatibility`, to read references as the
+ *  runtimes the output must be compatible with (see {@link COMPATIBILITY_OPERATION}). */
+export const COMPATIBILITY_OVERRIDE = Constraints.of({ [BUILD_OPERATION]: COMPATIBILITY_OPERATION });
 
 /** The override `BUILD_OPERATION=files`, to read a dependency's output files
  *  only (see {@link FILES_OPERATION}). */

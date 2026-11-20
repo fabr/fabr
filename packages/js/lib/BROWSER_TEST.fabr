@@ -1,0 +1,76 @@
+#
+# Browser test suites: tests that drive a browser, written for a browser test
+# framework (`playwright`, Playwright Test, or `cypress`). A project uses them with
+# `include @fabr-build/js:lib/BROWSER_TEST.fabr;`.
+#
+#     E2E = {
+#       tests = e2e:**/*.spec.ts;
+#       deps = e2e:**/*.ts @npm:@playwright/test:1.64.0 @npm:@types/node:22.15.3;
+#       base_url = ${E2E_URL};
+#       expectations = e2e:**/*-snapshots/**;
+#     }
+#     browser_test desktop { E2E; browser = playwright/chromium; }
+#     browser_test mobile { E2E; browser = playwright/webkit; device = "iPhone 15"; }
+#
+# A source named `playwright.config` (under `playwright`) or `cypress.config`
+# (under `cypress`) at the root of the source tree is the suite's config.
+#
+
+#
+# The browser test framework a project's browser tests are written for:
+# `playwright` or `cypress`. A target overrides it with its `framework`
+# property.
+#
+default BROWSER_TEST_FRAMEWORK = playwright;
+
+targetdef browser_test {
+    # The browser test framework the tests are written for: `playwright` or
+    # `cypress`.
+    framework = STRING default ${BROWSER_TEST_FRAMEWORK};
+    # The test files. Every source file here is run as a test, so helpers, the
+    # config and the files of a setup project go in `deps`.
+    tests = FILES;
+    # Packages the tests import, `@playwright/test` or `cypress` among them,
+    # and source files to compile with them that aren't themselves tests.
+    deps = PACKAGES;
+    # Packages the tests are compiled against alone: `dom`, for code that runs
+    # in the page.
+    compile_deps = PACKAGES;
+    # The URL the tests run against: under `playwright`, `use.baseURL` in every
+    # project of the config; under `cypress`, `baseUrl`.
+    base_url = STRING default "";
+    # The browser the tests run in: a browser fabr fetches
+    # (`@browser:chrome:156`) or, under `playwright`, a `playwright/<name>`
+    # build of `chromium`, `firefox` or `webkit`. Unset, the framework's own
+    # default: Playwright's Chromium, or Cypress's Electron.
+    browser = FILES;
+    # The page's size, `<width>x<height>` (`1280x720`).
+    viewport = STRING default "";
+    # The user agent the browser reports.
+    user_agent = STRING default "";
+    # The device to emulate, by its name in Playwright's device list
+    # (`"iPhone 15"`); under `playwright` only.
+    device = STRING default "";
+    # How far the tests' results are trusted: `stable`, `flaky` (a failed test
+    # is retried within the run, up to `TEST_FLAKE_RETRIES` times) or
+    # `unstable` (the tests run every time, and the result is never cached).
+    stability = STRING default stable;
+    # Files the tests read when they run.
+    resources = FILES;
+    # Environment variables for the test processes, which run with no others.
+    env = MAP;
+    # Screenshots and other records the tests compare against (under
+    # `playwright`, `*-snapshots/**`). `fabr test -u` updates them.
+    expectations = FILES;
+}
+
+rule browser_test t<BUILD_OPERATION=test> = @fabr-build/js:rules/TestBrowserTest;
+rule browser_test t<BUILD_OPERATION=run> = @fabr-build/js:rules/RunBrowserTest;
+
+#
+# Playwright's own browser builds, as the tests' `playwright-core` names them
+# for the machine the tests run on, fetched by fabr.
+#
+default flag playwright/chromium { }
+default flag playwright/firefox { }
+default flag playwright/webkit { }

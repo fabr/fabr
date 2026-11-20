@@ -14,6 +14,8 @@
     "fabr-test-runner": "build/bin/fabr-test-runner.js",
     "fabr-jest-runner": "build/bin/fabr-jest-runner.js",
     "fabr-vitest-runner": "build/bin/fabr-vitest-runner.js",
+    "fabr-playwright-runner": "build/bin/fabr-playwright-runner.js",
+    "fabr-cypress-runner": "build/bin/fabr-cypress-runner.js",
     "fabr-coverage": "build/bin/fabr-coverage.js",
     "fabr-pnp-runtime": "build/bin/fabr-pnp-runtime.js"
   },

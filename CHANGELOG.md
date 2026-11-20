@@ -6,6 +6,14 @@ together and share a version number.
 
 ## Fabr 0.4.3
 @fabr-build/cli
+- `fabr cache purge` removes fabr's cache, refusing while another fabr process uses it. The
+  directories of the cache's installed trees are now read-only on macOS and Linux, so `rm -rf` of
+  the cache stops at them.
+- `fabr test -T <glob>` runs only the test files whose paths match, under every framework and
+  for Java tests, alongside `-t` for test names.
+- `fabr build` of a target that can only be tested, such as a `js_test`, builds everything its
+  test run needs (the compiled tests, packages, runner and browsers) without running a test, and
+  `fabr shell` on one opens its test run.
 - `fabr sync` marks a member published with a provenance statement: `✓ Publishing
   @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
 
@@ -15,6 +23,11 @@ together and share a version number.
 
 @fabr-build/js
 - Fix tsc import check failing when type files are missing.
+- `fabr test --artifacts=<dir>` copies out the files test runs kept of their tests, such as a
+  Playwright suite's traces and screenshots, which are kept with the cached result.
+- New `browser_test` target to run a Playwright or cypress test suite.
+- `fabr run` of a `browser_test` opens the framework's interactive run over its tests:
+  `playwright test` with the arguments given (`--ui`, `--headed`, `--debug`), or `cypress open`.
 
 @fabr-build/java
 - `java_test`: tests that belong to no one jar, compiled against and run with its `deps`.

@@ -165,7 +165,7 @@ export class DeclaredRule implements SelectableRule {
     }
     const entry = decl.implementation;
     this.loaded ??= loadedImplementation(this.load, entry, "rule").then(implementation => {
-      const { requirements, value, evaluate, describe } = toRuleImplementation(implementation, entry);
+      const { requirements, value, evaluate, describe, action } = toRuleImplementation(implementation, entry);
       return {
         type: this.type,
         properties: this.properties,
@@ -174,6 +174,7 @@ export class DeclaredRule implements SelectableRule {
         value,
         evaluate,
         describe,
+        action,
       };
     });
     return this.loaded;
@@ -193,7 +194,7 @@ function toRuleImplementation(implementation: unknown, entry: INameValue): RuleI
   if (typeof members.evaluate !== "function") {
     refuse("no evaluate");
   }
-  for (const member of ["requirements", "describe"] as const) {
+  for (const member of ["requirements", "describe", "action"] as const) {
     if (members[member] !== undefined && typeof members[member] !== "function") {
       refuse(`its ${member} is not a function`);
     }

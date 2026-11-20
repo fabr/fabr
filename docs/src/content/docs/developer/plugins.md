@@ -290,6 +290,7 @@ export default defineRule({
 | `evaluateResolved` | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both. |
 | `describe` | Describes the target for an editor, as the rule would build it, without building it: see [Describe](#describe). Optional. |
 | `value` | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target. |
+| `action` | Gets the build action that building the target performs, without performing it, where that is another target's action rather than one `evaluate` yields. `fabr shell` opens that action's directory, and `fabr build` of a target whose type only tests builds what it reads. Optional: without it, `evaluate` is asked, and its result is the action where it is one. |
 
 Fabr loads an implementation the first time its rule builds a target, so a rule that builds nothing
 in a run loads nothing.

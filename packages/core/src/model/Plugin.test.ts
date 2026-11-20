@@ -47,6 +47,7 @@ import { parseName } from "./Parser";
 import { EMPTY_FILESET, FileSet, IFile } from "../core/FileSet";
 import { StringReader } from "../support/StringReader";
 import { Computable } from "../core/Computable";
+import { deleteTreeSync } from "../core/FSWrapper";
 
 /* A name of no significance to either test runner's module resolution — jest
  * maps `@fabr-build/core` itself by name, so the resolution rules are exercised
@@ -71,7 +72,7 @@ describe("plugin package resolution", () => {
     dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-plugin-")));
   });
   afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    deleteTreeSync(dir);
   });
 
   it("finds a copy hoisted above the consumer", () => {
@@ -140,7 +141,7 @@ describe("implementations a declaration names", () => {
     dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fabr-implementation-")));
   });
   afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    deleteTreeSync(dir);
   });
 
   /** Write a package `name` exporting `rules/*` from `lib/`, and @return its manifest. */
@@ -240,7 +241,7 @@ describe("a plugin made as a program", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-plugin-program-"));
   });
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   it("reads its .fabr files from the package the program installs, behind its link", async () => {

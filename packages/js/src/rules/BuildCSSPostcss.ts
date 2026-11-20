@@ -24,7 +24,8 @@
  * names derived from `package_name` and the file's path, and a TypeScript
  * module `x.css.ts` exporting them; other stylesheets keep their names. Every
  * stylesheet is prefixed for the browsers the `BROWSER_TARGET` global names,
- * resolved with the target's other requirements.
+ * read under `compatibility`, so the lowest version of each named is the one
+ * prefixed for.
  *
  * `deps` are read, never included in the output: a `composes` naming another
  * file in `srcs` resolves among them, and one naming a package's stylesheet
@@ -33,6 +34,7 @@
  */
 
 import {
+  COMPATIBILITY_OVERRIDE,
   Computable,
   defineRule,
   EMPTY_FILESET,
@@ -58,7 +60,7 @@ export default defineRule({
       build: {
         srcs: context.getFileProperty("srcs"),
         deps: context.getPackageProperty("deps", undefined, NPM_FORMAT),
-        browsers: context.getGlobalFileProperty("BROWSER_TARGET").then(sources => new PackageSources(sources)),
+        browsers: context.getGlobalFileProperty("BROWSER_TARGET", COMPATIBILITY_OVERRIDE).then(sources => new PackageSources(sources)),
       },
       result: "files",
     };

@@ -18,10 +18,8 @@
  */
 
 import { expect } from "chai";
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { framesOf, IReportedError, IReportedModule, IReportedTest, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
+import { IReportedError, IReportedModule, IReportedTest, toRunFailure, toTestResults, vitestOptions } from "./VitestRun";
 
 const ROOT = path.resolve("/work/build");
 
@@ -132,39 +130,5 @@ describe("toTestResults", () => {
 
   it("reports an error outside any test as a failure of the run", () => {
     expect(toRunFailure({ message: "unhandled rejection" })).to.deep.include({ status: "failed", message: "unhandled rejection" });
-  });
-});
-
-describe("framesOf", () => {
-  let dir = "";
-  beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-vitest-frames-"));
-  });
-  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
-
-  it("keeps only the frames in the code under test", () => {
-    const own = path.join(dir, "a.test.js");
-    const stack = [
-      "Error: expected",
-      `    at <anonymous> (${own}:3:7)`,
-      `    at run (${path.join(dir, "node_modules", "vitest", "dist", "run.js")}:10:5)`,
-      "    at new Promise (<anonymous>)",
-      "    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)",
-    ].join("\n");
-    const frames = framesOf(stack)?.split("\n") ?? [];
-    expect(frames).to.have.length(1);
-    expect(frames[0]).to.match(/^at <anonymous> \(.*a\.test\.js:3:7\)$/);
-  });
-
-  it("names the source position a compiled frame came from, through its source map", () => {
-    const compiled = path.join(dir, "a.test.js");
-    /* One mapping: generated line 1, column 0 -> source line 5, column 2. */
-    fs.writeFileSync(`${compiled}.map`, JSON.stringify({ version: 3, sources: ["a.test.ts"], names: [], mappings: "AAIE" }));
-    expect(framesOf(`Error\n    at file://${compiled}:1:1`)).to.match(/^at \(.*a\.test\.ts:5:3\)$/);
-  });
-
-  it("has nothing to say of a stack with no frame of the code under test", () => {
-    expect(framesOf("Error: x\n    at new Promise (<anonymous>)")).to.equal(undefined);
-    expect(framesOf(undefined)).to.equal(undefined);
   });
 });

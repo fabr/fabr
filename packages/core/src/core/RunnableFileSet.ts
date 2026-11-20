@@ -34,9 +34,11 @@ const NO_ENV: ReadonlyMap<string, string> = new Map();
 
 /**
  * A fixed argument of a runnable: text; a program of the host, named on the
- * command line by where it lies; a file of the runnable's install, by its
- * install path; or parts joined into one argument by `join` (`--module-path=`
- * and the jars, joined by `path.delimiter`).
+ * command line by where it lies; a path relative to the runnable's install
+ * (`installFile`: a file of it, or one beside it, as of an install a launch
+ * links there, `../<link>/<path>`), placed wherever the install is; or parts
+ * joined into one argument by `join` (`--module-path=` and the jars, joined by
+ * `path.delimiter`).
  *
  * A command line made of these is written two ways: as key text
  * ({@link manifestArguments}), which names a host program by its content and
@@ -308,6 +310,26 @@ export class RunnableFileSet extends FileSet {
       this.origin,
       this.interpreterArgs,
       teardown
+    );
+  }
+
+  /** Get this runnable with `args` after its own fixed args. */
+  public withArguments(args: readonly RunnableArgument[]): RunnableFileSet {
+    if (args.length === 0) {
+      return this;
+    }
+    return new RunnableFileSet(
+      this,
+      [...this.args, ...args],
+      this.interpreter,
+      this.root,
+      this.surface,
+      this.served,
+      this.launchCwd,
+      this.env,
+      this.origin,
+      this.interpreterArgs,
+      this.teardown
     );
   }
 

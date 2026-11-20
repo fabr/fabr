@@ -68,7 +68,7 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
 
 /* Bump the version when what the step does changes; a change to the shape of
  * the action-key text (BuildAction.actionKey) changes every key already. */
-export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 4, run: runExec, stage: stageExec };
+export const EXEC_ACTION: IBuildActionDefinition = { id: "core:exec", version: 5, run: runExec, stage: stageExec };
 
 /** Stage the action into `dir` as runExec would, and describe the command it would run there. */
 function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {

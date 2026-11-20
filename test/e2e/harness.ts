@@ -92,8 +92,29 @@ function writeFixture(dir: string, files: Record<string, string>): void {
  * files off each other's store (fabr has no cross-process cache locking).
  * Removed when the file's tests are done. An `afterAll` rather than a process
  * exit hook: jest ends its workers by signal, which runs no exit hook. */
+/** Remove `dir` and everything under it: fabr's cache makes the directories of
+ * its tree pool read-only, so where removal is refused they are made writable
+ * first. */
+export function removeTree(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    const writable = (at: string): void => {
+      const stat = fs.lstatSync(at, { throwIfNoEntry: false });
+      if (stat?.isDirectory()) {
+        fs.chmodSync(at, stat.mode | 0o700);
+        for (const entry of fs.readdirSync(at)) {
+          writable(path.join(at, entry));
+        }
+      }
+    };
+    writable(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-cache-"));
-afterAll(() => fs.rmSync(CACHE_DIR, { recursive: true, force: true }));
+afterAll(() => removeTree(CACHE_DIR));
 
 /** How long {@link WatchSession.stop} gives the child to exit on its signal
  * before SIGKILLing it. Longer than fabr's own SHUTDOWN_GRACE_MS deadline, so
@@ -512,7 +533,7 @@ export function startFabrWatch(files: Record<string, string>, args: string[], en
             reaper.forget(child.pid);
           }
           fs.rmSync(dir, { recursive: true, force: true });
-          fs.rmSync(cacheDir, { recursive: true, force: true });
+          removeTree(cacheDir);
           resolve(code ?? -1);
         };
         /* A wedged fabr (e.g. the @parcel/watcher native deadlock that pinning

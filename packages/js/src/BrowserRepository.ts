@@ -18,24 +18,25 @@
  */
 
 /**
- * The `browser_repository` repository: web browsers as packages, so a target
- * says which browsers its output must run in by requiring them
- * (`@browser:safari:17.2` — Safari 17.2 and newer). Each browser is a package
+ * The `browser_repository` repository: web browsers. Read under
+ * `compatibility`, a browser is a runtime the output must run in
+ * (`@browser:safari:17.2`, Safari 17.2 and newer): each browser is a package
  * named by its Can I Use id (`safari`, `ios_saf`, `chrome`, `and_chr`), its
  * versions the ones released, and none has files or requirements. `baseline`
  * is a package too: its version `2023` requires the version of each core
- * browser that supports every feature Baseline by the end of 2023.
+ * browser that supports every feature Baseline by the end of 2023. Read any
+ * other way, the repository holds the browsers fabr can fetch, each a
+ * distribution of its builds: `chrome`, from Chrome for Testing.
  */
 
 import {
   Computable,
   FabrError,
+  FILES_OVERRIDE,
   FileSet,
-  IProjection,
   Name,
   PartialRepositoryRef,
   PackageFileSet,
-  PackageFormat,
   Repository,
   RepositoryPublishRef,
   RepositoryReader,
@@ -43,16 +44,20 @@ import {
   Requirement,
   resolveBarePackage,
   parseJson,
-  SEMVER,
-  SemverConstraint,
-  SemverVersion,
   TargetContext,
   toJsonObject,
   vendPackageRef,
   VersionNotFoundError,
   RepositoryImplementation,
+  COMPATIBILITY_OPERATION,
+  Namespace,
+  NamespaceRef,
+  Reference,
+  NO_REFERENCE_FIELDS,
 } from "@fabr-build/core";
 import * as path from "path";
+import { ChromeForTesting } from "./ChromeForTesting";
+import { ALL, BROWSER_FORMAT, BrowserConstraint, BrowserVersion, compareBrowserVersions, isVersionOrRange } from "./BrowserVersion";
 
 /** The package whose versions are Baseline's years. */
 const BASELINE = "baseline";
@@ -91,7 +96,7 @@ export type IBaselineVersions = (year: number) => Array<{ browser: string; versi
 
 /** Order Can I Use versions (`17.2`, `18.5-18.7`) oldest first, by their numbered parts. */
 function compareCaniuse(a: string, b: string): number {
-  return SEMVER.compare(SEMVER.parseVersion(semverOf(a)), SEMVER.parseVersion(semverOf(b)));
+  return compareBrowserVersions(BROWSER_FORMAT.parseVersion(a), BROWSER_FORMAT.parseVersion(b));
 }
 
 /**
@@ -138,120 +143,13 @@ export function browserDataOf(agents: ICaniuseAgents, baselineVersions: IBaselin
 }
 
 /**
- * The one version Can I Use lists for a browser it does not number (Opera Mini): a browser's
- * only version, so the lowest, held as version 0. No numbered browser has a version 0.
- */
-const ALL = "all";
-
-/** @return true if `text` is a version as Can I Use writes one (`17`, `17.2`, `4.4.3`, `all`), otherwise false. */
-function isBareVersion(text: string): boolean {
-  return text === ALL || /^\d+(\.\d+){0,2}$/.test(text);
-}
-
-/** Write a Can I Use version (`17.2`, a range's lower end, `18.5-18.7`, or `all`) as semver (`17.2.0`, `0.0.0`). */
-function semverOf(text: string): string {
-  if (text === ALL) {
-    return "0.0.0";
-  }
-  const parts = text.split("-")[0].split(".");
-  while (parts.length < 3) {
-    parts.push("0");
-  }
-  return parts.join(".");
-}
-
-/** Write a semver version as Can I Use does, its zero minor and patch dropped (`17.2.0` → `17.2`, `120.0.0` → `120`, `0.0.0` → `all`). */
-function caniuseOf(text: string): string {
-  const written = text.replace(/(\.0)+$/, "");
-  return written === "" || written === "0" ? ALL : written;
-}
-
-/** @return the newest version a semver constraint admits, or undefined where it admits ever newer ones. */
-function newestOf(constraint: SemverConstraint): SemverVersion | undefined {
-  let newest: SemverVersion | undefined;
-  for (const range of constraint.ranges) {
-    if (range.max === undefined) {
-      return undefined;
-    }
-    if (newest === undefined || SEMVER.compare(range.max, newest) > 0) {
-      newest = range.max;
-    }
-  }
-  return newest;
-}
-
-/** A version newer than any browser's: what a constraint admitting ever newer versions has as its newest. */
-const NEWEST = SEMVER.parseVersion(`${Number.MAX_SAFE_INTEGER}.0.0`);
-
-/**
- * The format of browser references: `<browser>:<version>`, requiring that the
- * output run on that version and every newer one. A browser's selected
- * version is the oldest the output must run on, so the format orders versions
- * newest first: a reference is a lower bound in that order (`safari:12` is
- * satisfied by any version at or below 12), and the selection, the highest
- * lower bound in that order, is the oldest version referenced. `baseline:2023`
- * and `safari:12` together select Safari 12.
- *
- * Versions are semver underneath, written as Can I Use writes them.
- */
-export const BROWSER_FORMAT: PackageFormat<SemverVersion, SemverConstraint> = {
-  ...SEMVER,
-  name: "browser",
-  resolutionTag: "browser:resolve:3",
-  parseVersion: text => SEMVER.parseVersion(semverOf(text)),
-  versionToString: version => caniuseOf(SEMVER.versionToString(version)),
-  compare: (a, b) => SEMVER.compare(b, a),
-  parseConstraint: text => {
-    if (!isBareVersion(text)) {
-      throw new FabrError(`'${text}' is not a browser version (expected one like '17.2')`);
-    }
-    return SEMVER.parseConstraint(`<=${semverOf(text)}`);
-  },
-  minimumOf: constraint => newestOf(constraint) ?? NEWEST,
-  isFloorless: constraint => newestOf(constraint) === undefined,
-  exactVersion: text => (isBareVersion(text) ? SEMVER.parseVersion(semverOf(text)) : undefined),
-  splitReference: splitBrowserReference,
-  validateRequirement: validateBrowserRequirement,
-  parsePublishCoordinate: () => {
-    throw new FabrError("browsers cannot be published to");
-  },
-  readContentPackage: () => Computable.reject(new FabrError("content cannot be read as a browser")),
-  makeRunnable: () => Computable.reject(new FabrError("a browser is not a program fabr can run")),
-};
-
-/** Split `<browser>:<version>` (the reference after `@browser:`). A browser has no files, so nothing selects from it. */
-function splitBrowserReference(name: Name): Requirement & { projection?: IProjection } {
-  const written = name.toBaseString();
-  const colon = written.indexOf(":");
-  if (colon === -1) {
-    return { name: written, versionConstraint: undefined };
-  }
-  if (written.indexOf(":", colon + 1) !== -1 || written.includes("/")) {
-    throw new FabrError(`'${written}' selects files, and a browser has none (expected '@browser:<browser>:<version>')`);
-  }
-  return { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
-}
-
-/** Check a browser reference: it states the oldest version supported. */
-function validateBrowserRequirement({ name, versionConstraint }: Requirement): void {
-  if (versionConstraint === undefined) {
-    throw new FabrError(`Missing version in a browser reference (expected '@browser:${name}:<version>', that version and newer)`);
-  }
-  if (!isBareVersion(versionConstraint)) {
-    throw new FabrError(
-      `'${versionConstraint}' is not a browser version (expected one like '@browser:${name}:17.2', that version and newer)`
-    );
-  }
-}
-
-/**
  * Write the browsers `packages` reach as a browserslist query, sorted, each by
  * the lowest version selected for it (`safari >= 17.2, chrome >= 120`), or as
  * `op_mini all` where that version is Can I Use's `all`; `baseline` names no
  * browser and is left out.
  */
 export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string {
-  const lowest = new Map<string, string>();
+  const lowest = new Map<string, BrowserVersion>();
   const seen = new Set<PackageFileSet>();
   const visit = (pkg: PackageFileSet): void => {
     if (seen.has(pkg)) {
@@ -259,9 +157,9 @@ export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string 
     }
     seen.add(pkg);
     if (pkg.packageName !== BASELINE && pkg.version !== undefined) {
-      const version = caniuseOf(semverOf(pkg.version));
+      const version = BROWSER_FORMAT.parseVersion(pkg.version);
       const known = lowest.get(pkg.packageName);
-      if (known === undefined || SEMVER.compare(SEMVER.parseVersion(semverOf(version)), SEMVER.parseVersion(semverOf(known))) < 0) {
+      if (known === undefined || compareBrowserVersions(version, known) < 0) {
         lowest.set(pkg.packageName, version);
       }
     }
@@ -270,7 +168,7 @@ export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string 
   packages.forEach(visit);
   return [...lowest]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([browser, version]) => (version === ALL ? `${browser} ${ALL}` : `${browser} >= ${version}`))
+    .map(([browser, version]) => (version.text === ALL ? `${browser} ${ALL}` : `${browser} >= ${version.text.split("-")[0]}`))
     .join(", ");
 }
 
@@ -278,10 +176,10 @@ export function browserQueryOf(packages: ReadonlyArray<PackageFileSet>): string 
  * The repository a `browser_repository` declaration builds: a
  * {@link RepositoryReader} over its browser data document.
  */
-export class BrowserRepository implements Repository, RepositoryReader<SemverVersion, SemverConstraint> {
+export class BrowserRepository implements Repository, RepositoryReader<BrowserVersion, BrowserConstraint> {
   public readonly format = BROWSER_FORMAT;
   /** Each package's versions, oldest first. */
-  private readonly versions = new Map<string, SemverVersion[]>();
+  private readonly versions = new Map<string, BrowserVersion[]>();
 
   /**
    * @param data the browsers and Baseline years it holds.
@@ -333,7 +231,7 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
 
   /** Get the requirements of a version: none for a browser, and for a Baseline
    *  year the version of each core browser it names, supported and newer. */
-  public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {
+  public getRequirements(pkg: string, version: BrowserVersion): Computable<Requirement[]> {
     const written = BROWSER_FORMAT.versionToString(version);
     if (!this.publishes(pkg, version)) {
       return Computable.reject(new VersionNotFoundError(pkg, written, `${this.name} has no ${pkg} ${written}`));
@@ -345,21 +243,20 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
     return Computable.resolve([...floors.keys()].sort().map(browser => ({ name: browser, versionConstraint: floors.get(browser)! })));
   }
 
-  public lowestAvailable(pkg: string, constraint: string): Computable<SemverVersion | undefined> {
-    let parsed: SemverConstraint;
+  public lowestAvailable(pkg: string, constraint: string): Computable<BrowserVersion | undefined> {
+    let parsed: BrowserConstraint;
     try {
       parsed = BROWSER_FORMAT.parseConstraint(constraint);
     } catch {
       return Computable.resolve(undefined);
     }
-    /* Lowest in the domain's order: the newest version that satisfies it. */
     const satisfying = (this.versions.get(pkg) ?? []).filter(version => BROWSER_FORMAT.satisfies(version, parsed));
     return Computable.resolve(
       satisfying.length === 0 ? undefined : satisfying.reduce((a, b) => (BROWSER_FORMAT.compare(a, b) <= 0 ? a : b))
     );
   }
 
-  public availableVersions(pkg: string): Computable<SemverVersion[] | undefined> {
+  public availableVersions(pkg: string): Computable<BrowserVersion[] | undefined> {
     return Computable.resolve(this.versions.get(pkg));
   }
 
@@ -368,29 +265,82 @@ export class BrowserRepository implements Repository, RepositoryReader<SemverVer
   }
 
   /** Fetch a version: a package with no files. */
-  public fetch(pkg: string, version: SemverVersion): Computable<PackageFileSet> {
+  public fetch(pkg: string, version: BrowserVersion): Computable<PackageFileSet> {
     return Computable.resolve(new PackageFileSet(new Map(), pkg, BROWSER_FORMAT.versionToString(version)));
   }
 
   /** @return true if `pkg` has a version `version`, otherwise false. */
-  private publishes(pkg: string, version: SemverVersion): boolean {
-    return (this.versions.get(pkg) ?? []).some(known => SEMVER.compare(known, version) === 0);
+  private publishes(pkg: string, version: BrowserVersion): boolean {
+    return (this.versions.get(pkg) ?? []).some(known => compareBrowserVersions(known, version) === 0);
   }
 }
 
-/** @return true if Can I Use's `text` is a version: numbered, a range, or `all` (not `TP`), otherwise false. */
-function isVersionOrRange(text: string): boolean {
-  return text === ALL || /^\d+(\.\d+){0,2}(-\d+(\.\d+){0,2})?$/.test(text);
+/**
+ * Make a `browser_repository`: under `compatibility`, the browsers' releases
+ * from its `data` ({@link createCompatibilityRepository}); otherwise the
+ * browsers fabr can fetch.
+ */
+function createRepository(context: TargetContext): Computable<Repository | Namespace> {
+  return context.operation === COMPATIBILITY_OPERATION
+    ? createCompatibilityRepository(context)
+    : context.getString("chrome_url").then(url => {
+        if (url === undefined || url === "") {
+          throw new FabrError("Missing required property chrome_url");
+        }
+        return new FetchableBrowsers(context, url.replace(/\/+$/, ""));
+      });
 }
 
+/** The browsers fabr can fetch, each a distribution made the first time it is asked for. */
+class FetchableBrowsers extends Namespace {
+  private chrome?: ChromeForTesting;
+
+  constructor(
+    private readonly context: TargetContext,
+    /** Where Chrome for Testing publishes its version list. */
+    private readonly chromeUrl: string
+  ) {
+    super();
+  }
+
+  public get(name: string): Computable<Repository> {
+    if (name === CHROME) {
+      this.chrome ??= new ChromeForTesting(this.context, this.chromeUrl, `${this.context.name}:${CHROME}`);
+      return Computable.resolve<Repository>(this.chrome);
+    }
+    return Computable.reject(
+      new FabrError(`${this.context.name} has no '${name}' to fetch: only ${FETCHABLE.join(", ")} is fetched`).withHelp(
+        `a browser read for compatibility, as \`BROWSER_TARGET\` is, names any browser Can I Use lists; read it with \`<BUILD_OPERATION=${COMPATIBILITY_OPERATION}>\``
+      )
+    );
+  }
+
+  /** List the browsers fabr can fetch, each made only when a name goes through it. */
+  public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
+    return Computable.forAll(
+      FETCHABLE.map(browser =>
+        this.get(browser).then((made): [string, Reference] => [
+          browser,
+          new PartialRepositoryRef(made, "", NO_REFERENCE_FIELDS, `${ref.name}:${browser}`),
+        ])
+      ),
+      (...members: Array<[string, Reference]>) => new Map(members)
+    );
+  }
+}
+
+/** The browsers fabr can fetch. */
+const CHROME = "chrome";
+const FETCHABLE = [CHROME];
+
 /**
- * Make a `browser_repository` from its `data`, the browser data packages: each
+ * Make a `browser_repository`'s compatibility reading from its `data`, the browser data packages: each
  * is written to the tree pool and loaded from there, Can I Use's for its
  * browsers' releases and baseline-browser-mapping's for the Baseline years.
  */
-function createRepository(context: TargetContext): Computable<Repository> {
+function createCompatibilityRepository(context: TargetContext): Computable<Repository> {
   return context
-    .getFileProperty("data")
+    .getFileProperty("data", FILES_OVERRIDE)
     .then(sources => context.materializeSources(sources))
     .then(delivered =>
       Computable.forAll(

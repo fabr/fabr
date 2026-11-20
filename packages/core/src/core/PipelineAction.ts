@@ -222,7 +222,7 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
  * spec means, changes. */
 export const PIPELINE_ACTION: IBuildActionDefinition = {
   id: "core:command-pipeline",
-  version: 7,
+  version: 8,
   run: runPipeline,
   stage: stagePipelineStep,
 };

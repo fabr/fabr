@@ -37,7 +37,7 @@ import {
 import { HttpStatusError } from "./Errors";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
-import { narrowDeps } from "./BuildCache";
+import { narrowDeps, purgeCache } from "./BuildCache";
 import { DiscoveredDeps, ISourceIndexRow, parseRecordedBase } from "./Manifest";
 import { Computable } from "./Computable";
 import { readStream } from "./Fetch";
@@ -52,6 +52,7 @@ import { Log } from "../support/Log";
 import { expect } from "chai";
 import { dependenciesOn } from "./Repository";
 import { ISourcePathStep, SOURCE_PATH_PROVENANCE } from "./Provenance";
+import { deleteTree, deleteTreeSync } from "./FSWrapper";
 
 const NULL_LOG: Log = { log: () => undefined };
 /** A unit test is its own observer: track transfers with the silent report. */
@@ -77,7 +78,7 @@ function hostPrefix(): string {
     const owner = fs.readdirSync(path.join(probe, "work"))[0];
     return owner.slice(0, owner.lastIndexOf("-"));
   } finally {
-    fs.rmSync(probe, { recursive: true, force: true });
+    deleteTreeSync(probe);
   }
 }
 
@@ -94,7 +95,7 @@ describe("BuildCache", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   it("persists in-memory files into the cache directory", async () => {
@@ -673,7 +674,7 @@ describe("BuildCache discovered dependencies", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /** The discoverable inputs as they currently stand: one delivered package of
@@ -1032,7 +1033,7 @@ describe("BuildCache discovered dependencies", () => {
 
   it("re-derives an identical result with the cache deleted", async () => {
     const before = await build(discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" }));
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
     cache = new BuildCache(root, NULL_LOG);
     const after = await build(discoverableDeps({ "a.h": "c.h", "b.h": "unused", "c.h": "included" }));
     expect(runs).to.equal(2);
@@ -1381,7 +1382,7 @@ describe("BuildCache build state", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   const DRIVER_BYTES = "!step 1\nwhatever the driver wrote\n";
@@ -1801,7 +1802,7 @@ describe("BuildCache non-immutable fetches", () => {
 
   afterEach(() => {
     origin.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   it("caches with origin-derived freshness and serves without refetching until stale", async () => {
@@ -2199,7 +2200,7 @@ describe("BuildCache secrets store", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   it("keeps a record for a day, readable by this user alone, then fetches it again", async () => {
@@ -2309,7 +2310,7 @@ describe("BuildCache work tree", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /** A pid that certainly no longer exists: a process run to completion. */
@@ -2453,7 +2454,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /**
@@ -2493,6 +2494,48 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     /* An equal FileSet is the same entry, served without rebuilding. */
     expect(await toPromise(cache.ensureTree(fileset({ "node_modules/a/index.js": "a" })))).to.equal(entry);
     expect(poolEntries()).to.deep.equal([files.toManifestHash()]);
+  });
+
+  it("makes a placed tree's directories read-only, so nothing can add to it, and removes it all the same", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const entry = await toPromise(cache.ensureTree(new FileSet(new Map<string, IFile>([["lib/a.js", MemoryFile.from("x")]]))));
+    for (const dir of [entry, path.join(entry, "lib")]) {
+      expect(fs.statSync(dir).mode & 0o222, dir).to.equal(0);
+    }
+    expect(() => fs.writeFileSync(path.join(entry, "lib", "cache.json"), "{}")).to.throw();
+    deleteTreeSync(entry);
+    expect(fs.existsSync(entry)).to.equal(false);
+    /* The asynchronous removal the trim makes, likewise. */
+    const again = await toPromise(cache.ensureTree(new FileSet(new Map<string, IFile>([["lib/b.js", MemoryFile.from("y")]]))));
+    await toPromise(deleteTree(again));
+    expect(fs.existsSync(again)).to.equal(false);
+  });
+
+  it("purges the whole cache, and refuses while another live fabr process uses it", () => {
+    new BuildCache(root, NULL_LOG);
+    /* This process's own work tree counts: purging is for when no fabr runs. */
+    expect(purgeCache(root)).to.have.length(1);
+    expect(fs.existsSync(root)).to.equal(true);
+    const work = path.join(root, "work");
+    for (const owner of fs.readdirSync(work)) {
+      deleteTreeSync(path.join(work, owner));
+    }
+    expect(purgeCache(root)).to.deep.equal([]);
+    expect(fs.existsSync(root)).to.equal(false);
+  });
+
+  it("refuses to purge while another live process holds a work tree", () => {
+    new BuildCache(root, NULL_LOG);
+    const work = path.join(root, "work");
+    const own = fs.readdirSync(work);
+    /* This test's parent is alive, as another fabr on this host would be. */
+    const other = own[0].replace(/-\d+$/, `-${process.ppid}`);
+    for (const owner of own) {
+      deleteTreeSync(path.join(work, owner));
+    }
+    fs.mkdirSync(path.join(work, other));
+    expect(purgeCache(root)).to.deep.equal([other]);
+    expect(fs.existsSync(root)).to.equal(true);
   });
 
   it("holds a tree's files as read-only hardlinks into the blob pool", async () => {
@@ -2537,7 +2580,7 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
     const cache = new BuildCache(root, NULL_LOG);
     const files = fileset({ "node_modules/a/index.js": "a" });
     const entry = await toPromise(cache.ensureTree(files));
-    fs.rmSync(entry, { recursive: true, force: true });
+    deleteTreeSync(entry);
     /* Same files, same name — the identity is derived, not remembered. */
     expect(await toPromise(cache.ensureTree(files))).to.equal(entry);
     expect(fs.readFileSync(path.join(entry, "node_modules/a/index.js"), "utf8")).to.equal("a");
@@ -2678,7 +2721,7 @@ describe("BuildCache garbage collection", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    deleteTreeSync(root);
   });
 
   /** Backdate a path's mtime, making it eligible for the age windows. */
@@ -2777,11 +2820,11 @@ describe("BuildCache garbage collection", () => {
       expect(fs.existsSync(blobOf(hash)), "an index-rooted source blob").to.equal(true);
       /* Without the record (the degradation tier) the same blob rides the age
        * threshold alone. */
-      fs.rmSync(path.join(root, "projects"), { recursive: true, force: true });
+      deleteTreeSync(path.join(root, "projects"));
       await runGC();
       expect(fs.existsSync(blobOf(hash))).to.equal(false);
     } finally {
-      fs.rmSync(project, { recursive: true, force: true });
+      deleteTreeSync(project);
     }
   });
 
