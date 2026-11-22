@@ -170,13 +170,15 @@ processes and timeouts are its framework's instead: see
 
 ## Flaky and unstable tests
 
-A target's `test_stability` (`stability` on a `js_test`) says how far fabr can trust its results:
+A target's `test_stability` (`stability` on a `js_test`) says how far fabr can trust its results.
+It is `stable`, `flaky`, `unstable`, or both of the last two:
 
 | Value              | For                                                                                      | What fabr does                                                                                            |
 | ------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `stable` (default) | Tests whose results depend only on their inputs.                                         | Caches the run, and runs again only the test files a change reaches.                                      |
 | `flaky`            | Tests that sometimes fail with the same inputs, such as browser tests.                   | Retries a failed test, up to `TEST_FLAKE_RETRIES` more times (2 by default), then caches the run.        |
 | `unstable`         | Tests whose results depend on something outside the build, such as evals of an AI model. | Runs every test file every time, and never caches the run.                                                |
+| `unstable flaky`   | Tests that depend on something outside the build and also fail by chance.               | Runs every test file every time, retries a failed test as `flaky` does, and never caches the run.        |
 
 ```
 js_test api {
@@ -200,8 +202,11 @@ flaky tests included. To see a flaky target's failures without retries, set
 `-DTEST_FLAKE_RETRIES=0`.
 
 An `unstable` target's tests run in full each time `fabr test` is run. Under `fabr test -w` they
-run again only when something they depend on changes, as any test does. An `unstable` target is
-never retried; where its tests can also fail by chance, retry inside the test instead.
+run again only when something they depend on changes, as any test does.
+
+Tests that depend on something outside the build and also fail by chance, such as browser tests
+against a staging server, are both: `stability = unstable flaky;` (in either order) runs them on
+every `fabr test` and retries a failed test within each run.
 
 ## The test environment
 

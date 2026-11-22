@@ -107,28 +107,46 @@ export const COVERAGE_REPORT_FILENAME = "lcov.info";
 
 /**
  * How far a test target's results are trusted, its `test_stability` (`stability`
- * on a test-only target):
+ * on a test-only target): the traits written, in any order, `stable` (the
+ * default) being neither.
  *
- * - `stable`: the result is a function of the run's inputs, and is cached.
- * - `flaky`: the same inputs may fail; a test file that fails is run again, up
- *   to `TEST_FLAKE_RETRIES` more times, and the result is cached.
+ * - `flaky`: the same inputs may fail; a failed test is run again, up to
+ *   `TEST_FLAKE_RETRIES` more times.
  * - `unstable`: the result depends on something outside the build; every test
  *   file runs on every demand, and the result is never cached.
+ *
+ * A result that is neither is a function of the run's inputs, and is cached.
  */
-export type TestStability = "stable" | "flaky" | "unstable";
+export interface TestStability {
+  readonly flaky: boolean;
+  readonly unstable: boolean;
+}
 
-const TEST_STABILITIES: ReadonlyArray<TestStability> = ["stable", "flaky", "unstable"];
+/** The words a stability is written in. */
+const STABILITY_WORDS = ["stable", "flaky", "unstable"];
 
 /**
- * Convert a test target's stability property value to a {@link TestStability}.
- * @throws FabrError naming the values there are, where `value` is none of them.
+ * Convert the words of a test target's stability property to a
+ * {@link TestStability}.
+ * @throws FabrError naming the words there are, where one is none of them,
+ *   and where a word is written twice or `stable` is written beside another.
  */
-export function toTestStability(value: SecureString): TestStability {
-  const stability = TEST_STABILITIES.find(known => value.equals(known));
-  if (stability === undefined) {
-    throw new FabrError(`'${value.toDisplayString()}' is not a test stability (${TEST_STABILITIES.join(", ")})`);
+export function toTestStability(words: readonly SecureString[]): TestStability {
+  const written = new Set<string>();
+  for (const word of words) {
+    const known = STABILITY_WORDS.find(candidate => word.equals(candidate));
+    if (known === undefined) {
+      throw new FabrError(`'${word.toDisplayString()}' is not a test stability (${STABILITY_WORDS.join(", ")})`);
+    }
+    if (written.has(known)) {
+      throw new FabrError(`'${known}' is written twice in the test stability`);
+    }
+    written.add(known);
   }
-  return stability;
+  if (written.has("stable") && written.size > 1) {
+    throw new FabrError("'stable' means neither flaky nor unstable, and is written alone");
+  }
+  return { flaky: written.has("flaky"), unstable: written.has("unstable") };
 }
 
 /**

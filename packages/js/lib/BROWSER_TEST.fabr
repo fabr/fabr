@@ -52,8 +52,9 @@ targetdef browser_test {
     # (`"iPhone 15"`); under `playwright` only.
     device = STRING default "";
     # How far the tests' results are trusted: `stable`, `flaky` (a failed test
-    # is retried within the run, up to `TEST_FLAKE_RETRIES` times) or
-    # `unstable` (the tests run every time, and the result is never cached).
+    # is retried within the run, up to `TEST_FLAKE_RETRIES` times),
+    # `unstable` (the tests run every time, and the result is never cached) or both
+    # (`unstable flaky`).
     stability = STRING default stable;
     # Files the tests read when they run.
     resources = FILES;

@@ -302,8 +302,9 @@ targetdef js_package {
     # Tests that drive a browser are a `browser_test`'s.
     test_framework = STRING default ${JS_TEST_FRAMEWORK};
     # How far the tests' results are trusted: `stable`, `flaky` (a failed test
-    # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
-    # file runs every time, and the result is never cached).
+    # file runs again, up to `TEST_FLAKE_RETRIES` times), `unstable` (every
+    # file runs every time, and the result is never cached) or both
+    # (`unstable flaky`).
     test_stability = STRING default stable;
     # The package's version.
     version = STRING;
@@ -411,8 +412,9 @@ targetdef js_test {
     # Tests that drive a browser are a `browser_test`'s.
     framework = STRING default ${JS_TEST_FRAMEWORK};
     # How far the tests' results are trusted: `stable`, `flaky` (a failed test
-    # file runs again, up to `TEST_FLAKE_RETRIES` times) or `unstable` (every
-    # file runs every time, and the result is never cached).
+    # file runs again, up to `TEST_FLAKE_RETRIES` times), `unstable` (every
+    # file runs every time, and the result is never cached) or both
+    # (`unstable flaky`).
     stability = STRING default stable;
     # Files the tests read when they run.
     resources = FILES;

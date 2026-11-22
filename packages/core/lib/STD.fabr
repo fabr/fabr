@@ -29,7 +29,7 @@ default TEST_NAME_PATTERN = "";
 # `fabr test -T PATTERN` sets it for one run.
 default TEST_FILE_PATTERN = "";
 
-# How many more times a test file of a target whose `test_stability` is `flaky`
+# How many more times a test file of a target whose `test_stability` includes `flaky`
 # is run after it fails. A test that passes on a later run is reported as flaky.
 # `0` runs flaky targets as stable ones.
 default TEST_FLAKE_RETRIES = 2;

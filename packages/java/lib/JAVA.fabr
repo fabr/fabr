@@ -168,8 +168,9 @@ targetdef jar_package {
     # Environment variables for the tests, which run with no others.
     test_env = MAP;
     # How far the tests' results are trusted: `stable`, `flaky` (the source
-    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times) or
-    # `unstable` (the tests run every time, and the result is never cached).
+    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times),
+    # `unstable` (the tests run every time, and the result is never cached) or both
+    # (`unstable flaky`).
     test_stability = STRING default stable;
 }
 
@@ -211,8 +212,9 @@ targetdef java_test {
     # Environment variables for the tests, which run with no others.
     env = MAP;
     # How far the tests' results are trusted: `stable`, `flaky` (the source
-    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times) or
-    # `unstable` (the tests run every time, and the result is never cached).
+    # files whose tests failed run again, up to `TEST_FLAKE_RETRIES` times),
+    # `unstable` (the tests run every time, and the result is never cached) or both
+    # (`unstable flaky`).
     stability = STRING default stable;
 }
 

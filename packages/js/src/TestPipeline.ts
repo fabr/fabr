@@ -656,7 +656,7 @@ export function compileAndRunTests(
                 links: settings.links,
                 update: expectations.equals(UPDATE_EXPECTATIONS),
                 namePattern: namePattern.length === 0 ? undefined : namePattern,
-                stability: toTestStability(stability.toString()),
+                stability: toTestStability(stability.getValues()),
                 flakeRetries: toFlakeRetries(flakeRetries),
                 coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
               });
@@ -858,7 +858,7 @@ interface ITestRun {
   namePattern?: SecureString;
   /** How far the tests' results are trusted. */
   stability: TestStability;
-  /** How many further runs a failed test file gets where `stability` is `flaky`. */
+  /** How many further runs a failed test gets where `stability` is flaky. */
   flakeRetries: number;
   /** Where the run is measured for coverage: the program converting what the
    * test processes record, and the packages installed for the run, of which
@@ -951,8 +951,8 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       outputs,
       env: toEnvironment(run.env),
       coverage: coverage && { argv: coverage.argv, measured: coverage.measured },
-      retries: run.stability === "flaky" && run.scheduler === "fabr" ? run.flakeRetries : 0,
-      uncached: run.stability === "unstable",
+      retries: run.stability.flaky && run.scheduler === "fabr" ? run.flakeRetries : 0,
+      uncached: run.stability.unstable,
       artifacts: run.artifacts,
       scheduler: run.scheduler,
     }).withReshape(result => reshapeTestResult(result, run, records, compiledOf));
@@ -1033,7 +1033,7 @@ function runnerOptions(run: ITestRun, setupFile: string | undefined): string[] {
     /* A runner scheduling its files itself retries a failed test within its
      * run, as many times as the target's stability allows, whatever its
      * framework's own config says; fabr reruns only files it schedules. */
-    ...(run.scheduler === "runner" ? [`--retries=${run.stability === "flaky" ? run.flakeRetries : 0}`] : []),
+    ...(run.scheduler === "runner" ? [`--retries=${run.stability.flaky ? run.flakeRetries : 0}`] : []),
   ];
 }
 

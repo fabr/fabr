@@ -34,7 +34,7 @@ A browser test is compiled, cached and reported like any other test target (see
   other test targets run again only the files a change reaches, and the framework's own timeouts
   apply rather than fabr's.
 - **A failed test is retried within the run,** by the framework, as the target's
-  [`stability`](/reference/js/testing/#flaky-and-unstable-tests) allows: under `flaky`, up to
+  [`stability`](/reference/js/testing/#flaky-and-unstable-tests) allows: where it includes `flaky`, up to
   `TEST_FLAKE_RETRIES` times, and otherwise not at all, whatever your config's own `retries` says.
 - **The files the framework keeps of its tests** (traces, screenshots, videos) are kept with the
   result, and `fabr test --artifacts=<dir>` copies them out: see
@@ -154,7 +154,8 @@ work as for any other test target.
   [the only ones they see](/reference/js/testing/#environment-variables). A config that reads `process.env.CI` sees it
   only where `env` sets it.
 - **`stability`**: against a server outside the build, such as a staging deployment, use
-  `stability = unstable;`, so that results are never served from the cache. See
+  `stability = unstable;`, so that results are never served from the cache, or
+  `stability = unstable flaky;` where its tests also fail by chance. See
   [Flaky and unstable tests](/reference/js/testing/#flaky-and-unstable-tests).
 
 ### The config
@@ -172,7 +173,7 @@ Fabr uses it as written, except for the settings it owns:
 | `outputDir`               | A directory fabr chooses for each run.                                                                                                                                    |
 | `updateSnapshots`         | `none`, or `changed` under `fabr test -u`.                                                                                                                                |
 | `grep`                    | Your config's own, with [`fabr test -t`](/reference/js/testing/#running-tests) applied as Playwright's `--grep` where you give it.                                                             |
-| `retries`                 | The target's [`stability`](/reference/js/testing/#flaky-and-unstable-tests): under `flaky`, a failed test is retried within the run up to `TEST_FLAKE_RETRIES` times, and otherwise not at all. |
+| `retries`                 | The target's [`stability`](/reference/js/testing/#flaky-and-unstable-tests): where it includes `flaky`, a failed test is retried within the run up to `TEST_FLAKE_RETRIES` times, and otherwise not at all. |
 | `shard`                   | Not used.                                                                                                                                                                 |
 | `use.baseURL`             | `base_url`, where the target sets it.                                                                                                                                     |
 

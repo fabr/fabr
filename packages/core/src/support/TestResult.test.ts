@@ -178,16 +178,27 @@ describe("retriedReport", () => {
 });
 
 describe("toTestStability", () => {
-  it("accepts the stabilities there are", () => {
-    expect(["stable", "flaky", "unstable"].map(value => toTestStability(SecureString.of(value)))).to.deep.equal([
-      "stable",
-      "flaky",
-      "unstable",
+  const words = (...values: string[]): SecureString[] => values.map(value => SecureString.of(value));
+
+  it("reads each stability, and flaky and unstable together in either order", () => {
+    expect([[], ["stable"], ["flaky"], ["unstable"]].map(value => toTestStability(words(...value)))).to.deep.equal([
+      { flaky: false, unstable: false },
+      { flaky: false, unstable: false },
+      { flaky: true, unstable: false },
+      { flaky: false, unstable: true },
+    ]);
+    expect([toTestStability(words("unstable", "flaky")), toTestStability(words("flaky", "unstable"))]).to.deep.equal([
+      { flaky: true, unstable: true },
+      { flaky: true, unstable: true },
     ]);
   });
 
-  it("refuses any other value, naming those there are", () => {
-    expect(() => toTestStability(SecureString.of("shaky"))).to.throw("'shaky' is not a test stability (stable, flaky, unstable)");
+  it("refuses any other word, naming those there are, a word written twice, and stable beside another", () => {
+    expect(() => toTestStability(words("shaky"))).to.throw("'shaky' is not a test stability (stable, flaky, unstable)");
+    expect(() => toTestStability(words("flaky", "flaky"))).to.throw("'flaky' is written twice in the test stability");
+    expect(() => toTestStability(words("stable", "flaky"))).to.throw(
+      "'stable' means neither flaky nor unstable, and is written alone"
+    );
   });
 });
 

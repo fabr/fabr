@@ -105,7 +105,7 @@ properties without the `test_` prefix:
 | `test_jvm_args`  | `jvm_args`     | Arguments given the test JVM.                              |
 | `test_defines`   | `defines`      | System properties.                                         |
 | `test_env`       | `env`          | Environment variables.                                     |
-| `test_stability` | `stability`    | `stable`, `flaky` or `unstable`.                           |
+| `test_stability` | `stability`    | `stable`, `flaky`, `unstable`, or `unstable flaky`.        |
 
 ## The test JVM
 
@@ -175,6 +175,8 @@ results:
   class runs again.
 - `unstable`: the tests run every time `fabr test` is run, and the run is never cached. Use it
   for tests whose results depend on something outside the build, such as a live service.
+- `unstable flaky`, in either order: both, so the tests run every time and failed ones are
+  retried within each run.
 
 ```
 java_test browser {

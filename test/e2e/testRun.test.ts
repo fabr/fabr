@@ -221,6 +221,29 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     }
   });
 
+  it("runs an unstable flaky target on every run, retrying a failed test file within each", () => {
+    const { marker, ran } = runMarker();
+    const files = {
+      ...STUB_TSC,
+      "PROJECT.fabr":
+        "plugin @fabr-build/js;\n\n" +
+        STUB_TSC_CONFIG +
+        `\njs_test evals {\n  tests = src:**/*.test.ts;\n  stability = flaky unstable;\n  env = { MARKER = '${marker}'; }\n}\n`,
+      /* Fails on each run's first try, and passes on its retry. */
+      "src/a.test.ts":
+        'const fs = require("fs");\nconst count = process.env.MARKER + ".count";\n' +
+        'const n = fs.existsSync(count) ? Number(fs.readFileSync(count, "utf8")) : 0;\nfs.writeFileSync(count, String(n + 1));\n' +
+        'fs.appendFileSync(process.env.MARKER, "a\\n");\n' +
+        'describe("a", () => { it("passes on a retry", () => { if (n % 2 === 0) throw new Error("first try"); }); });\n',
+    };
+    for (const run of ["first", "unchanged"]) {
+      const result = runFabr(files, ["-DJS_TARGET=es2020", "test", "evals"]);
+      expect(result.status, result.stderr).to.equal(0);
+      expect(result.stderr).to.contain("1 test passed (1 flaky)");
+      expect(ran(), `the ${run} run runs the file, and once more after it fails`).to.deep.equal(["a", "a"]);
+    }
+  });
+
   it("builds everything a test target's run needs on `fabr build`, running no test", () => {
     const { marker, ran } = runMarker();
     const files = {

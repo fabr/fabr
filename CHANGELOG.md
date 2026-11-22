@@ -26,11 +26,11 @@ together and share a version number.
 - `${MAP.key}` reads an entry of a map property.
 - `${NAME:-text}`, `${NAME:+text}` and `${NAME:?message}` give a default, an alternative or an error
   where a value is unset or empty.
-- `-D` refuses a key that is not a property name (`-DENV.HOME=…`).
+- `-D` now refuses a key that is not a property name (`-DENV.HOME=…`).
 - A URL in fabr's output no longer shows a `user:password@` written into it.
 - Introduce internal secret string tracking.
 - New test stability options: `flaky` runs a failed test file again up to TEST_FLAKE_RETRIES (default 2); `unstable` runs every test file every time and never
-  caches the run.
+  caches the run. Either or both can be used together.
 
 @fabr-build/js
 

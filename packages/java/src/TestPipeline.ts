@@ -158,8 +158,8 @@ function runSelectedTests(
   const stability = Computable.forAll(
     [context.getRequiredProperty(settings.stabilityProperty), context.getGlobalString(TEST_FLAKE_RETRIES)],
     (value, retries) => {
-      const level = toTestStability(value.toString());
-      return { retries: level === "flaky" ? toFlakeRetries(retries) : 0, uncached: level === "unstable" };
+      const level = toTestStability(value.getValues());
+      return { retries: level.flaky ? toFlakeRetries(retries) : 0, uncached: level.unstable };
     }
   );
   return Computable.forAll(
