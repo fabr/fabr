@@ -18,7 +18,7 @@
  */
 
 import { BUILD_OVERRIDE, Computable, defineRule, FabrError, Property, PropertyMap, RunnableFileSet } from "@fabr-build/core";
-import { stringEntries } from "../ImageConfig";
+import { stringEntries, unmaskedWords } from "../ImageConfig";
 import { ImageFileSet } from "../ImageFileSet";
 import { IContainerRun, imageRunnable } from "../ImageRunnable";
 
@@ -51,9 +51,9 @@ export default defineRule({
       ] as const,
       (ports, env: PropertyMap, network, hosts: PropertyMap, args, engine: RunnableFileSet): Computable<RunnableFileSet> => {
         const run: IContainerRun = {
-          ...(ports === undefined ? {} : { ports: ports.getValues() }),
+          ...(ports === undefined ? {} : { ports: unmaskedWords(ports) }),
           env: stringEntries(context.name, "env", env),
-          ...(network === undefined ? {} : { network: network.toString() }),
+          ...(network === undefined ? {} : { network: network.toString().toUnmaskedString() }),
           hosts: stringEntries(context.name, "hosts", hosts),
           args: args?.getValues() ?? [],
         };

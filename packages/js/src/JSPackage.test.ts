@@ -21,6 +21,7 @@ import { expect } from "chai";
 import {
   Computable,
   ConflictError,
+  dependenciesOn,
   FileSet,
   Flag,
   IFile,
@@ -28,12 +29,13 @@ import {
   PackageFileSet,
   PackageGraphBuilder,
   ResolutionContext,
+  RunnableArgument,
   RunnableFileSet,
+  SecureString,
   SILENT_REPORT,
   SymlinkFile,
-  TREE_MOUNT,
-  dependenciesOn,
   toArgv,
+  TREE_MOUNT,
 } from "@fabr-build/core";
 import {
   binByConvention,
@@ -57,6 +59,11 @@ import {
   withBinShebangs,
 } from "./JSPackage";
 
+/** @return the command line `args` are run as ({@link toArgv}), as text. */
+function argvText(args: readonly RunnableArgument[], anchor?: string): string[] {
+  return toArgv(args, anchor).map(arg => arg.toUnmaskedString());
+}
+
 /** A stand-in for the program the `NODE` global names. */
 const NODE = RunnableFileSet.forEntry(new Map([["bin/node", new MemoryFile(Buffer.from("#!/bin/sh\n"), 0o755)]]), "bin/node");
 
@@ -67,7 +74,7 @@ const POOL = { ensureTree: () => Computable.resolve("unused") };
 const NODE_CONTEXT: ResolutionContext = {
   name: "test",
   operation: "build",
-  getGlobalString: () => Computable.resolve("build"),
+  getGlobalString: () => Computable.resolve(SecureString.of("build")),
   launchedBy: (runnable, interpreter) =>
     interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter)),
   memoize: (_tag, _key, create) => create("unused"),
@@ -202,9 +209,17 @@ describe("resolveJsxImportSource", () => {
 
 describe("parseJSTarget", () => {
   it("parses valid triples into version/module/environment", () => {
-    expect(parseJSTarget("es2018-commonjs")).to.deep.equal({ version: "es2018", module: "commonjs", environment: "node" });
+    expect(parseJSTarget("es2018-commonjs")).to.deep.equal({
+      version: "es2018",
+      module: "commonjs",
+      environment: "node",
+    });
     expect(parseJSTarget("es2021-esm")).to.deep.equal({ version: "es2021", module: "esm", environment: "node" });
-    expect(parseJSTarget("esnext-esm-browser")).to.deep.equal({ version: "esnext", module: "esm", environment: "browser" });
+    expect(parseJSTarget("esnext-esm-browser")).to.deep.equal({
+      version: "esnext",
+      module: "esm",
+      environment: "browser",
+    });
     expect(parseJSTarget("es2020")).to.deep.equal({ version: "es2020", module: "commonjs", environment: "node" });
   });
 
@@ -453,7 +468,7 @@ describe("makeNpmRunnable", () => {
       "1.0.0"
     );
     const runnable = await settle(makeNpmRunnable(NODE_CONTEXT, pkg));
-    expect(toArgv(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal([
+    expect(argvText(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal([
       `${TREE_MOUNT}/${NODE.toManifestHash()}/bin/node`,
       "tool/node_modules/tool/bin/tool.js",
       "x",

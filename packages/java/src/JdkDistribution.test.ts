@@ -18,8 +18,13 @@
  */
 
 import { expect } from "chai";
-import { FileSet, IFile, MemoryFile, parseName, releaseRunnable, toArgv } from "@fabr-build/core";
+import { FileSet, IFile, MemoryFile, parseName, releaseRunnable, RunnableArgument, toArgv } from "@fabr-build/core";
 import { JDK_BIN_DIRECTORIES } from "./JdkDistribution";
+
+/** @return the command line `args` are run as ({@link toArgv}), as text. */
+function argvText(args: readonly RunnableArgument[], anchor?: string): string[] {
+  return toArgv(args, anchor).map(arg => arg.toUnmaskedString());
+}
 
 /** A release laid out as `names`, each executable where it is marked `*`. */
 function release(...names: string[]): FileSet {
@@ -35,7 +40,7 @@ function release(...names: string[]): FileSet {
 /** @return the install path `fabr run`'s `@jdk:<v>:<command>` would launch. */
 function entryOf(files: FileSet, command: string): string {
   const selected = releaseRunnable(files, JDK_BIN_DIRECTORIES).selectEntry([{ pattern: parseName(command), prefix: "" }]);
-  return toArgv(selected!.toCommandLine())[0];
+  return argvText(selected!.toCommandLine())[0];
 }
 
 describe("a JDK release run", () => {

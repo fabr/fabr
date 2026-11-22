@@ -31,6 +31,7 @@ import type { RepositoryRef } from "./Repository";
 import type { OutputStream } from "../support/Execute";
 import type { ITestReport } from "../support/TestResult";
 import type { Package } from "./PackageFileSet";
+import type { SecureString } from "./SecureString";
 
 /** Coerce an arbitrary thrown value to an Error. */
 export function toError(err: unknown): Error {
@@ -43,14 +44,15 @@ export function toError(err: unknown): Error {
  * remedy such as a set of overrides to paste), empty where there is none.
  * `cause` is the error this one was raised in response to, where there is one.
  * An error wrapping another holds no copy of its help: read the help for a
- * failure with {@link helpOf}.
+ * failure with {@link helpOf}. A message or help given as a `SecureString` is
+ * held as output shows it.
  */
 export class FabrError extends Error {
   public help: string[];
   public readonly cause?: Error;
 
-  constructor(message: string, cause?: Error) {
-    super(message);
+  constructor(message: string | SecureString, cause?: Error) {
+    super(shown(message));
     this.help = [];
     if (cause !== undefined) {
       this.cause = cause;
@@ -59,10 +61,15 @@ export class FabrError extends Error {
 
   /** Set this error's help, replacing any it has, and return the same error:
    *  for a remedy known only to a caller of the code that raised it. */
-  public withHelp(help: string | string[]): this {
-    this.help = Array.isArray(help) ? help : [help];
+  public withHelp(help: string | SecureString | ReadonlyArray<string | SecureString>): this {
+    this.help = (Array.isArray(help) ? help : [help]).map(shown);
     return this;
   }
+}
+
+/** @return `text` as output shows it. */
+function shown(text: string | SecureString): string {
+  return typeof text === "string" ? text : text.toDisplayString();
 }
 
 /** The name a node of the Computable graph is reported by when it is on a
@@ -140,6 +147,7 @@ export class MultiError extends FabrError {
 export class HttpStatusError extends FabrError {
   constructor(
     public readonly statusCode: number,
+    /** The URL requested, as output shows it (`shownUrl`). */
     public readonly url: string,
     /** A 401's `WWW-Authenticate` challenges, as sent; empty for any other status. */
     public readonly challenges: readonly string[] = []

@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { TargetContext } from "@fabr-build/core";
+import { SecureString, TargetContext } from "@fabr-build/core";
 import { RequestSigner } from "./Signing";
 
 /** The region an account's regional services are in where it declares none. */
@@ -33,7 +33,7 @@ export interface IAccountSettings {
   readonly credentials: string;
   /** The region of the account's regional services. */
   readonly region: string;
-  readonly endpoint?: URL;
+  readonly endpoint?: SecureString;
   /** The account's ID, where it is declared. */
   readonly accountId?: string;
   /** The repository type each AWS service or CodeArtifact format is read and published as (AWS_REPOSITORY_TYPES). */

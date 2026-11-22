@@ -23,6 +23,7 @@ import { FileSet, FileSource } from "../core/FileSet";
 import { FileSetRef } from "../core/FileSetRef";
 import { PackageFileSet } from "../core/PackageFileSet";
 import { Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { Repository, SourceRef } from "../core/Repository";
 import { collectLists, PERMISSIVE_RESOLUTION, withOperation } from "./CollectionPoint";
 import { ResolutionContext } from "../resolver/Types";
@@ -85,10 +86,15 @@ export class CommandValue {
  * redirections ({@link StageStreams}: `stdout`, `stderr`, `mergedTo`). Nothing
  * here is positioned: errors were raised as it was materialized.
  */
-export interface MaterializedCommandStage extends StageStreams {
+export interface MaterializedCommandStage {
   runnable: RunnableFileSet;
-  args: string[];
+  /** The arguments, their masked runs kept. */
+  args: SecureString[];
   stdin?: FileSet;
+  /** The file the stage's stdout, and its stderr, is kept in, as written. */
+  stdout?: string;
+  stderr?: string;
+  mergedTo?: StageStreams["mergedTo"];
 }
 
 /** A materialized command pipeline: the rule-facing counterpart of the parsed

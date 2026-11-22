@@ -1235,7 +1235,7 @@ function remapCopyTargetName(name: string, sets: FileSet[]): (fileName: string) 
   if (parsed.getRenameTo() !== undefined) {
     return fileName => fileName;
   }
-  const selector = parsed.toString();
+  const selector = parsed.toUnmaskedString();
   const leaf = selector.replace(/\/+$/, "").split(/[/:]/).filter(Boolean).pop() ?? "";
   const fileNames = sets.flatMap(set => [...set].map(([fileName]) => fileName));
   if (parsed.hasGlob() || selector.endsWith("/")) {
@@ -1618,7 +1618,9 @@ function providedTargetsJson(model: BuildModel): Record<string, unknown>[] {
       name,
       type: decl.type,
       properties: decl.properties.map(item =>
-        isPropertyDecl(item) ? { name: item.name.toBaseString(), value: renderPropertyValue(item) } : { splice: item.ref.toString() }
+        isPropertyDecl(item)
+          ? { name: item.name.toBaseString(), value: renderPropertyValue(item) }
+          : { splice: item.ref.toDisplayString() }
       ),
       location: formatDeclLocation(decl),
       ...contributionJson(model, decl),
@@ -1715,7 +1717,7 @@ function flagTargetsJson(model: BuildModel): IConfigEntry[] {
 function renderPropertyValue(decl: IPropertyDecl): string {
   return decl.values
     .filter(isNameValue)
-    .map(value => value.value.toString())
+    .map(value => value.value.toDisplayString())
     .join(" ");
 }
 

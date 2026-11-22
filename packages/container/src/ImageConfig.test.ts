@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "@fabr-build/core";
 import { FIXED_CREATED, IImageSettings, imageConfig } from "./ImageConfig";
 
 const NONE: IImageSettings = { env: [], ports: [], metadata: [] };
@@ -42,8 +43,8 @@ describe("imageConfig", () => {
         ...NONE,
         entry: ["/app/server", "--port", "8080"],
         env: [
-          ["LANG", "C.UTF-8"],
-          ["MODE", "prod"],
+          ["LANG", SecureString.of("C.UTF-8")],
+          ["MODE", SecureString.of("prod")],
         ],
         ports: ["8080", "53/udp"],
       },

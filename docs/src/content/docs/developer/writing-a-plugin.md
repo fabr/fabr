@@ -297,14 +297,17 @@ targetdef text_lint {
 
 `max_length` is a string, not a file dependency, so it is not a requirement: the evaluation reads
 it from `context` and passes it to the linter, with `Computable.forAll` waiting for both it and
-the tool (add `Computable` to the import):
+the tool (add `Computable` and `secure` to the import). A string property's value is a
+`SecureString`, which keeps any part of it that may be secret out of fabr's output: build an
+argument from it with the `secure` template tag, which gives one too, never a plain template
+string, which throws:
 
 ```ts
   evaluateMaterialized: (context, { srcs }) =>
     Computable.forAll([context.getGlobalRunnable("TEXT_LINTER"), context.getString("max_length")], (linter, maxLength) => {
       const files = FileSet.unionAll(...srcs);
       const names = [...files].map(([name]) => name).sort();
-      const options = maxLength === undefined ? [] : [`--max-length=${maxLength}`];
+      const options = maxLength === undefined ? [] : [secure`--max-length=${maxLength}`];
       const staged = FileSet.unionAll(files, FileSet.layout({ ".linter": linter }));
       return createExecAction(staged, linter.toCommandLine([...options, ...names], { base: ".linter" }), "lint-report.txt");
     }),
@@ -335,15 +338,15 @@ The option is part of the command line, so changing `max_length` runs the action
 that sets it:
 
 ```ts
-  it("fails a line longer than max_length", () => {
-    const result = fabr(
-      { "PROJECT.fabr": project("  max_length = 10;\n"), "docs/guide.md": "# A longer heading\n" },
-      "build",
-      "docs_lint"
-    );
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /guide\.md:1: longer than 10 characters/);
-  });
+it("fails a line longer than max_length", () => {
+  const result = fabr(
+    { "PROJECT.fabr": project("  max_length = 10;\n"), "docs/guide.md": "# A longer heading\n" },
+    "build",
+    "docs_lint"
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /guide\.md:1: longer than 10 characters/);
+});
 ```
 
 ```sh

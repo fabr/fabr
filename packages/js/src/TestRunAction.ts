@@ -40,17 +40,18 @@ import {
   FabrError,
   FileSet,
   fileSetInput,
-  findExecutable,
+  findCommand,
+  foundStage,
   getResultFileSets,
   IBuildActionDefinition,
   IChangedFiles,
   IFile,
   IStagedStep,
-  joinDepsPath,
-  linkTrees,
   ITaskReport,
   ITestReport,
+  joinDepsPath,
   lcovOf,
+  linkTrees,
   MemoryFile,
   mergeCoverage,
   mergeTestReports,
@@ -61,19 +62,21 @@ import {
   readJsonFile,
   retriedReport,
   RunnableArgument,
+  secure,
+  SecureString,
   splitDepsPath,
   stringListConfig,
   TaskProgress,
-  variableEntry,
   TEST_ARTIFACTS_DIR,
   TEST_REPORT_FILENAME,
-  type ITestResult,
   testFailureOf,
   toArgv,
   toError,
   toJsonObject,
   toStringList,
   toTestReport,
+  type ITestResult,
+  variableEntry,
   writeFileSet,
 } from "@fabr-build/core";
 import {
@@ -107,7 +110,7 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
 const JS_TEST_STEP: IBuildActionDefinition = { id: "js:test-run", version: 14, run: runTests, stage: stageTests };
 
 /** Read the `env` config member, the variables the test processes run with: each written `NAME=value`, a name holding no `=`. */
-function declaredEnv(action: BuildAction): Record<string, string> {
+function declaredEnv(action: BuildAction): Record<string, SecureString> {
   return Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
@@ -119,7 +122,7 @@ function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSe
     commands: (scheduledByRunner(action)
       ? [runnerInvocationOf(action, argv, testFiles)]
       : testFiles.map((file, index) => invocationOf(action, argv, file, index))
-    ).map(invocation => ({ stages: [{ argv: [findExecutable(argv[0], join(dir, COMPILE_OUT_DIR)), ...invocation] }] })),
+    ).map(invocation => ({ stages: [foundStage({ argv: [argv[0], ...invocation] }, join(dir, COMPILE_OUT_DIR))] })),
     env: new Map(Object.entries(declaredEnv(action))),
   }));
 }
@@ -169,7 +172,7 @@ function testFilesOf(action: BuildAction): Computable<string[]> {
  * interpreter, then the file's own report document and, unless `action` is
  * uncached (where nothing is keyed on them), its reads document, then the
  * file. */
-function invocationOf(action: BuildAction, argv: string[], file: string, index: number): string[] {
+function invocationOf(action: BuildAction, argv: readonly SecureString[], file: string, index: number): Array<string | SecureString> {
   return [
     ...argv.slice(1),
     `--report=${invocationReport(index)}`,
@@ -184,7 +187,7 @@ function scheduledByRunner(action: BuildAction): boolean {
 }
 
 /** @return the runner's one invocation over every test file, where it schedules them itself: `argv` less its interpreter, the report, the artifacts directory, then the files. */
-function runnerInvocationOf(action: BuildAction, argv: string[], testFiles: string[]): string[] {
+function runnerInvocationOf(action: BuildAction, argv: readonly SecureString[], testFiles: string[]): Array<string | SecureString> {
   return [
     ...argv.slice(1),
     `--report=${invocationReport(0)}`,
@@ -300,7 +303,7 @@ function runScheduledByRunner(action: BuildAction, ctx: ActionContext, report: I
       .then(() => {
         const tally = new RunTally(1, report.progress);
         const invocation = runnerInvocationOf(action, argv, testFiles);
-        return execute(ctx.processLimit, findExecutable(argv[0], cwd), invocation, cwd, env, report)
+        return execute(ctx.processLimit, findCommand(argv[0], cwd), invocation, cwd, env, report)
           .then(
             () => undefined,
             (err: Error) => err
@@ -389,8 +392,8 @@ class TestCoverage {
   constructor(
     private readonly ctx: ActionContext,
     private readonly report: ITaskReport,
-    private readonly argv: string[],
-    private readonly env: Record<string, string>,
+    private readonly argv: readonly SecureString[],
+    private readonly env: Record<string, SecureString>,
     private readonly measured: string[]
   ) {}
 
@@ -410,12 +413,13 @@ class TestCoverage {
 
   /** @return the environment test file `index`'s processes run in: the
    * declared one, loading the prepared module and naming where it records. */
-  public environmentOf(index: number): Record<string, string> {
+  public environmentOf(index: number): Record<string, SecureString> {
     const preload = `--require ${JSON.stringify(join(this.ctx.workDir, COVERAGE_PRELOAD_FILE))}`;
+    const options = this.env.NODE_OPTIONS;
     return {
       ...this.env,
-      NODE_OPTIONS: [this.env.NODE_OPTIONS, preload].filter(Boolean).join(" "),
-      [COVERAGE_DIR_VARIABLE]: join(this.ctx.workDir, COVERAGE_RAW_DIR, String(index)),
+      NODE_OPTIONS: options === undefined || options.length === 0 ? SecureString.of(preload) : secure`${options} ${preload}`,
+      [COVERAGE_DIR_VARIABLE]: SecureString.of(join(this.ctx.workDir, COVERAGE_RAW_DIR, String(index))),
     };
   }
 
@@ -458,7 +462,7 @@ class TestCoverage {
     fs.writeFileSync(join(this.ctx.workDir, document), JSON.stringify(options));
     return execute(
       this.ctx.processLimit,
-      findExecutable(this.argv[0], this.ctx.workDir),
+      findCommand(this.argv[0], this.ctx.workDir),
       [...this.argv.slice(1), `${MANIFEST_FLAG}${document}`],
       this.ctx.workDir,
       this.env,
@@ -559,7 +563,7 @@ function toKeptRunsDocument(json: unknown): IKeptRunsDocument {
           list !== undefined &&
           (!Array.isArray(list) || list.some(index => typeof index !== "number" || names[index] === undefined))
         ) {
-          throw new Error(`expected the indices of ${what} ${run.file} read`);
+          throw new Error(`expected the indices of ${what} ${String(run.file)} read`);
         }
         return list as number[] | undefined;
       };
@@ -849,8 +853,8 @@ function runRetried(
   ctx: ActionContext,
   action: BuildAction,
   taskReport: ITaskReport,
-  argv: string[],
-  env: Record<string, string>,
+  argv: readonly SecureString[],
+  env: Record<string, SecureString>,
   file: string,
   index: number,
   layout: IPackageLayout,
@@ -879,8 +883,8 @@ function runOneFile(
   ctx: ActionContext,
   action: BuildAction,
   taskReport: ITaskReport,
-  argv: string[],
-  env: Record<string, string>,
+  argv: readonly SecureString[],
+  env: Record<string, SecureString>,
   file: string,
   index: number,
   layout: IPackageLayout,
@@ -892,7 +896,7 @@ function runOneFile(
    * report carries the outcomes, and the capture backs the no-report failure. */
   return execute(
     ctx.processLimit,
-    findExecutable(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)),
+    findCommand(argv[0], join(ctx.workDir, COMPILE_OUT_DIR)),
     invocation,
     join(ctx.workDir, COMPILE_OUT_DIR),
     env,
@@ -917,7 +921,13 @@ function runOneFile(
  * failed invocation's outcome is its own error, and a successful one's is an
  * ExecutionError saying the report is missing or unusable.
  */
-function judgeRun(workDir: string, invocation: string[], reportName: string, file: string, error: Error | undefined): IFileRun {
+function judgeRun(
+  workDir: string,
+  invocation: ReadonlyArray<string | SecureString>,
+  reportName: string,
+  file: string,
+  error: Error | undefined
+): IFileRun {
   let report: ITestReport;
   try {
     report = parseJson(fs.readFileSync(join(workDir, reportName)), reportName, toTestReport);
@@ -930,7 +940,8 @@ function judgeRun(workDir: string, invocation: string[], reportName: string, fil
     const detail = isMissingFile(readErr)
       ? `the test runner exited successfully but wrote no ${reportName} for ${file}`
       : `the test runner's report for ${file} is unusable: ${toError(readErr).message}`;
-    return { file, error: new ExecutionError(`$ ${invocation.join(" ")}\n${detail}`) };
+    const shown = invocation.map(arg => (typeof arg === "string" ? arg : arg.toDisplayString()));
+    return { file, error: new ExecutionError(`$ ${shown.join(" ")}\n${detail}`) };
   }
   return { file, report };
 }
@@ -1059,7 +1070,7 @@ export interface ITestRunInputs {
    * refreshed expectation files. */
   outputs: string[];
   /** The environment variables each invocation runs with: its whole environment. */
-  env: ReadonlyMap<string, string>;
+  env: ReadonlyMap<string, SecureString>;
   /** Where the run is measured for coverage: the coverage driver's command
    * line, run from the install root, and the files it measures. */
   coverage?: { argv: readonly RunnableArgument[]; measured: IMeasuredFiles };
@@ -1117,7 +1128,7 @@ export function createTestRunAction({
       outputs,
       layout,
       ...selfConfig(self),
-      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+      ...(env.size > 0 ? { env: [...env].map(([name, value]) => secure`${name}=${value}`) } : {}),
       ...(coverage ? { coverage_argv: coverage.argv } : {}),
       ...(retries > 0 ? { flake_retries: String(retries) } : {}),
       ...(artifacts ? { artifacts: "on" } : {}),

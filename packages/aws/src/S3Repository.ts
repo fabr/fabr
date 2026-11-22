@@ -28,8 +28,8 @@ import {
   fetchFile,
   FileSet,
   HttpStatusError,
-  ITaskReport,
   IProvenanceStep,
+  ITaskReport,
   mapComputable,
   Name,
   PartialRepositoryRef,
@@ -45,6 +45,7 @@ import {
   RepositoryRef,
   RepositoryWriter,
   sendRequest,
+  shownUrl,
   toError,
 } from "@fabr-build/core";
 import {
@@ -129,9 +130,9 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** Vend the reference for `name` (see the class comment): an object or objects of a bucket, or the namespace of a bucket. */
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
-      throw new FabrError(`'${name.toString()}' is an S3 object, not resolved, so an override marker means nothing on it`).withHelp(
-        "write the reference without the marker"
-      );
+      throw new FabrError(
+        `'${name.toDisplayString()}' is an S3 object, not resolved, so an override marker means nothing on it`
+      ).withHelp("write the reference without the marker");
     }
     const { bucket, separator, at } = this.splitBucket(name);
     if (separator === undefined) {
@@ -145,7 +146,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
 
   /** Vend the coordinate `name` publishes at: an object's key, or a prefix ending in `/` (see {@link S3PublishRef}). */
   public getRepositoryPublishRef(name: Name): S3PublishRef {
-    const written = `${this.written}:${name.toString()}`;
+    const written = `${this.written}:${name.toDisplayString()}`;
     if (!name.isSimpleName() || name.getMarker() !== undefined || name.getRenameTo() !== undefined) {
       throw new FabrError(
         `'${written}' is not an S3 address to publish to: it is written as a pattern, a rename or with a marker`
@@ -244,8 +245,8 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     const projection = reference.projections[0];
     if (projection === undefined) {
       return Computable.reject(
-        new FabrError(`'${this.written}:${reference.name}' names a bucket, not objects`).withHelp(
-          `name the objects, as in '${this.written}:${reference.name}:<key>'`
+        new FabrError(`'${this.written}:${bucket}' names a bucket, not objects`).withHelp(
+          `name the objects, as in '${this.written}:${bucket}:<key>'`
         )
       );
     }
@@ -285,7 +286,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   /** Split the bucket off `name`, with the separator after it and where the rest begins where there is a rest. */
   private splitBucket(name: Name): { bucket: string; separator?: ":" | "/"; at: number } {
     const literal = name.getLiteralPrefix();
-    const written = `${this.written}:${name.toString()}`;
+    const written = `${this.written}:${name.toDisplayString()}`;
     const end = literal.search(/[:/]/);
     if (end === -1) {
       if (!name.isSimpleName()) {
@@ -309,13 +310,13 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
     const { endpoint, region } = this.account;
     let found = this.regions.get(bucket);
     if (found === undefined && endpoint !== undefined) {
-      const location: IBucketLocation = { bucket, region: region ?? "us-east-1", endpoint };
+      const location: IBucketLocation = { bucket, region, endpoint };
       const request = bucketRequest(location);
       found = this.signed(request, location)
         .then(headers => sendRequest(requestUrl(request), { method: "HEAD", headers }))
         .then(response => {
           if (response.statusCode === 404) {
-            throw new FabrError(`${endpoint.origin} has no bucket '${bucket}'`);
+            throw new FabrError(`${shownUrl(endpoint)} has no bucket '${bucket}'`);
           }
           return location.region;
         });
@@ -329,7 +330,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
           throw new FabrError(
             response.statusCode === 404
               ? `S3 has no bucket '${bucket}'`
-              : `cannot find the region of S3 bucket '${bucket}' (${response.statusCode} from ${url})`
+              : `cannot find the region of S3 bucket '${bucket}' (${response.statusCode} from ${shownUrl(url)})`
           );
         }
         return named;
@@ -351,9 +352,13 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
   private fetchObject(location: IBucketLocation, key: string): Computable<Fetched> {
     const request = objectRequest(location, key);
     const url = requestUrl(request);
-    const origin: IS3Origin = { kind: S3_PROVENANCE, account: this.account.name, url: `s3://${location.bucket}/${key}` };
+    const origin: IS3Origin = {
+      kind: S3_PROVENANCE,
+      account: this.account.name,
+      url: `s3://${location.bucket}/${key}`,
+    };
     return fetchFile(this.account.context, {
-      key: url,
+      key: url.toUnmaskedString(),
       tag: OBJECT_TAG,
       report: { resource: origin.url, role: "content" },
       name: key,
@@ -380,7 +385,7 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
         file: "list.xml",
         tag: LISTING_TAG,
         report: { resource: `listing of s3://${location.bucket}/${prefix}`, role: "index" },
-        convert: text => parseListing(text, url),
+        convert: text => parseListing(text, shownUrl(url)),
         headers: () => this.signed(request, location),
         options: { immutable: false, forceRevalidate: current },
       }).then(listing => {
@@ -443,12 +448,12 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
 
   /**
    * Store `object` (`PutObject`), `size` bytes read as they are sent, checked by
-   * S3 against its SHA-256 and kept with it as its checksum. `sent` is told the
-   * bytes sent so far.
+   * S3 against its SHA-256 and kept with it as its checksum. `sent` is told
+   * the bytes sent so far.
    */
   private store(
     location: IBucketLocation,
-    { key, file }: IStoredObject,
+    { file, key }: IStoredObject,
     size: number,
     sent: (bytes: number) => void
   ): Computable<void> {
@@ -488,13 +493,13 @@ export class S3Repository implements Repository, RepositoryLookup, RepositoryWri
         file: "buckets.xml",
         tag: BUCKETS_TAG,
         report: { resource: `buckets of ${this.account.name}`, role: "index" },
-        convert: text => parseBuckets(text, url),
+        convert: text => parseBuckets(text, shownUrl(url)),
         headers: () => this.account.signer.sign(request, S3_SERVICE, region),
         options: { immutable: false },
       }).then(
         listing => {
           if (listing === undefined) {
-            throw new FabrError(`${url} has no list of buckets`);
+            throw new FabrError(`${shownUrl(url)} has no list of buckets`);
           }
           const all = [...buckets, ...listing.buckets];
           return listing.next === undefined ? all : page(listing.next, all);

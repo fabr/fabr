@@ -34,13 +34,18 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
+  isWords,
   mapEntryError,
+  MetadataMap,
+  MetadataValue,
   PackageFileSet,
   PropertyMap,
+  PropertyMapValue,
   Provided,
-  UsedFor,
   RuleResult,
+  SecureString,
   TargetContext,
+  UsedFor,
 } from "@fabr-build/core";
 import { describeJava } from "../Description";
 import { checkPomMetadata } from "../MavenPublish";
@@ -113,13 +118,14 @@ export default defineRule({
         context.getMap("metadata"),
       ],
       (inputs, dependencies, provided, optional_provided, compile, runtime, mainClass, manifest, metadata) => {
-        checkPomMetadata(context.name, metadata, (key, message) => mapEntryError(metadata, key, message));
+        const pomMetadata = metadataOf(metadata);
+        checkPomMetadata(context.name, pomMetadata, (key, message) => mapEntryError(metadata, key, message));
         return buildJar(
           context,
           inputs,
           { dependencies, provided, optional_provided, compile, runtime },
-          manifestAttributesOf(context.name, mainClass?.toString(), manifest),
-          metadata
+          manifestAttributesOf(context.name, mainClass?.toString().toUnmaskedString(), manifest),
+          pomMetadata
         );
       }
     );
@@ -147,7 +153,7 @@ export function jarNameOf(target: string): string {
  * `runtime` and `compile` ones marked `run` and `build` in `usedFor`, with its
  * `metadata`.
  */
-function packageOf(context: TargetContext, files: FileSet, edges: JarEdges, metadata: PropertyMap): PackageFileSet {
+function packageOf(context: TargetContext, files: FileSet, edges: JarEdges, metadata: MetadataMap): PackageFileSet {
   return new PackageFileSet(
     files,
     context.name,
@@ -180,10 +186,10 @@ interface JarAttributes {
  */
 function manifestAttributesOf(name: string, mainClass: string | undefined, manifest: PropertyMap): JarAttributes {
   const written = [...manifest].map(([key, value]): [string, string] => {
-    if (!Array.isArray(value) || value.some(item => typeof item !== "string")) {
+    if (!isWords(value)) {
       throw new FabrError(`${name}'s manifest attribute '${key}' is a string, not a block`);
     }
-    return [key, (value as string[]).join(" ")];
+    return [key, SecureString.join(value, " ").toUnmaskedString()];
   });
   const keys = written.map(([key]) => key.toLowerCase());
   if (keys.includes("manifest-version")) {
@@ -206,7 +212,7 @@ function buildJar(
   inputs: JarInputs,
   edges: JarEdges,
   attributes: JarAttributes,
-  metadata: PropertyMap
+  metadata: MetadataMap
 ): Computable<RuleResult> {
   const { mainClass } = attributes;
   const { srcs, resources } = inputs;
@@ -244,4 +250,11 @@ function buildJar(
         }
       )
     );
+}
+
+/** @return `map`, a MAP property's value, as the metadata a package carries: each value's words as written. */
+function metadataOf(map: PropertyMap): MetadataMap {
+  const value = (entry: PropertyMapValue): MetadataValue =>
+    isWords(entry) ? entry.map(word => word.toUnmaskedString()) : Array.isArray(entry) ? entry.map(metadataOf) : metadataOf(entry);
+  return new Map([...map].map(([key, entry]) => [key, value(entry)]));
 }

@@ -43,6 +43,7 @@ import {
   FileSet,
   FileSetRef,
   Flag,
+  isWords,
   makeRewrite,
   mapEntryError,
   MemoryFile,
@@ -52,6 +53,7 @@ import {
   RewriteFn,
   RuleResult,
   RunnableFileSet,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import { compileContents, formatJSTarget, JSTarget, parseJSTarget, stripExtension, usesNodeGlobals } from "../JSPackage";
@@ -85,7 +87,7 @@ export default defineRule({
     ResolutionSpec<{ srcs: Computable<PackageSources>; entry: Computable<ContainedSources>; deps: Computable<PackageSources> }>
   > {
     return context.getGlobalString("JS_TARGET").then(target => {
-      const inputTarget = bundleInputTarget(parseJSTarget(target));
+      const inputTarget = bundleInputTarget(parseJSTarget(target.toUnmaskedString()));
       return {
         build: {
           srcs: context.getPackageProperty("srcs", inputTarget, NPM_FORMAT),
@@ -326,7 +328,13 @@ function buildJsBundle(context: TargetContext, contents: IBundleContents): Compu
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getGlobalString("JS_BUNDLE_FORMAT"), context.getGlobalString("BUILD_TYPE")],
     (target, bundleFormat, buildType) =>
-      buildWithInputs(context, parseJSTarget(target), toBundleFormat(bundleFormat), buildType, contents)
+      buildWithInputs(
+        context,
+        parseJSTarget(target.toUnmaskedString()),
+        toBundleFormat(bundleFormat),
+        buildType.toUnmaskedString(),
+        contents
+      )
   );
 }
 
@@ -359,12 +367,11 @@ function buildWithInputs(
         Object.assign(defines, IMPORT_META_DEFINES);
       }
       for (const [key, value] of defineMap) {
-        /* A map scalar is a string list; a sub-map / list of sub-maps is not code text.
-         * `every` with a type-predicate narrows `value` to string[] for the join below. */
-        if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === "string")) {
+        /* A map scalar is a string list; a sub-map / list of sub-maps is not code text. */
+        if (!isWords(value)) {
           throw mapEntryError(defineMap, key, `defines value '${key}' must be a scalar string (a define is esbuild code text)`);
         }
-        defines[key] = value.join(" ");
+        defines[key] = SecureString.join(value, " ").toUnmaskedString();
       }
       return composeBundle(context, {
         jsTarget,

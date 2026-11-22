@@ -57,7 +57,9 @@ describe("assetStubFor", () => {
     /* A template literal looks up toString/valueOf and needs functions there;
      * answering with their own names is "Cannot convert object to primitive". */
     const styles = stub("./a.scss");
+    /* eslint-disable @typescript-eslint/restrict-template-expressions -- the coercion is what is tested */
     expect(() => `${styles}`).to.not.throw();
+    /* eslint-enable @typescript-eslint/restrict-template-expressions */
     expect(() => String(styles)).to.not.throw();
   });
 

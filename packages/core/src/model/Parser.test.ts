@@ -18,12 +18,14 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "../core/SecureString";
 import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import {
   DeclKind,
   IBuildFileContents,
   CommandList,
+  declName,
   ICommandStage,
   IResolvableDecl,
   IMapItemDecl,
@@ -135,7 +137,7 @@ function entriesOf(value: IValue | undefined): IMapItemDecl[] | undefined {
 function propertyValues(properties: IPropertyDecl[]): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const prop of properties) {
-    result[prop.name.toString()] = prop.values.map(value => nameText(nameOf(value)));
+    result[prop.name.toUnmaskedString()] = prop.values.map(value => nameText(nameOf(value)));
   }
   return result;
 }
@@ -156,7 +158,7 @@ function targetSummary(target: ITargetDecl): Record<string, unknown> {
 function defaultValues(decls: IResolvableDecl[]): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const decl of decls) {
-    result[decl.name.toString()] =
+    result[decl.name.toUnmaskedString()] =
       decl.kind === DeclKind.Target ? targetSummary(decl) : decl.values.map(value => nameText(nameOf(value)));
   }
   return result;
@@ -166,7 +168,7 @@ function defaultValues(decls: IResolvableDecl[]): Record<string, unknown> {
 function summarize(contents: IBuildFileContents): Record<string, unknown> {
   const targets: Record<string, unknown> = {};
   for (const target of contents.targets) {
-    targets[target.name.toString()] = targetSummary(target);
+    targets[target.name.toUnmaskedString()] = targetSummary(target);
   }
   const targetdefs: Record<string, Record<string, string>> = {};
   for (const def of contents.targetdefs) {
@@ -180,8 +182,8 @@ function summarize(contents: IBuildFileContents): Record<string, unknown> {
     );
   }
   return {
-    includes: contents.includes.map(include => include.name.toString()),
-    plugins: contents.plugins.map(plugin => plugin.name.toString()),
+    includes: contents.includes.map(include => include.name.toUnmaskedString()),
+    plugins: contents.plugins.map(plugin => plugin.name.toUnmaskedString()),
     properties: propertyValues(contents.properties),
     defaults: defaultValues(contents.defaults),
     targets,
@@ -216,8 +218,8 @@ describe("override markers on a name", () => {
   });
 
   it("keeps the name's text as written", () => {
-    expect(parseName("foo!").toString()).to.equal("foo!");
-    expect(parseName("foo!").withoutMarker().toString()).to.equal("foo");
+    expect(parseName("foo!").toUnmaskedString()).to.equal("foo!");
+    expect(parseName("foo!").withoutMarker().toUnmaskedString()).to.equal("foo");
   });
 });
 
@@ -292,24 +294,24 @@ describe("Parser Tests", () => {
     );
     /* A redirect's target and a substitution's text are values too. */
     const command = parsedCommand("run = cmd --x=1 < ./in=put > out=put;");
-    expect(command?.pipelines[0][0].args.map(arg => arg.value.toString())).to.deep.equal(["--x=1"]);
-    expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("./in=put");
-    expect(command?.pipelines[0][0].stdout?.value.toString()).to.equal("out=put");
-    expect(nameOf(parseValid("v = --x=${V};").properties[0].values[0]).toString()).to.equal("--x=${V}");
+    expect(command?.pipelines[0][0].args.map(arg => arg.value.toUnmaskedString())).to.deep.equal(["--x=1"]);
+    expect(command?.pipelines[0][0].stdin?.value.toUnmaskedString()).to.equal("./in=put");
+    expect(command?.pipelines[0][0].stdout?.value.toUnmaskedString()).to.equal("out=put");
+    expect(nameOf(parseValid("v = --x=${V};").properties[0].values[0]).toUnmaskedString()).to.equal("--x=${V}");
   });
 
   it("still ends a word at '=' in a <k=v> list, among map keys, and at a word's start", () => {
     const valueOf = (text: string): Name => nameOf(parseValid(text).properties[0].values[0]);
-    expect(valueOf("dep = mylib<A=1,B=2>:x=y;").toString()).to.equal("mylib:x=y<A=1, B=2>");
-    expect(valueOf("dep = mylib <A=1,B=2>;").toString()).to.equal("mylib<A=1, B=2>");
-    expect(valueOf("dep = ${V<A=1,B=2>}=x;").toString()).to.equal("${V<A=1, B=2>}=x");
+    expect(valueOf("dep = mylib<A=1,B=2>:x=y;").toUnmaskedString()).to.equal("mylib:x=y<A=1, B=2>");
+    expect(valueOf("dep = mylib <A=1,B=2>;").toUnmaskedString()).to.equal("mylib<A=1, B=2>");
+    expect(valueOf("dep = ${V<A=1,B=2>}=x;").toUnmaskedString()).to.equal("${V<A=1, B=2>}=x");
     const items = entriesOf(parseValid("m = { a=--x=1; b={ c=d=e; }; }").properties[0].values[0]) ?? [];
     expect(items.map(item => (item.kind === DeclKind.Property ? item.name.toBaseString() : ""))).to.deep.equal(["a", "b"]);
     const [a, b] = items as IPropertyDecl[];
-    expect(nameOf(a.values[0]).toString()).to.equal("--x=1");
-    expect(nameOf((entriesOf(b.values[0])?.[0] as IPropertyDecl).values[0]).toString()).to.equal("d=e");
+    expect(nameOf(a.values[0]).toUnmaskedString()).to.equal("--x=1");
+    expect(nameOf((entriesOf(b.values[0])?.[0] as IPropertyDecl).values[0]).toUnmaskedString()).to.equal("d=e");
     /* A block may end its property with no ';'. */
-    expect(parseValid("m = { a=1; } after=1;").properties.map(prop => prop.name.toString())).to.deep.equal(["m", "after"]);
+    expect(parseValid("m = { a=1; } after=1;").properties.map(prop => prop.name.toUnmaskedString())).to.deep.equal(["m", "after"]);
     /* A missing ';' before the next declaration is still reported. */
     expect(parseInvalid("a = x\nb = y;")).to.deep.equal([diagnosticBlock(2, 3, "Read '=' but expected Name, ';', or '}'", "b = y;")]);
     expect(parseInvalid("a = =x;")).to.deep.equal([diagnosticBlock(1, 5, "Read '=' but expected Name, ';', or '}'", "a = =x;")]);
@@ -402,10 +404,10 @@ describe("Parser Tests", () => {
   it("reads a requirement on a braced substitution", () => {
     const name = nameOf(parseValid("A = x${B<K=v, L=${C}>}y;").properties[0].values[0]);
     expect(nameText(name)).to.equal("x+var(B)+y");
-    expect(name.toString()).to.equal("x${B<K=v, L=${C}>}y");
+    expect(name.toUnmaskedString()).to.equal("x${B<K=v, L=${C}>}y");
     const part = (name as unknown as { parts: NamePart[] }).parts[1];
-    expect(part.constraints?.map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal(["K=v", "L=${C}"]);
-    expect(nameOf(parseValid('A = "${B<K=v>}";').properties[0].values[0]).toString()).to.equal("${B<K=v>}");
+    expect(part.constraints?.map(([key, value]) => `${key}=${value.toUnmaskedString()}`)).to.deep.equal(["K=v", "L=${C}"]);
+    expect(nameOf(parseValid('A = "${B<K=v>}";').properties[0].values[0]).toUnmaskedString()).to.equal("${B<K=v>}");
   });
 
   it("reads an edit on a braced substitution", () => {
@@ -431,7 +433,7 @@ describe("Parser Tests", () => {
 
   it("renders an edited substitution as written", () => {
     for (const text of ["x${B%%-*}y", "${TARGET/-*/-unknown-linux}", "${B<K=v>/a/}", "${B#a\\}b}"]) {
-      expect(nameOf(parseValid(`A = ${text};`).properties[0].values[0]).toString()).to.equal(text);
+      expect(nameOf(parseValid(`A = ${text};`).properties[0].values[0]).toUnmaskedString()).to.equal(text);
     }
   });
 
@@ -519,16 +521,16 @@ describe("Parser Tests", () => {
 
   it("parses coordinate-keyed members (sync)", () => {
     const contents = parseValid("sync fabr_release {\n @npm:@fabr/core:0.1 = core;\n @npm:@fabr/cli:0.2 = cli;\n}");
-    const target = contents.targets.find(t => t.name.toString() === "fabr_release");
+    const target = contents.targets.find(t => t.name.toUnmaskedString() === "fabr_release");
     expect(target?.type).to.equal("sync");
     expect(target?.properties.length).to.equal(2);
     const [core, cli] = propertiesOf(target!);
     /* The coordinate IS the key — a property key is a Name, so a whole
      * reference needs no separate field; the value is the content target. */
-    expect(core.name.toString()).to.equal("@npm:@fabr/core:0.1");
-    expect(core.values.map(v => nameOf(v).toString())).to.deep.equal(["core"]);
-    expect(cli.name.toString()).to.equal("@npm:@fabr/cli:0.2");
-    expect(cli.values.map(v => nameOf(v).toString())).to.deep.equal(["cli"]);
+    expect(core.name.toUnmaskedString()).to.equal("@npm:@fabr/core:0.1");
+    expect(core.values.map(v => nameOf(v).toUnmaskedString())).to.deep.equal(["core"]);
+    expect(cli.name.toUnmaskedString()).to.equal("@npm:@fabr/cli:0.2");
+    expect(cli.values.map(v => nameOf(v).toUnmaskedString())).to.deep.equal(["cli"]);
   });
 
   it("recovers after a bad statement and parses the subsequent ones", () => {
@@ -756,7 +758,7 @@ describe("Parser Tests", () => {
     );
     expect(errors.join("\n")).to.contain("The fabr release is declared only by the first statement of the project file");
     expect(contents.fabr).to.be.undefined;
-    expect(contents.plugins.map(plugin => plugin.name.toString())).to.deep.equal(["x", "y"]);
+    expect(contents.plugins.map(plugin => plugin.name.toUnmaskedString())).to.deep.equal(["x", "y"]);
   });
 
   it("allows '-' and '.' in plugin and target names (real npm package names), and a plugin named through a repository", () => {
@@ -769,7 +771,7 @@ describe("Parser Tests", () => {
     expect(
       parseValid("plugin greeter<STAGE=0>;")
         .plugins[0].name.getConstraints()
-        .map(([key, value]) => `${key}=${value.toString()}`)
+        .map(([key, value]) => `${key}=${value.toUnmaskedString()}`)
     ).to.deep.equal(["STAGE=0"]);
     expect(summarize(parseValid("js_package my-target {\n  srcs = src:*.ts; }"))).to.deep.equal(
       summary({ targets: { "my-target": { type: "js_package", properties: { srcs: ["src:+glob(*)+.ts"] } } } })
@@ -808,18 +810,18 @@ describe("Parser Tests", () => {
       return nameOf(parseValid(text).properties[0].values[0]);
     }
     function constraintsOf(name: Name): [string, string][] {
-      return name.getConstraints().map(([key, value]) => [key, value.toString()]);
+      return name.getConstraints().map(([key, value]) => [key, value.toUnmaskedString()]);
     }
 
     it("parses a single constraint and rounds-trips it", () => {
       const name = firstValue("dep = mylib<BUILD_TYPE=release>;");
-      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("mylib<BUILD_TYPE=release>");
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
     });
 
     it("parses multiple constraints, ordered, with a trailing comma", () => {
       const name = firstValue("dep = mylib<BUILD_TYPE=release, JS_TARGET=es6-esm,>;");
-      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release, JS_TARGET=es6-esm>");
+      expect(name.toUnmaskedString()).to.equal("mylib<BUILD_TYPE=release, JS_TARGET=es6-esm>");
       expect(constraintsOf(name)).to.deep.equal([
         ["BUILD_TYPE", "release"],
         ["JS_TARGET", "es6-esm"],
@@ -842,7 +844,7 @@ describe("Parser Tests", () => {
 
     it("reassembles a projection tail after the constraint", () => {
       const name = firstValue("dep = pkg<BUILD_TYPE=release>:build/*.js;");
-      expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
       /* The literal prefix must remain intact for target-prefix matching */
       expect(name.getLiteralPrefix()).to.equal("pkg:build/");
     });
@@ -850,16 +852,16 @@ describe("Parser Tests", () => {
     it("treats the constraint position relative to ':' as equivalent", () => {
       const before = firstValue("dep = pkg<BUILD_TYPE=release>:x;");
       const after = firstValue("dep = pkg:x<BUILD_TYPE=release>;");
-      expect(before.toString()).to.equal("pkg:x<BUILD_TYPE=release>");
-      expect(after.toString()).to.equal("pkg:x<BUILD_TYPE=release>");
+      expect(before.toUnmaskedString()).to.equal("pkg:x<BUILD_TYPE=release>");
+      expect(after.toUnmaskedString()).to.equal("pkg:x<BUILD_TYPE=release>");
     });
 
     it("substitutes variables in constraint values", () => {
       const name = firstValue("dep = mylib<BUILD_TYPE=${DEFAULT}>;");
       expect(name.getSubstitutions().map(part => part.value)).to.deep.equal(["DEFAULT"]);
-      expect(name.substitute(new Map(name.getSubstitutions().map(part => [part, "release"]))).toString()).to.equal(
-        "mylib<BUILD_TYPE=release>"
-      );
+      expect(
+        name.substitute(new Map(name.getSubstitutions().map(part => [part, SecureString.of("release")]))).toUnmaskedString()
+      ).to.equal("mylib<BUILD_TYPE=release>");
     });
 
     it("rejects an empty constraint list", () => {
@@ -883,21 +885,21 @@ describe("Parser Tests", () => {
        * command stdin redirect, so the value parses to a `command`. */
       const command = parsedCommand("run = mylib < src;");
       expect(command?.pipelines[0]).to.have.length(1);
-      expect(command?.pipelines[0][0].command.value.toString()).to.equal("mylib");
-      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("src");
+      expect(command?.pipelines[0][0].command.value.toUnmaskedString()).to.equal("mylib");
+      expect(command?.pipelines[0][0].stdin?.value.toUnmaskedString()).to.equal("src");
     });
 
     it("binds a spaced '<k=v>' as a constraint (disambiguated by the '=')", () => {
       /* A spaced `<` followed by `key=` can only be a constraint (never a
        * redirect target), so it binds to the preceding reference. */
       const name = firstValue("dep = mylib <BUILD_TYPE=release>;");
-      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("mylib<BUILD_TYPE=release>");
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
     });
 
     it("binds a spaced constraint with a projection tail", () => {
       const name = firstValue("dep = mylib <BUILD_TYPE=release>:build/*.js;");
-      expect(name.toString()).to.equal("mylib:build/*.js<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("mylib:build/*.js<BUILD_TYPE=release>");
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
     });
 
@@ -905,35 +907,35 @@ describe("Parser Tests", () => {
       /* Only a `:`/`/`-led projection tail rejoins; arbitrary abutting text is a
        * separate value, not silently glued into `foobar<k=v>`. */
       const values = parseValid("dep = foo<K=V>bar;").properties[0].values;
-      expect(values.map(nameOf).map(name => name.toString())).to.deep.equal(["foo<K=V>", "bar"]);
+      expect(values.map(nameOf).map(name => name.toUnmaskedString())).to.deep.equal(["foo<K=V>", "bar"]);
     });
 
     it("binds a spaced constraint to the preceding value in a list", () => {
       const values = parseValid("dep = a b <K=V>;").properties[0].values;
       expect(values).to.have.length(2);
-      expect(nameOf(values[0]).toString()).to.equal("a");
-      expect(nameOf(values[1]).toString()).to.equal("b<K=V>");
+      expect(nameOf(values[0]).toUnmaskedString()).to.equal("a");
+      expect(nameOf(values[1]).toUnmaskedString()).to.equal("b<K=V>");
     });
 
     it("keeps a spaced bare-identifier redirect a redirect (not a constraint)", () => {
       /* `< input` shares the IDENTIFIER prefix with a constraint key but has no
        * `=`, so the left-factoring commits it to a redirect target. */
       const command = parsedCommand("run = cmd < input;");
-      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("input");
+      expect(command?.pipelines[0][0].stdin?.value.toUnmaskedString()).to.equal("input");
     });
 
     it("keeps both spaced redirects working around the left-factoring", () => {
       const command = parsedCommand("run = cmd < in > out;");
-      expect(command?.pipelines[0][0].stdin?.value.toString()).to.equal("in");
-      expect(command?.pipelines[0][0].stdout?.value.toString()).to.equal("out");
+      expect(command?.pipelines[0][0].stdin?.value.toUnmaskedString()).to.equal("in");
+      expect(command?.pipelines[0][0].stdout?.value.toUnmaskedString()).to.equal("out");
     });
 
     it("parses constraints on a command-line name (parseName parity)", () => {
       const name = parseName("pkg<BUILD_TYPE=release>:build/*.js");
-      expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
       expect(constraintsOf(name)).to.deep.equal([["BUILD_TYPE", "release"]]);
       /* A plain command-line name still parses unchanged */
-      expect(parseName("@npm:esbuild:0.28.1").toString()).to.equal("@npm:esbuild:0.28.1");
+      expect(parseName("@npm:esbuild:0.28.1").toUnmaskedString()).to.equal("@npm:esbuild:0.28.1");
     });
 
     it("rejects trailing input rather than silently dropping it", () => {
@@ -946,7 +948,7 @@ describe("Parser Tests", () => {
     });
 
     it("returns an empty name for empty input", () => {
-      expect(parseName("").toString()).to.equal("");
+      expect(parseName("").toUnmaskedString()).to.equal("");
     });
   });
 
@@ -979,33 +981,33 @@ describe("Parser Tests", () => {
 
     it("parses a selector -> template pair and round-trips it", () => {
       const name = firstValue("out = golden:*.expect -> *.out;");
-      expect(name.toString()).to.equal("golden:*.expect -> *.out");
-      expect(name.getRenameTo()?.toString()).to.equal("*.out");
+      expect(name.toUnmaskedString()).to.equal("golden:*.expect -> *.out");
+      expect(name.getRenameTo()?.toUnmaskedString()).to.equal("*.out");
     });
 
     it("parses a bare REWRITE value with no arrow (no template)", () => {
       const name = firstValue("out = bundle.js;");
       expect(name.getRenameTo()).to.equal(undefined);
-      expect(name.toString()).to.equal("bundle.js");
+      expect(name.toUnmaskedString()).to.equal("bundle.js");
     });
 
     it("binds the arrow after a constraint requirement", () => {
       const name = firstValue("out = pkg<BUILD_TYPE=release>:*.js -> *.mjs;");
-      expect(name.toString()).to.equal("pkg:*.js<BUILD_TYPE=release> -> *.mjs");
-      expect(name.getRenameTo()?.toString()).to.equal("*.mjs");
+      expect(name.toUnmaskedString()).to.equal("pkg:*.js<BUILD_TYPE=release> -> *.mjs");
+      expect(name.getRenameTo()?.toUnmaskedString()).to.equal("*.mjs");
     });
 
     it("substitutes variables in the template", () => {
       const name = firstValue("out = *.entry.js -> *.${BUILD_NO}.min.js;");
       expect(name.getSubstitutions().map(part => part.value)).to.deep.equal(["BUILD_NO"]);
-      expect(name.substitute(new Map(name.getSubstitutions().map(part => [part, "7"]))).toString()).to.equal(
+      expect(name.substitute(new Map(name.getSubstitutions().map(part => [part, SecureString.of("7")]))).toUnmaskedString()).to.equal(
         "*.entry.js -> *.7.min.js"
       );
     });
 
     it("parses on a command-line name (parseName parity)", () => {
       const name = parseName("golden:*.expect -> *.out");
-      expect(name.toString()).to.equal("golden:*.expect -> *.out");
+      expect(name.toUnmaskedString()).to.equal("golden:*.expect -> *.out");
     });
 
     it("accepts a wildcard-free template collapsing a pattern to one name", () => {
@@ -1014,10 +1016,10 @@ describe("Parser Tests", () => {
        * legal is decided against the files it selects, not the written name —
        * FileSet.rename conflicts unless it lands on a single file. */
       const collapsed = firstValue("out = foo/*/bar/index.ts -> index.ts;");
-      expect(collapsed.toString()).to.equal("foo/*/bar/index.ts -> index.ts");
-      expect(collapsed.getRenameTo()?.toString()).to.equal("index.ts");
-      expect(firstValue("out = src/**/a?.js -> one.js;").getRenameTo()?.toString()).to.equal("one.js");
-      expect(parseName("golden:**/*.expect -> one.out").getRenameTo()?.toString()).to.equal("one.out");
+      expect(collapsed.toUnmaskedString()).to.equal("foo/*/bar/index.ts -> index.ts");
+      expect(collapsed.getRenameTo()?.toUnmaskedString()).to.equal("index.ts");
+      expect(firstValue("out = src/**/a?.js -> one.js;").getRenameTo()?.toUnmaskedString()).to.equal("one.js");
+      expect(parseName("golden:**/*.expect -> one.out").getRenameTo()?.toUnmaskedString()).to.equal("one.out");
     });
 
     it("rejects a missing template after the arrow", () => {
@@ -1085,7 +1087,7 @@ describe("Parser Tests", () => {
     describe("numbered captures", () => {
       it("replays a capture more than once", () => {
         const name = nameOf(parseValid("out = v*.tgz -> v$1/node-v$1.tgz;").properties[0].values[0]);
-        expect(name.getRenameTo()?.toString()).to.equal("v$1/node-v$1.tgz");
+        expect(name.getRenameTo()?.toUnmaskedString()).to.equal("v$1/node-v$1.tgz");
       });
 
       it("replays captures out of order, and drops unused ones", () => {
@@ -1247,7 +1249,7 @@ describe("Parser Tests", () => {
     it("nests groups", () => {
       expect(nameText(parseName("!(a|@(b|c))"))).to.equal("glob(!()+a+glob(|@()+b+glob(|)+c+glob()))");
       /* What matters downstream is that it renders back to the written glob. */
-      expect(parseName("!(a|@(b|c))").toString()).to.equal("!(a|@(b|c))");
+      expect(parseName("!(a|@(b|c))").toUnmaskedString()).to.equal("!(a|@(b|c))");
     });
 
     it("reads '**(' as a wildcard then a leader, as bash does", () => {
@@ -1301,10 +1303,10 @@ describe("Parser Tests", () => {
     /** Render a parsed `command` back to a canonical string (command, args, then
      * redirects in a fixed order), to assert the pipeline structure round-trips. */
     function renderStage(stage: ICommandStage): string {
-      const parts = [stage.command.value.toString(), ...stage.args.map(arg => arg.value.toString())];
-      if (stage.stdin !== undefined) parts.push("<", stage.stdin.value.toString());
-      if (stage.stdout !== undefined) parts.push(">", stage.stdout.value.toString());
-      if (stage.stderr !== undefined) parts.push("2>", stage.stderr.value.toString());
+      const parts = [stage.command.value.toUnmaskedString(), ...stage.args.map(arg => arg.value.toUnmaskedString())];
+      if (stage.stdin !== undefined) parts.push("<", stage.stdin.value.toUnmaskedString());
+      if (stage.stdout !== undefined) parts.push(">", stage.stdout.value.toUnmaskedString());
+      if (stage.stderr !== undefined) parts.push("2>", stage.stderr.value.toUnmaskedString());
       if (stage.mergedTo !== undefined) parts.push(stage.mergedTo === "out" ? "2>&1" : "1>&2");
       return parts.join(" ");
     }
@@ -1329,7 +1331,7 @@ describe("Parser Tests", () => {
 
     it("keeps a command's words as its values, the operators among them marked", () => {
       const [property] = parseValid("run = gen a && check < in.txt | count > n.txt 2>&1;").properties;
-      const words = property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"));
+      const words = property.values.map(value => (isNameValue(value) ? value.value.toUnmaskedString() : "?"));
       expect(words).to.deep.equal(["gen", "a", "&&", "check", "<", "in.txt", "|", "count", ">", "n.txt", "2>&1"]);
       expect(property.values.map(value => isNameValue(value) && value.operator === true)).to.deep.equal([
         false,
@@ -1352,21 +1354,26 @@ describe("Parser Tests", () => {
 
     it("reads a quoted or abutting '&&' as part of a word", () => {
       const [property] = parseValid("run = a \"&&\" b&&c &&d '&&';").properties;
-      const words = property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"));
+      const words = property.values.map(value => (isNameValue(value) ? value.value.toUnmaskedString() : "?"));
       expect(words).to.deep.equal(["a", "&&", "b&&c", "&&d", "&&"]);
       expect(property.command).to.equal(undefined);
     });
 
     it("keeps a malformed command's words, recording what is wrong with it", () => {
       const [property] = parseValid("build = make > ;").properties;
-      expect(property.values.map(value => (isNameValue(value) ? value.value.toString() : "?"))).to.deep.equal(["make", ">"]);
+      expect(property.values.map(value => (isNameValue(value) ? value.value.toUnmaskedString() : "?"))).to.deep.equal(["make", ">"]);
       expect(property.command).to.deep.equal({ error: "redirect '>' must be followed by a target name", offset: 13 });
     });
 
     it("binds a spaced '<k=v>' after a word of a command as a constraint", () => {
       expect(sequence("run = tool <K=v> a | b;")).to.equal("tool<K=v> a | b");
       const values = parseValid("build = tool <K=v> a | b;").properties[0].values;
-      expect(values.map(value => (isNameValue(value) ? value.value.toString() : "?"))).to.deep.equal(["tool<K=v>", "a", "|", "b"]);
+      expect(values.map(value => (isNameValue(value) ? value.value.toUnmaskedString() : "?"))).to.deep.equal([
+        "tool<K=v>",
+        "a",
+        "|",
+        "b",
+      ]);
     });
 
     it("parses stdin, stderr and both redirects", () => {
@@ -1453,7 +1460,7 @@ describe("Parser Tests", () => {
     });
 
     it("round-trips a substitution through toString", () => {
-      expect(valueName("V = v`ls -1`/x;").toString()).to.equal("v`ls -1`/x");
+      expect(valueName("V = v`ls -1`/x;").toUnmaskedString()).to.equal("v`ls -1`/x");
     });
 
     it("carries the parsed pipeline, not just the text", () => {
@@ -1579,7 +1586,7 @@ describe("Parser Tests", () => {
       expect(values).to.have.lengthOf(1);
       const entries = entriesOf(values[0]);
       expect(entries).to.not.equal(undefined);
-      return Object.fromEntries(blockEntries(entries).map(entry => [entry.name, entry.values.map(v => nameText(nameOf(v)))]));
+      return Object.fromEntries(blockEntries(entries).map(entry => [declName(entry), entry.values.map(v => nameText(nameOf(v)))]));
     }
 
     it("parses a block as a single value carrying ordered entries", () => {
@@ -1628,7 +1635,7 @@ describe("Parser Tests", () => {
       expect(items).to.have.lengthOf(2);
       const [splice, entry] = items ?? [];
       expect(splice.kind).to.equal(DeclKind.Splice);
-      expect(splice.kind === DeclKind.Splice && splice.ref.toString()).to.equal("FABR_METADATA");
+      expect(splice.kind === DeclKind.Splice && splice.ref.toUnmaskedString()).to.equal("FABR_METADATA");
       expect(entry.kind).to.equal(DeclKind.Property);
       expect(entry.kind === DeclKind.Property && entry.name.toBaseString()).to.equal("description");
     });
@@ -1696,7 +1703,7 @@ describe("Parser Tests", () => {
    * configuration (a requirement), on a declaration it matches one (a guard). */
   describe("rule and repository declarations", () => {
     const guard = (constraints: ReadonlyArray<NameConstraint>): string[] =>
-      constraints.map(([key, pattern]) => `${key}=${pattern.toString()}`);
+      constraints.map(([key, pattern]) => `${key}=${pattern.toUnmaskedString()}`);
 
     it("parses a rule's type, parameter, guards and implementation", () => {
       const [rule] = parseValid(
@@ -1707,7 +1714,9 @@ describe("Parser Tests", () => {
       expect(guard(rule.properties)).to.deep.equal(["BUILD_OPERATION=test"]);
       expect(guard(rule.targetProperties)).to.deep.equal(["test_framework=jest"]);
       const { implementation } = rule;
-      expect(isRuleBlock(implementation) ? undefined : implementation.value.toString()).to.equal("@fabr-build/js:rules/TestJSPackage");
+      expect(isRuleBlock(implementation) ? undefined : implementation.value.toUnmaskedString()).to.equal(
+        "@fabr-build/js:rules/TestJSPackage"
+      );
     });
 
     it("parses a rule with no guard, and a default rule of every type", () => {
@@ -1727,7 +1736,7 @@ describe("Parser Tests", () => {
 
     it("parses a repository declaration", () => {
       const [repository] = parseValid("repository npm_repository = @fabr-build/js:NPMRepository;").repositories;
-      expect([repository.type, repository.implementation.value.toString()]).to.deep.equal([
+      expect([repository.type, repository.implementation.value.toUnmaskedString()]).to.deep.equal([
         "npm_repository",
         "@fabr-build/js:NPMRepository",
       ]);
@@ -1735,7 +1744,7 @@ describe("Parser Tests", () => {
 
     it("leaves a property or target named rule or repository as it is", () => {
       const contents = parseValid("rule = x;\nrepository = y;\nrule_set r { }");
-      expect(contents.properties.map(prop => prop.name.toString())).to.deep.equal(["rule", "repository"]);
+      expect(contents.properties.map(prop => prop.name.toUnmaskedString())).to.deep.equal(["rule", "repository"]);
       expect(contents.rules).to.deep.equal([]);
     });
 
@@ -1769,9 +1778,13 @@ describe("Parser Tests", () => {
       const block = blockOf(
         "rule js_package pkg<BUILD_OPERATION=lint> = generate lint {\n  srcs = pkg.srcs;\n  run = eslint > lint.txt;\n}"
       );
-      expect(block.result.value.toString()).to.equal("lint");
+      expect(block.result.value.toUnmaskedString()).to.equal("lint");
       expect(
-        block.targets.map(target => [target.type, target.name.toString(), propertiesOf(target).map(prop => prop.name.toString())])
+        block.targets.map(target => [
+          target.type,
+          target.name.toUnmaskedString(),
+          propertiesOf(target).map(prop => prop.name.toUnmaskedString()),
+        ])
       ).to.deep.equal([["generate", "lint", ["srcs", "run"]]]);
       expect(block.properties).to.deep.equal([]);
     });
@@ -1780,14 +1793,14 @@ describe("Parser Tests", () => {
       const block = blockOf(
         "rule war_package pkg = contents:**<BUILD_TYPE=release> {\n  jar_package classes { srcs = pkg.srcs; }\n  contents = classes:**;\n  <TARGET=*-linux-*> { extra = a; }\n}"
       );
-      expect(block.result.value.toString()).to.equal("contents:**<BUILD_TYPE=release>");
-      expect(block.targets.map(target => target.name.toString())).to.deep.equal(["classes"]);
-      expect(block.properties.map(prop => prop.name.toString())).to.deep.equal(["contents", "extra<TARGET=*-linux-*>"]);
+      expect(block.result.value.toUnmaskedString()).to.equal("contents:**<BUILD_TYPE=release>");
+      expect(block.targets.map(target => target.name.toUnmaskedString())).to.deep.equal(["classes"]);
+      expect(block.properties.map(prop => prop.name.toUnmaskedString())).to.deep.equal(["contents", "extra<TARGET=*-linux-*>"]);
     });
 
     it("parses a result requiring a configuration", () => {
       const block = blockOf("rule t x = tool<BUILD_OPERATION=run> { script tool { entry = a.sh; } }");
-      expect(block.result.value.getConstraints().map(([key, value]) => `${key}=${value.toString()}`)).to.deep.equal([
+      expect(block.result.value.getConstraints().map(([key, value]) => `${key}=${value.toUnmaskedString()}`)).to.deep.equal([
         "BUILD_OPERATION=run",
       ]);
     });
@@ -1805,7 +1818,7 @@ describe("Parser Tests", () => {
     function guardText(decl: IPropertyDecl): string {
       return decl.name
         .getConstraints()
-        .map(([key, value]) => `${key}=${value.toString()}`)
+        .map(([key, value]) => `${key}=${value.toUnmaskedString()}`)
         .join(", ");
     }
 

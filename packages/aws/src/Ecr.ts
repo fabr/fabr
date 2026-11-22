@@ -31,10 +31,12 @@ import {
   isJsonObject,
   parseJson,
   RenewableToken,
+  SecureString,
   sendRequest,
+  shownUrl,
 } from "@fabr-build/core";
 import { describeServiceError, jsonRequest, serviceErrorOf } from "./JsonProtocol";
-import { IServiceRequest, requestUrl } from "./Signing";
+import { getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
 /** The name of the ECR service under an account. */
@@ -81,19 +83,19 @@ export class EcrSignIn implements Credential {
             `ECR refused a registry token (${response.statusCode}: ${describeServiceError(serviceErrorOf(response.body.toString("utf8")))})`
           ).withHelp("signing in to ECR needs the ecr:GetAuthorizationToken permission");
         }
-        return parseJson(response.body, `token from ${url}`, toEcrToken);
+        return parseJson(response.body, `token from ${shownUrl(url)}`, toEcrToken);
       });
   }
 }
 
 /** Make the URL of the ECR registry of the account `accountId` in `region`. */
-export function registryUrl(accountId: string, region: string): string {
-  return `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+export function registryUrl(accountId: string, region: string): SecureString {
+  return SecureString.of(`https://${accountId}.dkr.ecr.${region}.amazonaws.com`);
 }
 
 /** Make the `GetAuthorizationToken` request: to `endpoint` where there is one, else to ECR's API in `region`. */
-export function tokenRequest(region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
-  return jsonRequest("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken", {}, `api.ecr.${region}.amazonaws.com`, endpoint);
+export function tokenRequest(region: string, endpoint?: SecureString): IServiceRequest & { readonly body: string } {
+  return jsonRequest("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken", {}, getServiceUrl("api.ecr", region), endpoint);
 }
 
 /** Read a `GetAuthorizationToken` answer. Throws where it holds no token. */

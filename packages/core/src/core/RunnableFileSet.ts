@@ -25,15 +25,16 @@ import { IProjection } from "./Reference";
 import { describeProvenance, IProvenanceStep } from "./Provenance";
 import type { Repository } from "./Repository";
 import { HostLink, SymlinkFile } from "./SymlinkFile";
+import { SecureString } from "./SecureString";
 import { FabrError } from "./Errors";
 import { Computable } from "./Computable";
 import { ownerName, TREE_MOUNT } from "./BuildCache";
 import { registerExitTeardown } from "../support/Execute";
 
-const NO_ENV: ReadonlyMap<string, string> = new Map();
+const NO_ENV: ReadonlyMap<string, SecureString> = new Map();
 
 /**
- * A fixed argument of a runnable: text; a program of the host, named on the
+ * A fixed argument of a runnable: text, a string or with masked runs; a program of the host, named on the
  * command line by where it lies; a path relative to the runnable's install
  * (`installFile`: a file of it, or one beside it, as of an install a launch
  * links there, `../<link>/<path>`), placed wherever the install is; or parts
@@ -45,11 +46,15 @@ const NO_ENV: ReadonlyMap<string, string> = new Map();
  * command, and as the text a process is started with ({@link toArgv}).
  */
 export type RunnableArgument =
-  string | HostLink | { readonly installFile: string } | { readonly join: string; readonly parts: readonly RunnableArgument[] };
+  | string
+  | SecureString
+  | HostLink
+  | { readonly installFile: string }
+  | { readonly join: string; readonly parts: readonly RunnableArgument[] };
 
 /** @return `arg` with each install file in it named within `base`. */
 function placedIn(base: string, arg: RunnableArgument): RunnableArgument {
-  if (typeof arg === "string" || arg instanceof HostLink || base === "") {
+  if (typeof arg === "string" || arg instanceof SecureString || arg instanceof HostLink || base === "") {
     return arg;
   }
   if ("installFile" in arg) {
@@ -65,6 +70,9 @@ function placedIn(base: string, arg: RunnableArgument): RunnableArgument {
 function argumentKey(arg: RunnableArgument): unknown {
   if (typeof arg === "string") {
     return arg;
+  }
+  if (arg instanceof SecureString) {
+    return arg.toUnmaskedString();
   }
   if (arg instanceof HostLink) {
     return { host: arg.contentHash, command: path.basename(arg.location) };
@@ -85,30 +93,41 @@ export function manifestArguments(args: readonly RunnableArgument[]): string {
 }
 
 /**
- * Make the command line `args` are run as: a program of the host at its
- * location, an install file at its path (resolved against `anchor`, the
- * directory the command line is relative to, where one is given), and a
- * joined argument as its parts joined. An install file as the command is
- * given a `./` where it is relative and has no `/`, which would otherwise
- * search PATH.
+ * Make the command line `args` are run as, each argument's masked runs kept:
+ * a program of the host at its location, an install file at its path
+ * (resolved against `anchor`, the directory the command line is relative to,
+ * where one is given), and a joined argument as its parts joined. An install
+ * file as the command is given a `./` where it is relative and has no `/`,
+ * which would otherwise search PATH.
  */
-export function toArgv(args: readonly RunnableArgument[], anchor?: string): string[] {
-  const text = (arg: RunnableArgument): string => {
+export function toArgv(args: readonly RunnableArgument[], anchor?: string): SecureString[] {
+  return commandLineOf(args, anchor);
+}
+
+/** Make the command line of {@link toArgv}. */
+function commandLineOf(args: readonly RunnableArgument[], anchor?: string): SecureString[] {
+  const text = (arg: RunnableArgument): SecureString => {
     if (typeof arg === "string") {
+      return SecureString.of(arg);
+    }
+    if (arg instanceof SecureString) {
       return arg;
     }
     if (arg instanceof HostLink) {
-      return arg.location;
+      return SecureString.of(arg.location);
     }
     if ("installFile" in arg) {
-      return anchor === undefined ? arg.installFile : path.resolve(anchor, arg.installFile);
+      return SecureString.of(anchor === undefined ? arg.installFile : path.resolve(anchor, arg.installFile));
     }
-    return arg.parts.map(text).join(arg.join);
+    return SecureString.join(arg.parts.map(text), arg.join);
   };
   return args.map((arg, index) => {
     const written = text(arg);
-    const isInstallFile = index === 0 && typeof arg === "object" && !(arg instanceof HostLink) && "installFile" in arg;
-    return isInstallFile && !written.includes("/") && !path.isAbsolute(written) ? `./${written}` : written;
+    const isInstallFile =
+      index === 0 && typeof arg === "object" && !(arg instanceof SecureString) && !(arg instanceof HostLink) && "installFile" in arg;
+    return isInstallFile && !written.includes("/") && !path.isAbsolute(written.toUnmaskedString())
+      ? SecureString.of("./").concat(written)
+      : written;
   });
 }
 
@@ -154,7 +173,7 @@ export class RunnableFileSet extends FileSet {
     /** Environment variables the program is launched with: over the
      * environment its launcher inherits, under any variables the launcher sets
      * itself (a `generate` target's `env`). */
-    public readonly env: ReadonlyMap<string, string> = NO_ENV,
+    public readonly env: ReadonlyMap<string, SecureString> = NO_ENV,
     origin?: IProvenanceStep,
     /** Arguments given the interpreter before the entry (`--module-path …`), a
      *  part of one naming a file of this runnable's own install. */
@@ -258,8 +277,8 @@ export class RunnableFileSet extends FileSet {
   public withServedContent(
     install: FileSet,
     served: FileSet,
-    extraArgs: string[],
-    env: ReadonlyMap<string, string> = NO_ENV
+    extraArgs: readonly RunnableArgument[],
+    env: ReadonlyMap<string, SecureString> = NO_ENV
   ): RunnableFileSet {
     return new RunnableFileSet(
       install,
@@ -277,7 +296,7 @@ export class RunnableFileSet extends FileSet {
   }
 
   /** Get this runnable with `env` set over the variables it is launched with. */
-  public withEnvironment(env: ReadonlyMap<string, string>): RunnableFileSet {
+  public withEnvironment(env: ReadonlyMap<string, SecureString>): RunnableFileSet {
     if (env.size === 0) {
       return this;
     }
@@ -561,7 +580,11 @@ export function startLaunch(runnable: RunnableFileSet, installDir: string, env: 
     if (!ended) {
       ended = true;
       release();
-      spawnSync(command, args, { env: launchEnv, stdio: "ignore", timeout: 30_000 });
+      spawnSync(
+        command.toUnmaskedString(),
+        args.map(arg => arg.toUnmaskedString()),
+        { env: launchEnv, stdio: "ignore", timeout: 30_000 }
+      );
     }
   };
   const release = registerExitTeardown(end);

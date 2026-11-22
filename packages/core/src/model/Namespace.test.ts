@@ -51,7 +51,7 @@ describe("Namespace.getPrefixMatch", () => {
     const match = ns.getPrefixMatch(parseName("pkg:*.js"));
     expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("");
-    expect(match?.rest.toString()).to.equal("*.js");
+    expect(match?.rest.toUnmaskedString()).to.equal("*.js");
   });
 
   it("keeps the written name for a '/' path (glob immediately after the target)", () => {
@@ -59,14 +59,14 @@ describe("Namespace.getPrefixMatch", () => {
     const match = ns.getPrefixMatch(parseName("pkg/*.txt"));
     expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("pkg/");
-    expect(match?.rest.toString()).to.equal("*.txt");
+    expect(match?.rest.toUnmaskedString()).to.equal("*.txt");
   });
 
   it("strips before ':' with a literal path segment before the glob", () => {
     const match = ns.getPrefixMatch(parseName("pkg:build/*.js"));
     expect(match?.name).to.equal("pkg");
     expect(match?.retainedPrefix).to.equal("");
-    expect(match?.rest.toString()).to.equal("build/*.js");
+    expect(match?.rest.toUnmaskedString()).to.equal("build/*.js");
   });
 });
 

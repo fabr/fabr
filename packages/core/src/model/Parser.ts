@@ -522,7 +522,7 @@ const DIAG_NESTED_NEGATION = new Diagnostic<{ loc: ISourcePosition }>(
  * quoted `'*'`, the literal character). */
 function isWildcardKey(name: Name): boolean {
   const units = name.getGlobUnits();
-  return units.length === 1 && units[0] === "*" && name.toString() === "*";
+  return units.length === 1 && units[0] === "*" && name.toUnmaskedString() === "*";
 }
 
 /**
@@ -1363,7 +1363,7 @@ export class BuildParser {
    */
   private parseFabrDecl(start: number): IFabrDecl | undefined {
     const token = this.token as NameToken;
-    const version = token.text.toString();
+    const version = token.text.toUnmaskedString();
     this.nextToken();
     /* Quoting or escaping makes the written text longer than the version. */
     if (this.prevTokenEnd - token.start !== version.length || !isCanonicalVersion(version) || this.token.type !== TokenType.SEMI) {
@@ -1744,7 +1744,7 @@ export class BuildParser {
     if (token.type === TokenType.IDENTIFIER || token.type === TokenType.SIMPLE_NAME) {
       text = token.text;
     } else if (token.type === TokenType.NAME) {
-      text = token.text.toString();
+      text = token.text.toUnmaskedString();
     }
     return text !== undefined && text in REDIR_FD_TOKEN ? text : undefined;
   }

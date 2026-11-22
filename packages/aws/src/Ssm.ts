@@ -26,8 +26,8 @@ import {
   Computable,
   FabrError,
   FileSet,
-  ISecretRecord,
   IProvenanceStep,
+  ISecretRecord,
   isJsonObject,
   MemoryFile,
   Name,
@@ -39,9 +39,12 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   SecretFile,
+  secure,
+  SecureString,
+  shownUrl,
 } from "@fabr-build/core";
 import { describeServiceError, jsonRequest, postServiceRequest, serviceErrorOf } from "./JsonProtocol";
-import { IServiceRequest, requestUrl } from "./Signing";
+import { getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
 import { IAccountSettings } from "./Types";
 
 /** The name of the SSM service under an account. */
@@ -95,7 +98,7 @@ export class SsmParameters implements Repository, RepositoryLookup {
 
   /** Vend the reference for the parameter `name` names, which must be literal. */
   public getRepositoryRef(name: Name): RepositoryRef {
-    const written = `${this.written}:${name.toString()}`;
+    const written = `${this.written}:${name.toDisplayString()}`;
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${written}' is an SSM parameter, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -113,7 +116,7 @@ export class SsmParameters implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toString()}')`);
+    throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toDisplayString()}')`);
   }
 
   /** Read the parameter `reference` names, as one file named as the parameter is, without its leading `/`. */
@@ -121,10 +124,9 @@ export class SsmParameters implements Repository, RepositoryLookup {
     const parameter = reference.name;
     const { context, credentials, region, endpoint, name } = this.account;
     const request = parameterRequest(parameter, region, endpoint);
-    const url = requestUrl(request);
-    const cacheKey = `${name} ${credentials} ${region} ${endpoint?.href ?? ""} ${parameter}`;
+    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${parameter}`.toUnmaskedString();
     return context
-      .fetchSecret(cacheKey, PARAMETER_TAG, `ssm:${parameter}`, () => this.fetch(request, url, parameter), {
+      .fetchSecret(cacheKey, PARAMETER_TAG, `ssm:${parameter}`, () => this.fetch(request, parameter), {
         resource: "parameter",
         role: "content",
       })
@@ -138,23 +140,25 @@ export class SsmParameters implements Repository, RepositoryLookup {
   }
 
   /** Fetch `parameter` with `GetParameter`, decrypted where it is a `SecureString`. */
-  private fetch(request: IServiceRequest & { readonly body: string }, url: string, parameter: string): Computable<ISecretRecord> {
-    return postServiceRequest(this.account, SSM_SERVICE, request, url, text => refusal(text, parameter, this.account.name)).then(
-      body => {
-        const found = parseJson(body, `the answer from ${url}`, toParameter);
-        return {
-          identity: `${found.arn}:${found.version}`,
-          secret: found.type === "SecureString",
-          value: Buffer.from(found.value, "utf8"),
-        };
-      }
-    );
+  private fetch(request: IServiceRequest & { readonly body: string }, parameter: string): Computable<ISecretRecord> {
+    return postServiceRequest(this.account, SSM_SERVICE, request, text => refusal(text, parameter, this.account.name)).then(body => {
+      const found = parseJson(body, `the answer from ${shownUrl(requestUrl(request))}`, toParameter);
+      return {
+        identity: `${found.arn}:${found.version}`,
+        secret: found.type === "SecureString",
+        value: Buffer.from(found.value, "utf8"),
+      };
+    });
   }
 }
 
 /** Make the `GetParameter` request for `parameter`, decrypted: to `endpoint` where there is one, else to SSM in `region`. */
-export function parameterRequest(parameter: string, region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
-  return jsonRequest("AmazonSSM.GetParameter", { Name: parameter, WithDecryption: true }, `ssm.${region}.amazonaws.com`, endpoint);
+export function parameterRequest(
+  parameter: string,
+  region: string,
+  endpoint?: SecureString
+): IServiceRequest & { readonly body: string } {
+  return jsonRequest("AmazonSSM.GetParameter", { Name: parameter, WithDecryption: true }, getServiceUrl("ssm", region), endpoint);
 }
 
 /** Read a `GetParameter` answer. Throws where it holds no parameter. */

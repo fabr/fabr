@@ -115,7 +115,7 @@ describe("CatalogRepository.getRepositoryRef", () => {
     const ref = emptyCatalog.getRepositoryRef(Name.fromLiteral("typescript:bin/tsc"));
     expect(ref.name.toString()).to.equal("typescript");
     expect(ref.projections).to.have.length(1);
-    expect(ref.projections[0].pattern.toString()).to.equal("bin/tsc");
+    expect(ref.projections[0].pattern.toUnmaskedString()).to.equal("bin/tsc");
     expect(ref.projections[0].prefix).to.equal("");
   });
 
@@ -125,10 +125,10 @@ describe("CatalogRepository.getRepositoryRef", () => {
     const globbed = emptyCatalog.getRepositoryRef(parseName("typescript:bin/ts?"));
     expect(globbed.override).to.equal(undefined);
     expect(globbed.name.toString()).to.equal("typescript");
-    expect(globbed.projections.map(p => p.pattern.toString())).to.deep.equal(["bin/ts?"]);
-    expect(emptyCatalog.getRepositoryRef(parseName("typescript:README!")).projections.map(p => p.pattern.toString())).to.deep.equal([
-      "README!",
-    ]);
+    expect(globbed.projections.map(p => p.pattern.toUnmaskedString())).to.deep.equal(["bin/ts?"]);
+    expect(
+      emptyCatalog.getRepositoryRef(parseName("typescript:README!")).projections.map(p => p.pattern.toUnmaskedString())
+    ).to.deep.equal(["README!"]);
   });
 
   it("refuses to vend a write ref (a catalog is read-only)", () => {
@@ -224,7 +224,7 @@ describe("CatalogRepository (through the model)", () => {
     }
 
     public getRepositoryPublishRef(name: Name): never {
-      throw new Error(`package_repo is not a publish destination ('${name.toString()}')`);
+      throw new Error(`package_repo is not a publish destination ('${name.toDisplayString()}')`);
     }
 
     public environmentKey(operation?: string): Computable<string> {
@@ -272,7 +272,7 @@ describe("CatalogRepository (through the model)", () => {
     }
 
     public getRepositoryPublishRef(name: Name): never {
-      throw new Error(`lookup_repo is not a publish destination ('${name.toString()}')`);
+      throw new Error(`lookup_repo is not a publish destination ('${name.toDisplayString()}')`);
     }
 
     public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
@@ -477,7 +477,11 @@ describe("CatalogRepository (through the model)", () => {
     type: "test_mode",
     properties: {},
     evaluate: (context: TargetContext) =>
-      context.getGlobalString("MODE").then(mode => new FileSet(new Map([[`${context.name}-${mode}.txt`, MemoryFile.from(mode)]]))),
+      context
+        .getGlobalString("MODE")
+        .then(
+          mode => new FileSet(new Map([[`${context.name}-${mode.toUnmaskedString()}.txt`, MemoryFile.from(mode.toUnmaskedString())]]))
+        ),
   };
   /* Reads `srcs` for files and `deps` as packages, and holds what each was
    * materialized as. */
@@ -543,7 +547,7 @@ describe("CatalogRepository (through the model)", () => {
           return new PackageFileSet(
             new Map([[`${context.name}/data.txt`, contentOf(context.name)]]),
             context.name,
-            version || undefined,
+            version?.toUnmaskedString() || undefined,
             carried
           );
         })
@@ -1259,7 +1263,7 @@ describe("CatalogRepository (through the model)", () => {
           const circular = findCause(cycleErrorOf(cycle!.labels), CircularDependencyError);
           /* Both halves are written references: the catalog's entry, and the
            * member's own reference back into the catalog. */
-          expect(circular!.cycle.map(site => site.value.value.toString()).sort()).to.deep.equal(["@cat:bar", "lib"]);
+          expect(circular!.cycle.map(site => site.value.value.toUnmaskedString()).sort()).to.deep.equal(["@cat:bar", "lib"]);
         }
       }
     });

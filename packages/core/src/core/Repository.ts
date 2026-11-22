@@ -522,7 +522,7 @@ export class RepositoryRef extends Reference implements Requirement {
     return new RepositoryRef(source, {
       name: name.toBaseString(),
       versionConstraint: undefined,
-      renameTo: name.getRenameTo()?.toString(),
+      renameTo: name.getRenameTo()?.toUnmaskedString(),
     });
   }
 

@@ -503,7 +503,7 @@ export function soleDecl(applicable: IPropertyDecl[]): IPropertyDecl | undefined
  * or `unguarded` where it has none. */
 export function guardText(decl: IPropertyDecl): string {
   const guard = decl.name.getConstraints();
-  return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toString()}`).join(", ")}>`;
+  return guard.length === 0 ? "unguarded" : `<${guard.map(([key, value]) => `${key}=${value.toDisplayString()}`).join(", ")}>`;
 }
 
 /** Make the error for several guards admitting one configuration where only one

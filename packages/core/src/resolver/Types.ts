@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { SecureString } from "../core/SecureString";
 import type { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { Computable } from "../core/Computable";
 import type { FileSet } from "../core/FileSet";
@@ -384,7 +385,7 @@ export interface ResolutionContext {
    *  the operation of the consumer's configuration. */
   readonly operation: string;
   /** Get the global `name`'s value as text. */
-  getGlobalString(name: string): Computable<string>;
+  getGlobalString(name: string): Computable<SecureString>;
   /** Get `runnable` launched through the runnable the global `interpreter`
    *  names, given `interpreterArgs` before the entry (see {@link RunnableFileSet.launchedBy}). */
   launchedBy(

@@ -67,7 +67,7 @@ function propertyValue(model: BuildModel, name: string): string | undefined {
   /* Unguarded fixtures, so the sole declaration (or the `default` one, where
    * that is all there is) is the value. */
   const decl = entry.decls[0] ?? entry.defaults[0];
-  return decl?.values.map(value => (isNameValue(value) ? value.value.toString() : "")).join(" ");
+  return decl?.values.map(value => (isNameValue(value) ? value.value.toUnmaskedString() : "")).join(" ");
 }
 
 describe("Loader", () => {

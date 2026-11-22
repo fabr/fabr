@@ -54,7 +54,7 @@ import {
   unmaterialized,
   Unmaterialized,
 } from "./Collection";
-import { RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
+import { RunnableArgument, RunnableFileSet, toRunnable } from "../core/RunnableFileSet";
 import { Builds, Dependency, isPackage, PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { BuildAction, BuildResult } from "../core/BuildAction";
 import {
@@ -108,9 +108,10 @@ import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { Name, NAME_COMPONENT_SEPARATOR, NameConstraint, NamePart, NamePartKind } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { COMMAND_LINE_FILE } from "../core/Constants";
 import { globMatcher } from "../support/Glob";
-import { applyPatternEdit } from "../support/PatternEdit";
+import { applyPatternEdit, PatternEdit } from "../support/PatternEdit";
 import { parseName } from "../model/Parser";
 import { IPrefixMatch, IPropertyEntry, Namespace, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
@@ -186,7 +187,7 @@ function provided(
   implementation: Computable<RepositoryImplementation>,
   context: TargetContext,
   requirements: Computable<ResolvedRequirements>,
-  url?: string,
+  url?: SecureString,
   credential?: Credential
 ): ReturnType<RepositoryProvider> {
   return implementation.then(made =>
@@ -475,7 +476,7 @@ export class BuildContextImpl implements InternalBuildContext {
     const literal = pattern.getLiteralPrefix();
     const end = literal.search(/[:/]/);
     const first = end === -1 ? literal : literal.substring(0, end);
-    if (first === "" || (end === -1 && literal !== pattern.toString())) {
+    if (first === "" || (end === -1 && literal !== pattern.toUnmaskedString())) {
       return Computable.reject(namespace.refused());
     }
     return namespace.get(first, writtenSeparator(prefix)).then(member => {
@@ -566,7 +567,9 @@ export class BuildContextImpl implements InternalBuildContext {
   /** @return true if a guard's `pattern`, substituted, matches the property
    * `value` it is written against, otherwise false. */
   private patternAdmits(pattern: Name, value: Property, stack?: IDependencyStack): Computable<boolean> {
-    return this.substituteNameVars(pattern, stack).then(substituted => globMatcher(substituted.toGlobString())(value.toString()));
+    return this.substituteNameVars(pattern, stack).then(substituted =>
+      globMatcher(substituted.toGlobString())(value.toString().toUnmaskedString())
+    );
   }
 
   /** Select the rule that builds `target`, a target of `type`, in this
@@ -648,10 +651,11 @@ export class BuildContextImpl implements InternalBuildContext {
    * before any `:` projection. A name written on the command line also gets a
    * pointer to `fabr list-targets`.
    */
-  private unknownNameHints(written: string, onCommandLine: boolean): string[] {
+  private unknownNameHints(name: Name, onCommandLine: boolean): string[] {
+    const written = name.toUnmaskedString();
     const files = this.model.getPrivateFiles(written.split(":")[0]);
     if (files.length > 0) {
-      return [`'${written.split(":")[0]}' is private to ${files.join(", ")}`];
+      return [`'${name.toDisplayString().split(":")[0]}' is private to ${files.join(", ")}`];
     }
     const nearest = closestMatch(written.split(":")[0], [
       ...this.model.getTargets().map(target => target.name),
@@ -717,7 +721,7 @@ export class BuildContextImpl implements InternalBuildContext {
       return cached;
     }
     if (this.constrains(name)) {
-      const supplied = Computable.resolve<Property | undefined>(new Property([this.constraints.get(name)!]));
+      const supplied = Computable.resolve<Property | undefined>(new Property([SecureString.of(this.constraints.get(name)!)]));
       this.propCache.set(name, supplied);
       return supplied;
     }
@@ -776,7 +780,7 @@ export class BuildContextImpl implements InternalBuildContext {
         );
       } else {
         const hints: string[] = [];
-        hints.push(...this.unknownNameHints(name, !useFrameOf(stack)));
+        hints.push(...this.unknownNameHints(Name.fromLiteral(name), !useFrameOf(stack)));
         throw this.unresolvedNameError(name, stack, `Unknown name '${name}'`, hints);
       }
     }
@@ -821,7 +825,7 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     /* A name nothing declares, which this configuration was given a value
      * for: it names what the value names. */
-    const written = name.toString();
+    const written = name.toUnmaskedString();
     if (this.constrains(written)) {
       return { target: this.resolveTarget(written, stack), rest: Name.fromLiteral(""), name: written, retainedPrefix: "" };
     }
@@ -921,14 +925,16 @@ export class BuildContextImpl implements InternalBuildContext {
     callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     if (seen.has(prop)) {
-      return Computable.reject(new FabrError(`Circular map reference at '${prop.name}'`));
+      return Computable.reject(new FabrError(`Circular map reference at '${prop.name.toDisplayString()}'`));
     }
     const nextSeen = new Set(seen).add(prop);
     if (hasMapValue(prop)) {
       /* One `{ … }` block. Validate checks this for a target's property; a
        * global is checked only here. */
       if (prop.values.length > 1) {
-        return Computable.reject(new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`));
+        return Computable.reject(
+          new FabrError(`'${prop.name.toDisplayString()}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
+        );
       }
       const block = prop.values[0];
       return this.lookupMapBlock(isMapValue(block) ? block.entries : [], target, stack, nextSeen, callerOverrides);
@@ -968,7 +974,7 @@ export class BuildContextImpl implements InternalBuildContext {
         if (property) {
           return new Map();
         }
-        throw new FabrError(`'${substituted.toString()}' does not name a map property`);
+        throw new FabrError(`'${substituted.toDisplayString()}' does not name a map property`);
       }
       return context.lookupMapDecl(prop, undefined, stack, seen, callerOverrides);
     });
@@ -1000,7 +1006,7 @@ export class BuildContextImpl implements InternalBuildContext {
           return this.lookupStringProperty(item, target, stack, callerOverrides).then(prop => prop.getValues());
         }
         if (blocks.length < item.values.length) {
-          return Computable.reject(new FabrError(`map value '${item.name}' is either strings or maps, not a mix`));
+          return Computable.reject(new FabrError(`map value '${item.name.toDisplayString()}' is either strings or maps, not a mix`));
         }
         return Computable.forAll(
           blocks.map(value => this.lookupMapBlock(value.entries, target, stack, seen, callerOverrides)),
@@ -1034,7 +1040,7 @@ export class BuildContextImpl implements InternalBuildContext {
         if (property) {
           return [];
         }
-        throw new FabrError(`'${substituted.toString()}' does not name a map property, so it cannot be spliced`);
+        throw new FabrError(`'${substituted.toDisplayString()}' does not name a map property, so it cannot be spliced`);
       }
       return context.mapEntries(prop, stack, seen);
     });
@@ -1043,13 +1049,15 @@ export class BuildContextImpl implements InternalBuildContext {
   /** Look up the entries of the MAP property `prop` as declarations, in written order (see {@link lookupMapDecl}). */
   private mapEntries(prop: IPropertyDecl, stack: IDependencyStack | undefined, seen: Set<IPropertyDecl>): Computable<ISplicedEntry[]> {
     if (seen.has(prop)) {
-      return Computable.reject(new FabrError(`Circular map reference at '${prop.name}'`));
+      return Computable.reject(new FabrError(`Circular map reference at '${prop.name.toDisplayString()}'`));
     }
     const nextSeen = new Set(seen).add(prop);
     const flat = (lists: ISplicedEntry[][]): ISplicedEntry[] => lists.flat();
     if (hasMapValue(prop)) {
       if (prop.values.length > 1) {
-        return Computable.reject(new FabrError(`'${prop.name}' must be a single \`{ ... }\` block or bare reference(s), not a mix`));
+        return Computable.reject(
+          new FabrError(`'${prop.name.toDisplayString()}' must be a single \`{ ... }\` block or bare reference(s), not a mix`)
+        );
       }
       const block = prop.values[0];
       return Computable.forAll(
@@ -1094,7 +1102,9 @@ export class BuildContextImpl implements InternalBuildContext {
   ): Computable<Name | undefined> {
     return this.lookupNameProperty(prop, target, stack, callerOverrides).then(names => {
       if (names.length > 1) {
-        throw new FabrError(`property '${prop.name}' is a projection and takes a single value (found ${names.length})`);
+        throw new FabrError(
+          `property '${prop.name.toDisplayString()}' is a projection and takes a single value (found ${names.length})`
+        );
       }
       return names[0];
     });
@@ -1291,9 +1301,9 @@ export class BuildContextImpl implements InternalBuildContext {
       if (rest.isEmpty()) {
         /* With nothing to project, a `-> name` renames what the name resolves
          * to, as it renames a registry's package ({@link renamedAs}). */
-        const renameTo = substName.getRenameTo()?.toString();
+        const renameTo = substName.getRenameTo()?.toUnmaskedString();
         return target.then(sources =>
-          renameTo === undefined ? sources : sources.map(source => renamedAs(source, renameTo, substName.toString()))
+          renameTo === undefined ? sources : sources.map(source => renamedAs(source, renameTo, substName.toDisplayString()))
         );
       } else {
         /* `rest`, the name after the declared prefix, is projected over what
@@ -1338,25 +1348,24 @@ export class BuildContextImpl implements InternalBuildContext {
             if (selected) {
               return undefined;
             }
-            const written = substName.toString();
             const frame = useFrameOf(stack);
-            const reason = frame ? undefined : `Unknown name '${written}'`;
+            const reason = frame ? undefined : `Unknown name '${substName.toDisplayString()}'`;
             return withHints(
               new NameResolutionError(substName, declPosn(frame?.value ?? relativeTo), useSiteOf(stack), reason),
-              this.unknownNameHints(written, !frame)
+              this.unknownNameHints(substName, !frame)
             );
           };
       /* An absolute path names no target: written `/x` anywhere (on the Windows
        * command line, `\\server\share` too, read as `//server/share`), or
        * `C:\x` on the command line on Windows (read as `C:/x`). */
       const onCommandLine = relativeTo.source.file.split(NAME_COMPONENT_SEPARATOR).at(-1) === COMMAND_LINE_FILE;
-      const windowsPath = onCommandLine && process.platform === "win32" && WINDOWS_ABSOLUTE.test(substName.toString());
+      const windowsPath = onCommandLine && process.platform === "win32" && WINDOWS_ABSOLUTE.test(substName.toUnmaskedString());
       if (isAbsoluteName(substName) || windowsPath) {
         throw new NameResolutionError(
           substName,
           declPosn(useFrameOf(stack)?.value ?? relativeTo),
           useSiteOf(stack),
-          `'${substName.toString()}' is an absolute path, which names no target`
+          `'${substName.toDisplayString()}' is an absolute path, which names no target`
         );
       }
       const pattern = substName.relativeTo(relativeTo.source.file);
@@ -1365,8 +1374,12 @@ export class BuildContextImpl implements InternalBuildContext {
       /* A constraint's value (see resolveTarget), from `-D` or a `<k=v>`,
        * carries no declaration to root a path at: only a declared name
        * answers it. */
-      const written = substName.toString();
-      throw this.unresolvedNameError(written, undefined, `Unknown name '${written}'`, this.unknownNameHints(written, true));
+      throw this.unresolvedNameError(
+        substName.toUnmaskedString(),
+        undefined,
+        `Unknown name '${substName.toDisplayString()}'`,
+        this.unknownNameHints(substName, true)
+      );
     }
   }
 
@@ -1389,7 +1402,7 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     return Computable.forAll(
       parts.map(part => this.substitutedText(part, stack, callerOverrides)),
-      (...texts: Array<{ text: string; substitution?: ISubstitution }>) => ({
+      (...texts: Array<{ text: SecureString; substitution?: ISubstitution }>) => ({
         name: name.substitute(new Map(parts.map((part, i) => [part, texts[i].text]))),
         substitutions: texts.flatMap(({ substitution }) => (substitution === undefined ? [] : [substitution])),
       })
@@ -1404,15 +1417,15 @@ export class BuildContextImpl implements InternalBuildContext {
     part: NamePart,
     stack?: IDependencyStack,
     callerOverrides?: Constraints
-  ): Computable<{ text: string; substitution?: ISubstitution }> {
+  ): Computable<{ text: SecureString; substitution?: ISubstitution }> {
     if (part.kind === NamePartKind.CommandSubst) {
       return this.runCommandSubst(part, stack).then(text => ({ text }));
     }
     const edit = part.edit;
-    const read = (context: BuildContextImpl): Computable<{ text: string; substitution?: ISubstitution }> =>
+    const read = (context: BuildContextImpl): Computable<{ text: SecureString; substitution?: ISubstitution }> =>
       context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => {
-        const text = edit === undefined ? prop.toString() : applyPatternEdit(prop.toString(), edit);
-        return { text, substitution: { name: part.value, value: text, origin: prop.origin } };
+        const text = edit === undefined ? prop.toString() : editedText(prop.toString(), edit, part);
+        return { text, substitution: { name: part.value, value: text.toDisplayString(), origin: prop.origin } };
       });
     if (part.constraints === undefined) {
       return read(this);
@@ -1431,7 +1444,7 @@ export class BuildContextImpl implements InternalBuildContext {
    * the command list the parser attached and run it for its output
    * ({@link runResolvedCommand}).
    */
-  private runCommandSubst(part: NamePart, stack?: IDependencyStack): Computable<string> {
+  private runCommandSubst(part: NamePart, stack?: IDependencyStack): Computable<SecureString> {
     const command = part.command;
     if (command === undefined || command.length === 0) {
       return Computable.reject(new FabrError(`Malformed command substitution '${part.value}'`));
@@ -1447,7 +1460,7 @@ export class BuildContextImpl implements InternalBuildContext {
    * command list for its output ({@link captureOutput}). `written` names the
    * command in errors and in the work item it reports as.
    */
-  private runResolvedCommand(substituted: CommandListLookup, written: string, stack?: IDependencyStack): Computable<string> {
+  private runResolvedCommand(substituted: CommandListLookup, written: string, stack?: IDependencyStack): Computable<SecureString> {
     return Computable.forAll(
       substituted.map(stages =>
         Computable.forAll(
@@ -1456,7 +1469,11 @@ export class BuildContextImpl implements InternalBuildContext {
         )
       ),
       (...pipelines: MaterializedCommandList) => pipelines
-    ).then(pipelines => this.captureOutput(pipelines, written));
+    ).then(pipelines =>
+      this.captureOutput(pipelines, written).then(text =>
+        pipelines.flat().some(stageIsMasked) ? SecureString.masked(text, `\`${written}\``) : SecureString.of(text)
+      )
+    );
   }
 
   /**
@@ -1504,12 +1521,12 @@ export class BuildContextImpl implements InternalBuildContext {
       relativeTo: stage.command.ref,
       callerOverrides: this.runOverrides(),
     })
-      .then(sources => collectRunnable(this, this.resolutionContext(`\`${written}\``), sources, stage.command.name.toString()))
+      .then(sources => collectRunnable(this, this.resolutionContext(`\`${written}\``), sources, stage.command.name.toDisplayString()))
       .then(runnable => ({
         runnable,
         args: stage.args.map(arg => arg.name.toString()),
-        stdout: stage.stdout?.name.toString(),
-        stderr: stage.stderr?.name.toString(),
+        stdout: stage.stdout?.name.toUnmaskedString(),
+        stderr: stage.stderr?.name.toUnmaskedString(),
         mergedTo: stage.mergedTo,
       }));
   }
@@ -1523,7 +1540,7 @@ export class BuildContextImpl implements InternalBuildContext {
    */
   public referencedProperty(ref: Name, info?: IDependencyStack): Computable<ReferencedProperty> {
     return this.substituteNameVars(ref, info).then((name): Computable<ReferencedProperty> | ReferencedProperty => {
-      const def = this.lookupDecl(name.toString());
+      const def = this.lookupDecl(name.toUnmaskedString());
       if (def?.kind !== DeclKind.Property) {
         return { prop: undefined, property: false, name, context: this };
       }
@@ -1572,7 +1589,7 @@ export class BuildContextImpl implements InternalBuildContext {
     seen: Set<IPropertyDecl>
   ): Computable<CommandList> {
     if (seen.has(prop)) {
-      return Computable.reject(new FabrError(`Circular command reference at '${prop.name}'`));
+      return Computable.reject(new FabrError(`Circular command reference at '${prop.name.toDisplayString()}'`));
     }
     const command = prop.command;
     if (command !== undefined) {
@@ -1769,7 +1786,7 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.inFile(ref.source.file)
       .lookupContextFor(ref.value)
       .then(({ context, reference }) => {
-        const name = reference.toString();
+        const name = reference.toUnmaskedString();
         return (
           context.constraints.has(name) ||
           this.lookupDecl(name) !== undefined ||
@@ -1798,7 +1815,7 @@ export class BuildContextImpl implements InternalBuildContext {
   public getAction(ref: INameValue, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     return this.inFile(ref.source.file)
       .lookupContextFor(ref.value, undefined, stack)
-      .then(({ context, reference }) => context.actionOfTarget(reference.toString(), stack));
+      .then(({ context, reference }) => context.actionOfTarget(reference.toUnmaskedString(), stack));
   }
 
   /**
@@ -1837,7 +1854,7 @@ export class BuildContextImpl implements InternalBuildContext {
   public describe(ref: INameValue, stack?: IDependencyStack): Computable<FileSet | undefined> {
     return this.inFile(ref.source.file)
       .lookupContextFor(ref.value, undefined, stack)
-      .then(({ context, reference }) => context.describeTarget(reference.toString(), stack));
+      .then(({ context, reference }) => context.describeTarget(reference.toUnmaskedString(), stack));
   }
 
   /**
@@ -1889,7 +1906,8 @@ export class BuildContextImpl implements InternalBuildContext {
     return this.inFile(ref.source.file)
       .lookupContextFor(ref.value, undefined, stack)
       .then(
-        ({ context, reference }) => context.repositoryRequirements(reference.toString(), stack) ?? this.resolveDenoted(ref, stack)
+        ({ context, reference }) =>
+          context.repositoryRequirements(reference.toUnmaskedString(), stack) ?? this.resolveDenoted(ref, stack)
       );
   }
 
@@ -2114,8 +2132,8 @@ function statedRequirements(context: TargetContext, rule: RuleDefinition): Compu
  * 1.0-${MAP}` interpolating to "1.0-", `deps = MAP` contributing no files).
  */
 function mapInWrongContextError(prop: IPropertyDecl, context: string): Error {
-  return new FabrError(`'${prop.name}' is a map and cannot be used as ${context}`).withHelp(
-    `a map is referenced by bare name from a MAP property (\`metadata = ${prop.name};\`); ` +
+  return new FabrError(`'${prop.name.toDisplayString()}' is a map and cannot be used as ${context}`).withHelp(
+    `a map is referenced by bare name from a MAP property (\`metadata = ${prop.name.toDisplayString()};\`); ` +
       `it cannot be \${...}-interpolated or read as files`
   );
 }
@@ -2167,8 +2185,8 @@ function versionsOf(source: SourceRef): SourceRef {
 function recursiveRuleError(rule: RuleBlockDefinition): FabrError {
   const { decl } = rule;
   const guards = [
-    ...decl.properties.map(([key, pattern]) => `${key}=${pattern.toString()}`),
-    ...decl.targetProperties.map(([key, pattern]) => `${decl.param}.${key}=${pattern.toString()}`),
+    ...decl.properties.map(([key, pattern]) => `${key}=${pattern.toDisplayString()}`),
+    ...decl.targetProperties.map(([key, pattern]) => `${decl.param}.${key}=${pattern.toDisplayString()}`),
   ];
   const head = `${decl.type === undefined ? "default rule" : `rule ${decl.type}`} ${decl.param}${guards.length > 0 ? `<${guards.join(", ")}>` : ""}`;
   return new FabrError(`'${head}' is applied inside its own application`).withHelp(
@@ -2198,7 +2216,10 @@ function requirementOf(name: Name): Constraints | undefined {
 function constraintsOf(constraints: readonly NameConstraint[]): Constraints {
   const required: Record<string, string> = Object.create(null);
   for (const [key, value] of constraints) {
-    required[key] = value.toString();
+    if (value.isMasked()) {
+      throw new FabrError(`'${key}=${value.toDisplayString()}' holds text shown masked, which cannot be a configuration value`);
+    }
+    required[key] = value.toUnmaskedString();
   }
   return Constraints.of(required);
 }
@@ -2239,6 +2260,33 @@ function builtBy(node: Unbuilt | undefined): Builds | undefined {
 
 /** A Windows absolute path as the command line reads one (`C:/x`). */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:\//;
+
+/**
+ * Apply a substitution's pattern edit to the text it read. Where any of the
+ * text is masked, the whole result is, shown as the substitution as written
+ * (`${KEY%%-*}`): an edit may keep any part of it.
+ */
+function editedText(text: SecureString, edit: PatternEdit, part: NamePart): SecureString {
+  const edited = applyPatternEdit(text.toUnmaskedString(), edit);
+  return text.isMasked() ? SecureString.masked(edited, new Name([part]).toDisplayString()) : SecureString.of(edited);
+}
+
+/** @return true if `stage` holds text from a masked source (its arguments, redirections, or its runnable's arguments or environment), otherwise false. */
+function stageIsMasked(stage: MaterializedCommandStage): boolean {
+  return (
+    stage.args.some(arg => arg.isMasked()) ||
+    stage.runnable.args.some(argumentIsMasked) ||
+    [...stage.runnable.env.values()].some(value => value.isMasked())
+  );
+}
+
+/** @return true if `arg` holds text from a masked source, otherwise false. */
+function argumentIsMasked(arg: RunnableArgument): boolean {
+  if (arg instanceof SecureString) {
+    return arg.isMasked();
+  }
+  return typeof arg === "object" && "join" in arg && arg.parts.some(argumentIsMasked);
+}
 
 /** @return true if `name` is written as an absolute path, starting `/`,
  * otherwise false. In a build file `C:/x` is a projection out of `C` on every host. */
@@ -2659,7 +2707,7 @@ class RuleScope {
 
   /** @return the parameter's value as a property: an alias of the matched target, whose text is the target's name (`${<param>}`). */
   public matchedName(): Property {
-    return new Property([this.matched.name]);
+    return new Property([SecureString.of(this.matched.name)]);
   }
 
   /** Resolve the matched target in the configuration of `constraints`, as `<param>` names it. A target a rule's code made rejects. */
@@ -2674,7 +2722,9 @@ class RuleScope {
   /** @return the property of the parameter a value written as `name` reads in full (`pkg.args`), if it reads one. */
   public wholeAlias(name: Name): string | undefined {
     const property = parameterProperty(name, this.param);
-    return property !== undefined && name.withConstraints([]).toString() === `${this.param}.${property}` ? property : undefined;
+    return property !== undefined && name.withConstraints([]).toUnmaskedString() === `${this.param}.${property}`
+      ? property
+      : undefined;
   }
 }
 
@@ -2943,7 +2993,7 @@ class ScopedBuildContext extends ScopedConfiguration {
           ? super.lookupNameProperty({ ...prop, values: [value] }, target, stack, callerOverrides)
           : this.scope
               .aliasedString(alias, requirementOf((value as INameValue).value))
-              .then(found => (found?.getValues() ?? []).map(text => Name.fromLiteral(text)));
+              .then(found => (found?.getValues() ?? []).map(text => Name.fromSecureString(text)));
       }),
       (...lists: Name[][]) => lists.flat()
     );
@@ -2951,7 +3001,7 @@ class ScopedBuildContext extends ScopedConfiguration {
 
   /** Look up what `splice` supplies, the rule's parameter being the matched target as a map of its properties, each read as `<param>.name`. */
   public lookupSplice(splice: ISpliceDecl, stack?: IDependencyStack): Computable<ISplicedEntry[]> {
-    if (splice.ref.toString() !== this.scope.param) {
+    if (splice.ref.toUnmaskedString() !== this.scope.param) {
       return super.lookupSplice(splice, stack);
     }
     const site = { source: splice.source, offset: splice.offset, endOffset: splice.endOffset };

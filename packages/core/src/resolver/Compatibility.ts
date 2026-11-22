@@ -113,7 +113,7 @@ class CompatibilityReader<V, C> implements RepositoryReader<V, CompatibilityCons
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const ref = vendPackageRef(this, this.format, name);
     if (ref instanceof RepositoryRef && ref.projections.length > 0) {
-      throw new FabrError(`'${name.toString()}' selects files, and a package read for compatibility has none`);
+      throw new FabrError(`'${name.toDisplayString()}' selects files, and a package read for compatibility has none`);
     }
     return ref;
   }

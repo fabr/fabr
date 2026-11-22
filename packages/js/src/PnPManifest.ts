@@ -324,7 +324,7 @@ function locations(
 ): (pkg: PackageFileSet) => string {
   const wiring = (pkg: PackageFileSet): string =>
     dependencyList(pkg.packages, referenceIn)
-      .map(([name, reference]) => `${name}=${reference}`)
+      .map(([name, reference]) => `${name}=${String(reference)}`)
       .join(",");
   const wiringsByContent = new Map<string, Set<string>>();
   for (const pkg of packages) {

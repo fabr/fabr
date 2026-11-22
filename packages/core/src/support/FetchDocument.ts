@@ -22,7 +22,8 @@ import { Computable } from "../core/Computable";
 import { FetchOptions, IFetchContext, IFetchRequest } from "../core/BuildCache";
 import type { Credential } from "../core/Credential";
 import { HttpStatusError, toError } from "../core/Errors";
-import { readStream } from "../core/Fetch";
+import { readStream, shownUrl } from "../core/Fetch";
+import type { SecureString } from "../core/SecureString";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import { IFetchReport } from "./Tasks";
@@ -42,7 +43,7 @@ type CacheFetcher = {
 
 /** A document to fetch with {@link fetchDocument}. */
 export interface IDocumentRequest<T> {
-  readonly url: string;
+  readonly url: SecureString;
   /** The name the document is kept under in its cache entry. */
   readonly file: string;
   /** The cache tag it is kept under, bumped when what is kept changes shape. */
@@ -74,7 +75,7 @@ export function fetchDocument<T>(context: CacheFetcher, request: IDocumentReques
   const { url, file, convert, keep } = request;
   return context
     .fetch(
-      request.key ?? url,
+      request.key ?? url.toUnmaskedString(),
       request.tag,
       () =>
         (request.headers ? request.headers() : Computable.resolve(undefined)).then(headers => ({
@@ -105,7 +106,7 @@ export function fetchDocument<T>(context: CacheFetcher, request: IDocumentReques
 
 /** Where an archive or file is downloaded from, found only when it is not cached. */
 export interface IDownloadSource {
-  readonly url: string;
+  readonly url: SecureString;
   /** The digest the archive must match, where its publisher states one. */
   readonly expected: ExpectedDigest | undefined;
   /** The headers the request is made with (credentials): never part of the key. */
@@ -144,7 +145,7 @@ export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): C
         ...(headers ? { headers } : {}),
         ...(credential ? { credential } : {}),
         process: (content: Readable, { createOutput }: IFetchContext) => {
-          const { stream, verify } = verifiedStream(content, expected, url);
+          const { stream, verify } = verifiedStream(content, expected, shownUrl(url));
           return unpackStream(stream, createOutput).then(files => {
             verify();
             return keep ? keep(files) : files;
@@ -198,7 +199,7 @@ export function fetchFile(context: CacheFetcher, request: IFileRequest): Computa
         ...(headers ? { headers } : {}),
         ...(credential ? { credential } : {}),
         process: (content: Readable, { createOutput }: IFetchContext) => {
-          const { stream, verify } = verifiedStream(content, expected, url);
+          const { stream, verify } = verifiedStream(content, expected, shownUrl(url));
           const output = createOutput();
           /* A failed write ends the download with its error. */
           output.stream.once("error", err => content.destroy(err));

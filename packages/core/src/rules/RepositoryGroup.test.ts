@@ -196,9 +196,9 @@ function makeFormat(tag: string): PackageFormat<SemverVersion, SemverConstraint>
       }
     },
     parsePublishCoordinate: (name: Name) => {
-      const split = splitIdentity(name.toString());
+      const split = splitIdentity(name.toUnmaskedString());
       if (!split) {
-        throw new Error(`publish coordinate '${name.toString()}' must name a version`);
+        throw new Error(`publish coordinate '${name.toDisplayString()}' must name a version`);
       }
       return { name: split.identifier, version: split.version };
     },
@@ -238,12 +238,12 @@ class FakeRegistry implements Repository, RepositoryReader<SemverVersion, Semver
 
   /** A bare scope names the namespace of it, as npm's naming allows. */
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
-    const literal = name.toString();
+    const literal = name.toUnmaskedString();
     return /^@[^/:]+$/.test(literal) ? new PartialRepositoryRef(this, literal) : vendPackageRef(this, this.format, name);
   }
 
   public getRepositoryPublishRef(name: Name): never {
-    throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
+    throw new Error(`test_registry is not a publish destination ('${name.toDisplayString()}')`);
   }
 
   public getRequirements(pkg: string, version: SemverVersion): Computable<Requirement[]> {

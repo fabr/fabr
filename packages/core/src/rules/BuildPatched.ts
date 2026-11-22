@@ -52,7 +52,8 @@ import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { MaterializedCommandList, TargetContext, toEnvironment } from "../context/index";
 import { Property } from "../model/Property";
-import { findExecutable, ITaskReport } from "../support/Execute";
+import { foundStage, ITaskReport } from "../support/Execute";
+import { SecureString } from "../core/SecureString";
 import { FilePatch, parsePatchFile } from "../support/Patch";
 import {
   envConfig,
@@ -74,7 +75,7 @@ export default defineRule({
   requirements(context) {
     return context.getProperty("fixes").then(fixes => ({
       build: { extends: context.getPackageProperty("srcs"), patches: context.getFileProperty("patches") },
-      fixes: fixes?.getValues() ?? [],
+      fixes: (fixes?.getValues() ?? []).map(id => id.toUnmaskedString()),
     }));
   },
   evaluateMaterialized(context, { extends: srcs, patches }) {
@@ -97,7 +98,7 @@ function patched(context: TargetContext, { srcs, patches }: { srcs: FileSet[]; p
   const files = FileSet.unionAll(...srcs);
   return Computable.forAll(
     [context.getCommandProperty("run", files), context.getMap("env").then(toEnvironment), context.getProperty("fixes")],
-    (pipelines: MaterializedCommandList, env: ReadonlyMap<string, string>, fixes: Property | undefined) => {
+    (pipelines: MaterializedCommandList, env: ReadonlyMap<string, SecureString>, fixes: Property | undefined) => {
       if (patches.length === 0 && pipelines.length === 0) {
         throw new FabrError("a 'patched' target requires 'patches' or 'run'");
       }
@@ -238,7 +239,7 @@ function stagePatchStep(
     (stdins: (string | undefined)[]): IStagedStep => ({
       cwd: FILES_DIR,
       commands: specs.map((stages, index) => ({
-        stages: stages.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)] })),
+        stages: stages.map(spec => foundStage(spec, cwd)),
         ...(stdins[index] === undefined ? {} : { stdin: stdins[index] }),
       })),
       env: envConfig(action),

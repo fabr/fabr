@@ -19,13 +19,14 @@
 
 import { Name, NameBuilder } from "./Name";
 import { expect } from "chai";
+import { SecureString } from "./SecureString";
 
 /** Substitute by written name, as the model's resolver does: gather the name's
  * substituted parts, resolve each (here, a lookup in `values`), replace by part
  * identity. */
 function substituted(name: Name, values: Record<string, string>): Name {
   const parts = name.getSubstitutions();
-  return name.substitute(new Map(parts.map(part => [part, values[part.value]])));
+  return name.substitute(new Map(parts.map(part => [part, SecureString.of(values[part.value])])));
 }
 
 /** The written forms of a name's substituted parts, in order. */
@@ -36,20 +37,64 @@ function substitutions(name: Name): string[] {
 describe("Name", () => {
   it("Substitute", () => {
     let name = new NameBuilder().appendLiteralString("ab").appendSubstVar("CD").appendLiteralString("ef").name();
-    expect(substituted(name, { CD: "actual value" }).toString()).to.equal("abactual valueef");
-    expect(name.toString()).to.equal("ab${CD}ef");
+    expect(substituted(name, { CD: "actual value" }).toUnmaskedString()).to.equal("abactual valueef");
+    expect(name.toUnmaskedString()).to.equal("ab${CD}ef");
 
     name = new NameBuilder().appendSubstVar("CD").name();
-    expect(substituted(name, { CD: "actual value" }).toString()).to.equal("actual value");
-    expect(name.toString()).to.equal("${CD}");
+    expect(substituted(name, { CD: "actual value" }).toUnmaskedString()).to.equal("actual value");
+    expect(name.toUnmaskedString()).to.equal("${CD}");
+  });
+
+  describe("masked text", () => {
+    /** Make `<before>${DIR}<after>`, `${DIR}` substituted with a value from a masked source. */
+    const masked = (before: string, after = ""): Name => {
+      const builder = new NameBuilder();
+      if (before !== "") {
+        builder.appendLiteralString(before);
+      }
+      builder.appendSubstVar("DIR");
+      if (after !== "") {
+        builder.appendLiteralString(after);
+      }
+      const name = builder.name();
+      return name.substitute(new Map(name.getSubstitutions().map(part => [part, SecureString.masked("secret/dir", "${ENV.DIR}")])));
+    };
+    const forms = (name: Name): [string, string] => [name.toUnmaskedString(), name.toDisplayString()];
+
+    it("shows a substituted masked value as written, and its value where it is used", () => {
+      const name = masked("pre/", "/post");
+      expect(name.isMasked()).to.equal(true);
+      expect(forms(name)).to.deep.equal(["pre/secret/dir/post", "pre/${ENV.DIR}/post"]);
+      expect(name.toString().toDisplayString()).to.equal("pre/${ENV.DIR}/post");
+      expect(Name.fromLiteral("pre/post").isMasked()).to.equal(false);
+    });
+
+    it("keeps the masked runs through the operations that reshape a name", () => {
+      const name = masked("", "/file.txt");
+      expect(forms(name.withPrefix("root/"))).to.deep.equal(["root/secret/dir/file.txt", "root/${ENV.DIR}/file.txt"]);
+      expect(forms(name.concat("-x"))).to.deep.equal(["secret/dir/file.txt-x", "${ENV.DIR}/file.txt-x"]);
+      expect(name.components().map(forms)).to.deep.equal([
+        ["secret", "${ENV.DIR}"],
+        ["dir", "${ENV.DIR}"],
+        ["file.txt", "file.txt"],
+      ]);
+      expect(forms(name.withoutPrefix("secret/"))).to.deep.equal(["dir/file.txt", "${ENV.DIR}/file.txt"]);
+    });
+
+    it("counts a facet's masked text as the name's", () => {
+      const name = Name.fromLiteral("lib").withConstraints([["MODE", masked("")]]);
+      expect(name.isMasked()).to.equal(true);
+      expect(forms(name)).to.deep.equal(["lib<MODE=secret/dir>", "lib<MODE=${ENV.DIR}>"]);
+      expect(forms(Name.fromLiteral("a").withRenameTo(masked("")))).to.deep.equal(["a -> secret/dir", "a -> ${ENV.DIR}"]);
+    });
   });
 
   it("keeps adjacent substitution variables distinct", () => {
     /* `${A}${B}` must not merge into a single variable `AB`. */
     const name = new NameBuilder().appendSubstVar("A").appendSubstVar("B").name();
     expect(substitutions(name)).to.deep.equal(["A", "B"]);
-    expect(name.toString()).to.equal("${A}${B}");
-    expect(substituted(name, { A: "x", B: "y" }).toString()).to.equal("xy");
+    expect(name.toUnmaskedString()).to.equal("${A}${B}");
+    expect(substituted(name, { A: "x", B: "y" }).toUnmaskedString()).to.equal("xy");
   });
 
   describe("constraints", () => {
@@ -58,9 +103,9 @@ describe("Name", () => {
         ["BUILD_TYPE", Name.fromLiteral("release")],
         ["JS_TARGET", Name.fromLiteral("es6-esm")],
       ]);
-      expect(name.toString()).to.equal("mylib<BUILD_TYPE=release, JS_TARGET=es6-esm>");
+      expect(name.toUnmaskedString()).to.equal("mylib<BUILD_TYPE=release, JS_TARGET=es6-esm>");
       expect(name.hasConstraints()).to.equal(true);
-      expect(name.getConstraints().map(([k, v]) => [k, v.toString()])).to.deep.equal([
+      expect(name.getConstraints().map(([k, v]) => [k, v.toUnmaskedString()])).to.deep.equal([
         ["BUILD_TYPE", "release"],
         ["JS_TARGET", "es6-esm"],
       ]);
@@ -71,7 +116,7 @@ describe("Name", () => {
       const name = parts.withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]]);
       /* The projection glob rides in the parts; the constraints ride alongside */
       expect(name.getConstraints()).to.have.length(1);
-      expect(name.toString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
+      expect(name.toUnmaskedString()).to.equal("pkg:build/*.js<BUILD_TYPE=release>");
     });
 
     it("collects variables from constraint values and substitutes them", () => {
@@ -79,15 +124,15 @@ describe("Name", () => {
       const name = Name.fromLiteral("mylib").withConstraints([["BUILD_TYPE", value]]);
       expect(substitutions(name)).to.include("DEFAULT_TYPE");
       const resolved = substituted(name, { DEFAULT_TYPE: "release" });
-      expect(resolved.toString()).to.equal("mylib<BUILD_TYPE=release>");
-      expect(resolved.getConstraints().map(([, v]) => v.toString())).to.deep.equal(["release"]);
+      expect(resolved.toUnmaskedString()).to.equal("mylib<BUILD_TYPE=release>");
+      expect(resolved.getConstraints().map(([, v]) => v.toUnmaskedString())).to.deep.equal(["release"]);
     });
 
     it("has no constraints by default", () => {
       const name = Name.fromLiteral("mylib");
       expect(name.hasConstraints()).to.equal(false);
       expect(name.getConstraints()).to.deep.equal([]);
-      expect(name.toString()).to.equal("mylib");
+      expect(name.toUnmaskedString()).to.equal("mylib");
     });
   });
 
@@ -97,15 +142,15 @@ describe("Name", () => {
 
     it("round-trips through toString with a spaced arrow", () => {
       const name = selector().withRenameTo(template());
-      expect(name.toString()).to.equal("*.expect -> *.out");
-      expect(name.getRenameTo()?.toString()).to.equal("*.out");
+      expect(name.toUnmaskedString()).to.equal("*.expect -> *.out");
+      expect(name.getRenameTo()?.toUnmaskedString()).to.equal("*.out");
     });
 
     it("renders after the constraints", () => {
       const name = selector()
         .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]])
         .withRenameTo(template());
-      expect(name.toString()).to.equal("*.expect<BUILD_TYPE=release> -> *.out");
+      expect(name.toUnmaskedString()).to.equal("*.expect<BUILD_TYPE=release> -> *.out");
     });
 
     it("reports the glob units of each side", () => {
@@ -128,7 +173,7 @@ describe("Name", () => {
       const name = selector().withRenameTo(stamped);
       expect(substitutions(name)).to.include("BUILD_NO");
       const resolved = substituted(name, { BUILD_NO: "42" });
-      expect(resolved.toString()).to.equal("*.expect -> *.42.js");
+      expect(resolved.toUnmaskedString()).to.equal("*.expect -> *.42.js");
     });
 
     it("keeps adjacent backrefs distinct through substitution", () => {
@@ -165,8 +210,8 @@ describe("Name", () => {
         .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]])
         .withRenameTo(new NameBuilder().appendLiteralString("PROJECT.fabr").name());
       const rerooted = name.relativeTo("docs/BUILD.fabr");
-      expect(rerooted.getRenameTo()?.toString()).to.equal("PROJECT.fabr");
-      expect(rerooted.getConstraints().map(([k, v]) => [k, v.toString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
+      expect(rerooted.getRenameTo()?.toUnmaskedString()).to.equal("PROJECT.fabr");
+      expect(rerooted.getConstraints().map(([k, v]) => [k, v.toUnmaskedString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
     });
 
     it("preserves directory structure under a recursive rename", () => {
@@ -423,8 +468,8 @@ describe("Name", () => {
         .name()
         .withConstraints([["BUILD_TYPE", Name.fromLiteral("release")]]);
       const rebased = name.rebase("/");
-      expect(rebased.toString()).to.equal("tmp/proj/lib:../tool/*.js<BUILD_TYPE=release>");
-      expect(rebased.getConstraints().map(([k, v]) => [k, v.toString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
+      expect(rebased.toUnmaskedString()).to.equal("tmp/proj/lib:../tool/*.js<BUILD_TYPE=release>");
+      expect(rebased.getConstraints().map(([k, v]) => [k, v.toUnmaskedString()])).to.deep.equal([["BUILD_TYPE", "release"]]);
     });
 
     it("leaves a relative name and an out-of-root absolute name unchanged", () => {
@@ -436,7 +481,7 @@ describe("Name", () => {
 
     it("rebases against a non-slash root", () => {
       const name = new NameBuilder().appendLiteralString("/home/me/proj/docs/x.ts").name();
-      expect(name.rebase("/home/me/proj").toString()).to.equal("docs/x.ts");
+      expect(name.rebase("/home/me/proj").toUnmaskedString()).to.equal("docs/x.ts");
     });
   });
 
@@ -449,13 +494,13 @@ describe("Name", () => {
 
     it("renders a literal's metacharacters verbatim as text, escaped as a pattern", () => {
       const name = literal("Hello (world)! a|b star * [bracket]");
-      expect(name.toString()).to.equal("Hello (world)! a|b star * [bracket]");
+      expect(name.toUnmaskedString()).to.equal("Hello (world)! a|b star * [bracket]");
       expect(name.toGlobString()).to.equal("Hello \\(world\\)\\! a\\|b star \\* \\[bracket\\]");
     });
 
     it("renders glob parts verbatim in both", () => {
       const name = new NameBuilder().appendLiteralString("src/").appendGlobMetachars("**").name();
-      expect(name.toString()).to.equal("src/**");
+      expect(name.toUnmaskedString()).to.equal("src/**");
       expect(name.toGlobString()).to.equal("src/**");
     });
 
@@ -469,7 +514,7 @@ describe("Name", () => {
       const name = Name.fromLiteral("lib")
         .withConstraints([["MSG", literal("a (b)")]])
         .withRenameTo(literal("out (1)"));
-      expect(name.toString()).to.equal("lib<MSG=a (b)> -> out (1)");
+      expect(name.toUnmaskedString()).to.equal("lib<MSG=a (b)> -> out (1)");
       expect(name.toGlobString()).to.equal("lib<MSG=a \\(b\\)> -> out \\(1\\)");
     });
 
@@ -479,7 +524,7 @@ describe("Name", () => {
        * toGlobString). */
       const quoted = literal("*");
       const wildcard = new NameBuilder().appendGlobMetachars("*").name();
-      expect(quoted.toString()).to.equal(wildcard.toString());
+      expect(quoted.toUnmaskedString()).to.equal(wildcard.toUnmaskedString());
       expect(quoted.toGlobString()).to.not.equal(wildcard.toGlobString());
     });
   });
@@ -490,26 +535,26 @@ describe("Name", () => {
        * so a facet-bearing rendering would test the TEMPLATE's last character —
        * here a '/', which would suppress the separator and yield `stuff**`. */
       const renamed = Name.fromLiteral("stuff").withRenameTo(Name.fromLiteral("out/"));
-      expect(renamed.appendGlobstar().withRenameTo(undefined).toString()).to.equal("stuff/**");
+      expect(renamed.appendGlobstar().withRenameTo(undefined).toUnmaskedString()).to.equal("stuff/**");
     });
 
     it("appends /** to a slash-form directory (retained)", () => {
       const dir = Name.fromLiteral("src");
-      expect(dir.appendGlobstar().toString()).to.equal("src/**");
+      expect(dir.appendGlobstar().toUnmaskedString()).to.equal("src/**");
       const project = dir.appendGlobstar().makeProjector();
       expect(project("src/a/b.ts")).to.equal("src/a/b.ts");
     });
 
     it("appends ** after a colon boundary (stripped)", () => {
       const dir = Name.fromLiteral("src:");
-      expect(dir.appendGlobstar().toString()).to.equal("src:**");
+      expect(dir.appendGlobstar().toUnmaskedString()).to.equal("src:**");
       const project = dir.appendGlobstar().makeProjector();
       expect(project("src/a/b.ts")).to.equal("a/b.ts");
     });
   });
 
   describe("components", () => {
-    const componentsOf = (name: Name): string[] => name.components().map(component => component.toString());
+    const componentsOf = (name: Name): string[] => name.components().map(component => component.toUnmaskedString());
 
     it("splits at slash and colon separators alike", () => {
       expect(componentsOf(Name.fromLiteral("dir:x.tgz/foo"))).to.deep.equal(["dir", "x.tgz", "foo"]);
@@ -527,7 +572,7 @@ describe("Name", () => {
       const subst = new NameBuilder().appendSubstVar("A").appendLiteralString("/x").name();
       const [head, tail] = subst.components();
       expect(head.hasVarSubst()).to.equal(true);
-      expect(tail.toString()).to.equal("x");
+      expect(tail.toUnmaskedString()).to.equal("x");
     });
 
     it("carries no facets onto the components", () => {
@@ -543,7 +588,7 @@ describe("Name", () => {
       expect(
         Name.fromLiteral("dir:x.tgz/foo")
           .componentPrefixes()
-          .map(prefix => prefix.toString())
+          .map(prefix => prefix.toUnmaskedString())
       ).to.deep.equal(["dir", "dir/x.tgz", "dir/x.tgz/foo"]);
     });
   });

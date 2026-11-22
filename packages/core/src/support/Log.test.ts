@@ -21,6 +21,7 @@ import { EMPTY_FILESET } from "../core/FileSet";
 import { StringReader } from "./StringReader";
 import { Diagnostic, ISourceSpan, LogFormatter, LogLevel } from "./Log";
 import { expect } from "chai";
+import { SecureString } from "../core/SecureString";
 
 const DIAG_TEST = Diagnostic.Error<{ message: string }>("{message}");
 const DIAG_INFO = Diagnostic.Info<{ message: string }>("{message}");
@@ -47,6 +48,14 @@ function render(params: Record<string, unknown>, color = false): string[] {
   log.log(DIAG_TEST, { message: "something went wrong", ...params });
   return out.join("\n").split("\n");
 }
+
+describe("Diagnostic", () => {
+  it("shows a param that has a display form as output shows it", () => {
+    const diagnostic = Diagnostic.Error<{ url: SecureString; count: number }>("fetching {url} ({count})");
+    const url = SecureString.masked("https://reg.example", "${ENV.REGISTRY}").concat("/x");
+    expect(diagnostic.message({ url, count: 2 })).to.equal("fetching ${ENV.REGISTRY}/x (2)");
+  });
+});
 
 describe("LogFormatter", () => {
   it("renders an unpositioned diagnostic as a plain line", () => {

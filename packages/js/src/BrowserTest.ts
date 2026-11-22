@@ -45,6 +45,8 @@ import {
   RuleResult,
   RunnableArgument,
   RunnableFileSet,
+  secure,
+  SecureString,
   SymlinkFile,
   TARGET,
   TargetContext,
@@ -177,7 +179,7 @@ export function runBrowserTests(context: TargetContext, collected: TestContents,
             stabilityProperty: "stability",
             runnerArgs,
             links,
-            env: new Map(baseUrl.toString() === "" ? [] : [[browser.baseUrlVariable, baseUrl.toString()]]),
+            env: new Map(baseUrl.toString().length === 0 ? [] : [[browser.baseUrlVariable, baseUrl.toString()]]),
           },
           collected,
           interactive
@@ -192,9 +194,11 @@ export function browserFramework(context: TargetContext): Computable<[ITestFrame
   return Computable.forAll(
     [testFramework(context, "framework", true), context.getRequiredProperty("framework")],
     (framework, name) => {
-      const browser = BROWSER_FRAMEWORKS.get(name.toString());
+      const browser = BROWSER_FRAMEWORKS.get(name.toString().toUnmaskedString());
       if (browser === undefined) {
-        throw new FabrError(`'${name.toString()}' is not a browser test framework (${[...BROWSER_FRAMEWORKS.keys()].join(", ")})`);
+        throw new FabrError(
+          `'${name.toDisplayString()}' is not a browser test framework (${[...BROWSER_FRAMEWORKS.keys()].join(", ")})`
+        );
       }
       return [framework, browser] as [ITestFramework, IBrowserFramework];
     }
@@ -239,18 +243,20 @@ function targetBrowser(context: TargetContext): Computable<IBrowser> {
 }
 
 /** Read the target's browser settings (`viewport`, `user_agent`, `device`) that are set, by the runner option each is given as. */
-function browserSettings(context: TargetContext, browser: IBrowserFramework): Computable<ReadonlyMap<string, string>> {
+function browserSettings(context: TargetContext, browser: IBrowserFramework): Computable<ReadonlyMap<string, SecureString>> {
   return Computable.forAll(
-    [...BROWSER_SETTINGS.keys()].map(property => context.getProperty(property).then(value => value?.toString() ?? "")),
-    (...values: string[]) => {
-      const settings = new Map<string, string>();
+    [...BROWSER_SETTINGS.keys()].map(property =>
+      context.getProperty(property).then(value => value?.toString() ?? SecureString.of(""))
+    ),
+    (...values: SecureString[]) => {
+      const settings = new Map<string, SecureString>();
       [...BROWSER_SETTINGS].forEach(([property, option], i) => {
         const value = values[i];
-        if (value === "") {
+        if (value.length === 0) {
           return;
         }
-        if (property === "viewport" && !/^\d+x\d+$/.test(value)) {
-          throw new FabrError(`'${value}' is not a viewport (expected '<width>x<height>', such as '1280x720')`);
+        if (property === "viewport" && !value.test(/^\d+x\d+$/)) {
+          throw new FabrError(`'${value.toDisplayString()}' is not a viewport (expected '<width>x<height>', such as '1280x720')`);
         }
         if (property === "device" && !browser.devices) {
           throw new FabrError("this framework runs no devices: give the target a viewport and user_agent instead");
@@ -285,7 +291,7 @@ function browserArguments(
 ): Computable<RunnableArgument[]> {
   return Computable.forAll(
     [targetBrowser(context), browserSettings(context, browser)],
-    (read: IBrowser, settings: ReadonlyMap<string, string>) => {
+    (read: IBrowser, settings: ReadonlyMap<string, SecureString>) => {
       const chosen: IBrowser = read ?? (browser.defaultBuild === undefined ? undefined : { build: browser.defaultBuild });
       if (chosen !== undefined && "build" in chosen && browser.builds === undefined) {
         throw new FabrError(`'${PLAYWRIGHT_FLAG}${chosen.build}' is a Playwright build, which this framework does not run`).withHelp(
@@ -326,7 +332,7 @@ function browserArguments(
           ])
         );
       }
-      options.push(Computable.resolve([...settings].map(([option, value]) => `--browser-${option}=${name}=${value}`)));
+      options.push(Computable.resolve([...settings].map(([option, value]) => secure`--browser-${option}=${name}=${value}`)));
       const program = browser.program;
       if (program !== undefined) {
         options.push(
@@ -354,10 +360,11 @@ function cypressBinary(context: TargetContext, deps: FileSet[]): Computable<File
   }
   const version = cypress.version;
   /* The machine the app runs on: TARGET under a tool's run, the host. */
-  return context.getGlobalString(TARGET, context.runOverrides()).then(target => {
+  return context.getGlobalString(TARGET, context.runOverrides()).then(written => {
+    const target = written.toUnmaskedString();
     const { os: platform, cpu } = tripleToNpm(target);
     if (platform === undefined || cpu === undefined) {
-      throw new FabrError(`Cypress publishes no app for '${target}'`);
+      throw new FabrError(`Cypress publishes no app for '${written.toDisplayString()}'`);
     }
     /* Cypress has no Windows arm64 build, and runs its x64 one there. */
     const arch = platform === "win32" && cpu === "arm64" ? "x64" : cpu;
@@ -366,7 +373,7 @@ function cypressBinary(context: TargetContext, deps: FileSet[]): Computable<File
       key: url,
       tag: "cypress:binary:1",
       report: { resource: `Cypress ${version}`, role: "content" },
-      source: () => Computable.resolve({ url, expected: undefined }),
+      source: () => Computable.resolve({ url: SecureString.of(url), expected: undefined }),
     }).then(files =>
       FileSet.layout({ [version]: files, [`${version}/binary_state.json`]: new MemoryFile(Buffer.from('{ "verified": true }\n')) })
     );
@@ -402,7 +409,7 @@ function playwrightBuilds(context: TargetContext, names: string[], deps: FileSet
           key: url,
           tag: "playwright:build:1",
           report: { resource: `Playwright's ${executable.name}`, role: "content" },
-          source: () => Computable.resolve({ url, expected: undefined }),
+          source: () => Computable.resolve({ url: SecureString.of(url), expected: undefined }),
         }).then(files =>
           FileSet.layout({ [directory]: files, [`${directory}/${INSTALLED_MARKER}`]: new MemoryFile(Buffer.alloc(0)) })
         );

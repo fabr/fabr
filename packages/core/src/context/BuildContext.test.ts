@@ -50,6 +50,7 @@ import { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import hostSearchPath from "../rules/HostSearchPath";
 import { makeRewrite, Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { renderProvenance } from "../core/Provenance";
 import { ConflictError, CycleError, FabrError, helpOf, MultiError, RequirementResolutionError, toError } from "../core/Errors";
 import { cycleErrorOf } from "../model/ErrorFormatter";
@@ -69,7 +70,7 @@ import {
 import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
-import { mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
+import { isWords, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
 import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
 import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
 import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "./Description";
@@ -204,7 +205,7 @@ testRules.push(
       Computable.forAll(
         [requirements.packages("dependencies"), context.getGlobalString("MODE")],
         (dependencies, mode) =>
-          new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode)]]), context.name, undefined, dependencies)
+          new PackageFileSet(new Map([["mode.txt", MemoryFile.from(mode.toUnmaskedString())]]), context.name, undefined, dependencies)
       ),
     /* Its description: core's fields, the files of its `deps` as its sources, and a payload. */
     describe: (context, requirements) =>
@@ -471,12 +472,12 @@ registerRule("test_toolline", {}, context =>
 let lastString: string | undefined;
 registerRule("test_globalstr", {}, context =>
   context.getGlobalString("GLOBALSTR", Constraints.of({ FLAVOR: "caller" })).then(value => {
-    lastString = value;
+    lastString = value.toUnmaskedString();
     return EMPTY_FILESET;
   })
 );
 registerRule("test_file", {}, context =>
-  context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
+  context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content.toUnmaskedString())]])))
 );
 /* Produces a small multi-file, multi-directory tree, for exercising rename
  * projections (`sel -> tmpl`) into a target's content. */
@@ -527,11 +528,22 @@ registerRule("test_rw", {}, context =>
 /* Reads a MAP property, so a test can observe the resolved key -> value map
  * (order preserved, strings substituted and kept as word lists, sub-maps recursive);
  * `testMapObserver` additionally receives the map itself (for origin probes). */
-let lastMap: Array<[string, PropertyMapValue]> | undefined;
+let lastMap: Array<[string, unknown]> | undefined;
 let testMapObserver: ((map: PropertyMap) => void) | undefined;
+/** @return a map entry's value with its words as text, for comparing against what is written. */
+function plainMapValue(value: PropertyMapValue): unknown {
+  if (isWords(value)) {
+    return value.map(word => word.toUnmaskedString());
+  }
+  return Array.isArray(value) ? value.map(plainMap) : plainMap(value);
+}
+/** @return `map` with its words as text ({@link plainMapValue}). */
+function plainMap(map: PropertyMap): Map<string, unknown> {
+  return new Map([...map].map(([key, value]) => [key, plainMapValue(value)]));
+}
 registerRule("test_map", {}, context =>
   context.getMap("defines").then(map => {
-    lastMap = [...map];
+    lastMap = [...plainMap(map)];
     testMapObserver?.(map);
     return EMPTY_FILESET;
   })
@@ -554,7 +566,7 @@ class TestRepo implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new Error(`test_repo is not a publish destination ('${name.toString()}')`);
+    throw new Error(`test_repo is not a publish destination ('${name.toDisplayString()}')`);
   }
 
   public resolve(reference: RepositoryRef): Computable<FileSet> {
@@ -594,7 +606,7 @@ class TestDeferringRepo implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new Error(`test_deferring_repo is not a publish destination ('${name.toString()}')`);
+    throw new Error(`test_deferring_repo is not a publish destination ('${name.toDisplayString()}')`);
   }
 
   /* Each answer is one file, named for the repository and the reference. */
@@ -666,7 +678,7 @@ class TestRegistry implements Repository, RepositoryReader<SemverVersion, Semver
   }
 
   public getRepositoryPublishRef(name: Name): never {
-    throw new Error(`test_registry is not a publish destination ('${name.toString()}')`);
+    throw new Error(`test_registry is not a publish destination ('${name.toDisplayString()}')`);
   }
 
   public environmentKey(operation?: string): Computable<string> {
@@ -749,12 +761,12 @@ registerRepositoryProvider("test_versioned_registry", context =>
  * `fabr_home`. */
 class TestNamespaceRepo implements Repository, RepositoryLookup {
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
-    const literal = name.toString();
+    const literal = name.toUnmaskedString();
     return /^@[^/:]+$/.test(literal) ? new PartialRepositoryRef(this, literal) : RepositoryRef.written(this, name);
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new Error(`not a publish destination: ${name.toString()}`);
+    throw new Error(`not a publish destination: ${name.toDisplayString()}`);
   }
 
   public resolve(reference: RepositoryRef): Computable<FileSet> {
@@ -832,7 +844,12 @@ const madeMembers: Array<{ name: string; url?: string; credential?: Credential; 
 const MEMBER_CREDENTIAL: Credential = { authorize: () => Computable.resolve(new Map()) };
 registerRepositoryProvider("test_member", (context, url, credential) =>
   context.getProperty("flavour").then(flavour => {
-    madeMembers.push({ name: context.name, url, credential, flavour: flavour?.toString() });
+    madeMembers.push({
+      name: context.name,
+      url: url?.toUnmaskedString(),
+      credential,
+      flavour: flavour?.toString().toUnmaskedString(),
+    });
     return new TestRepo("member");
   })
 );
@@ -854,7 +871,7 @@ const accountProvider =
         context.makeRepository(memberType, {
           name: "m",
           properties: { flavour: "blue" },
-          url: "https://m.example",
+          url: SecureString.of("https://m.example"),
           credential: MEMBER_CREDENTIAL,
         })
       )
@@ -900,14 +917,18 @@ const TEST_LEAF_STEP: IBuildActionDefinition = {
   },
 };
 registerRule("test_parent", {}, context =>
-  context.getRequiredString("content").then(content => new BuildAction(TEST_LEAF_STEP, {}, { data: content }, { label: "leaf" }))
+  context
+    .getRequiredString("content")
+    .then(content => new BuildAction(TEST_LEAF_STEP, {}, { data: content.toUnmaskedString() }, { label: "leaf" }))
 );
 
 /* An internal type built only as a sub-target: it reads its input through the
  * same context accessors as any target (unaware it is anonymous) and yields
  * the leaf action. */
 registerRule("test_sub", {}, context =>
-  context.getRequiredString("data").then(data => new BuildAction(TEST_LEAF_STEP, {}, { data }, { label: "sub" }))
+  context
+    .getRequiredString("data")
+    .then(data => new BuildAction(TEST_LEAF_STEP, {}, { data: data.toUnmaskedString() }, { label: "sub" }))
 );
 /* A rule that composes the sub-target: builds it, then wraps its output —
  * the wrap runs in resolution (every evaluation), reconstructing shape on the
@@ -962,7 +983,9 @@ registerRule("test_cmd", {}, context =>
       )
     )
     .then(pipelines => {
-      lastCommand = pipelines.map(stages => stages.map(stage => ({ args: stage.args, stdout: stage.stdout })));
+      lastCommand = pipelines.map(stages =>
+        stages.map(stage => ({ args: stage.args.map(arg => arg.toUnmaskedString()), stdout: stage.stdout }))
+      );
       return EMPTY_FILESET;
     })
 );
@@ -1014,7 +1037,10 @@ const TEST_COMPILE_STEP: IBuildActionDefinition = {
 registerRule("test_compile", {}, context =>
   context
     .getRequiredString("includes")
-    .then(includes => new BuildAction(TEST_COMPILE_STEP, {}, { includes }, { discoverable: { headers: [testHeaders] } }))
+    .then(
+      includes =>
+        new BuildAction(TEST_COMPILE_STEP, {}, { includes: includes.toUnmaskedString() }, { discoverable: { headers: [testHeaders] } })
+    )
 );
 
 /* Reports the wildcard members (keys the schema never named) its target
@@ -1022,7 +1048,7 @@ registerRule("test_compile", {}, context =>
 let lastMemberKeys: string[] | undefined;
 registerRule("test_members", {}, context =>
   context.getWildcardProperties().then(members => {
-    lastMemberKeys = members.map(member => member.key.toString());
+    lastMemberKeys = members.map(member => member.key.toUnmaskedString());
     return EMPTY_FILESET;
   })
 );
@@ -1092,7 +1118,7 @@ async function testGetProperty(input: string, prop: string, constraints?: Record
 
   const context = model.getConfig(Constraints.of(constraints ?? {}), execution);
   const result = await internal(context).getProperty(prop);
-  return result.getValues();
+  return result.getValues().map(value => value.toUnmaskedString());
 }
 
 describe("BuildContext", () => {
@@ -1275,7 +1301,7 @@ describe("BuildContext", () => {
        * records the use site (value span, property, owning target) */
       expect(outer.cause).to.be.instanceOf(ReferenceFailedError);
       const hop = outer.cause as ReferenceFailedError;
-      expect(hop.value.value.toString()).to.equal("b");
+      expect(hop.value.value.toUnmaskedString()).to.equal("b");
       expect(hop.property.name.toBaseString()).to.equal("deps");
       expect(hop.target && declName(hop.target)).to.equal("a");
       expect(hop.cause).to.be.instanceOf(DependencyFailedError);
@@ -1302,7 +1328,7 @@ describe("BuildContext", () => {
       const circular = circularOf(err);
       expect(circular.name).to.equal("base");
       expect(circular.message).to.equal("Circular dependency: 'base' depends on itself");
-      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["base:*.ts"]);
+      expect(circular.cycle.map(site => site.value.value.toUnmaskedString())).to.deep.equal(["base:*.ts"]);
       expect(circular.cycle[0].property.name.toBaseString()).to.equal("deps");
       expect(circular.cycle[0].target && declName(circular.cycle[0].target!)).to.equal("base");
     }
@@ -1325,7 +1351,8 @@ describe("BuildContext", () => {
        * site that entered the cycle ('two', written in one's deps). */
       expect(
         circular.cycle.map(
-          site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+          site =>
+            `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toUnmaskedString()}`
         )
       ).to.deep.equal(["two deps = one", "one deps = two"]);
     }
@@ -1353,7 +1380,8 @@ describe("BuildContext", () => {
        * two's deps naming one back. */
       expect(
         circular.cycle.map(
-          site => `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+          site =>
+            `${site.target && declName(site.target)} ${site.property.name.toBaseString()} = ${site.value.value.toUnmaskedString()}`
         )
       ).to.deep.equal(["one deps = two<BUILD_OPERATION=run>", "two deps = one"]);
     }
@@ -1389,7 +1417,7 @@ describe("BuildContext", () => {
     const sites = (circular: CircularDependencyError): string[] =>
       circular.cycle.map(
         site =>
-          `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toString()}`
+          `${site.target ? declName(site.target) + " " : ""}${site.property.name.toBaseString()} = ${site.value.value.toUnmaskedString()}`
       );
 
     for (const wait of ["", " wait = yes;"]) {
@@ -1565,10 +1593,9 @@ describe("BuildContext", () => {
     } catch (err) {
       const circular = circularOf(err);
       expect(circular.name).to.equal("A");
-      expect(circular.cycle.map(site => `${site.property.name.toBaseString()} = ${site.value.value.toString()}`)).to.deep.equal([
-        "B = A",
-        "A = B",
-      ]);
+      expect(
+        circular.cycle.map(site => `${site.property.name.toBaseString()} = ${site.value.value.toUnmaskedString()}`)
+      ).to.deep.equal(["B = A", "A = B"]);
     }
   });
 
@@ -1585,7 +1612,7 @@ describe("BuildContext", () => {
     } catch (err) {
       const circular = circularOf(err);
       expect(circular.name).to.equal("DEPS");
-      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["DEPS"]);
+      expect(circular.cycle.map(site => site.value.value.toUnmaskedString())).to.deep.equal(["DEPS"]);
     }
   });
 
@@ -1620,7 +1647,7 @@ describe("BuildContext", () => {
       const circular = circularOf(err);
       expect(circular.name).to.equal("A");
       /* Both use sites — each frame's value is the guarded declaration's key. */
-      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["B<A=1>", "A<B=1>"]);
+      expect(circular.cycle.map(site => site.value.value.toUnmaskedString())).to.deep.equal(["B<A=1>", "A<B=1>"]);
     }
   });
 
@@ -1642,7 +1669,7 @@ describe("BuildContext", () => {
       expect(circular.name).to.equal("FOO");
       /* Both hops: MODE's value reading FOO back, and the guarded key that
        * demanded MODE. */
-      expect(circular.cycle.map(site => site.value.value.toString())).to.deep.equal(["${FOO}", "FOO<MODE=x>"]);
+      expect(circular.cycle.map(site => site.value.value.toUnmaskedString())).to.deep.equal(["${FOO}", "FOO<MODE=x>"]);
     }
   });
 
@@ -1792,7 +1819,7 @@ describe("BuildContext", () => {
       /* The no-rule failure crossed the written reference 'n' in a's deps */
       const hop = (err as DependencyFailedError).cause;
       expect(hop).to.be.instanceOf(ReferenceFailedError);
-      expect((hop as ReferenceFailedError).value.value.toString()).to.equal("n");
+      expect((hop as ReferenceFailedError).value.value.toUnmaskedString()).to.equal("n");
       expect((hop as ReferenceFailedError).property.name.toBaseString()).to.equal("deps");
       const cause = (hop as ReferenceFailedError).cause;
       expect(cause).to.be.instanceOf(NoRuleFoundError);
@@ -3466,14 +3493,16 @@ describe("BuildContext", () => {
     expect(errors).to.deep.equal([]);
     const context = internal(model.getConfig(Constraints.of({}), execution));
 
-    expect((await context.getProperty("IMAGE")).toString()).to.equal("aarch64-unknown-linux");
+    expect((await context.getProperty("IMAGE")).toString().toUnmaskedString()).to.equal("aarch64-unknown-linux");
     /* The words are one text, joined by spaces, before the edit. */
-    expect((await context.getProperty("LISTED")).getValues()).to.deep.equal(["a.tar.gz,dir/b.tar.gz"]);
-    expect((await context.getProperty("STEM")).getValues()).to.deep.equal(["a"]);
+    expect((await context.getProperty("LISTED")).getValues().map(word => word.toUnmaskedString())).to.deep.equal([
+      "a.tar.gz,dir/b.tar.gz",
+    ]);
+    expect((await context.getProperty("STEM")).getValues().map(word => word.toUnmaskedString())).to.deep.equal(["a"]);
     /* The edit applies to the value read under the requirement. */
-    expect((await context.getProperty("OTHER")).toString()).to.equal("x86_64");
+    expect((await context.getProperty("OTHER")).toString().toUnmaskedString()).to.equal("x86_64");
     /* An edit in a requirement's value is applied before the requirement is. */
-    expect((await context.getProperty("PICKED")).toString()).to.equal("picked");
+    expect((await context.getProperty("PICKED")).toString().toUnmaskedString()).to.equal("picked");
   });
 
   describe("a default target beside other declarations of its name", () => {
@@ -4499,7 +4528,8 @@ describe("Rule selection", () => {
     const baseRule: RuleDefinition = {
       type: "base",
       properties: {},
-      evaluate: context => context.getString("flavour").then(flavour => made("base.txt", `${context.name} ${flavour ?? "-"}`)),
+      evaluate: context =>
+        context.getString("flavour").then(flavour => made("base.txt", `${context.name} ${flavour?.toUnmaskedString() ?? "-"}`)),
     };
     const baseTestRule: RuleDefinition = {
       type: "base",
@@ -4512,7 +4542,7 @@ describe("Rule selection", () => {
       properties: { BUILD_OPERATION: "build" },
       evaluate: (context, requirements) =>
         Computable.forAll([baseRule.evaluate(context, requirements), context.getString("extra")], (base, extra) =>
-          FileSet.unionAll(base as FileSet, made("derived.txt", extra ?? "-"))
+          FileSet.unionAll(base as FileSet, made("derived.txt", extra?.toUnmaskedString() ?? "-"))
         ),
     };
     const DEFS =
@@ -5141,7 +5171,7 @@ describe("a reference to a target", () => {
       if (err instanceof MultiError) {
         err.errors.forEach(visit);
       } else if (err instanceof ReferenceFailedError) {
-        crossed.push(`${err.target === undefined ? "" : declName(err.target)} ${err.value.value.toString()}`);
+        crossed.push(`${err.target === undefined ? "" : declName(err.target)} ${err.value.value.toUnmaskedString()}`);
         visit(err.cause);
       } else if (err instanceof DependencyFailedError) {
         visit(err.cause);
@@ -5218,7 +5248,7 @@ describe("declared rules and repositories", () => {
   function declaredModel(input: string, implementations: Map<string, unknown>, loaded: string[], errors: string[] = []): BuildModel {
     const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
     return toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions, implementation => {
-      const reference = implementation.value.toString();
+      const reference = implementation.value.toUnmaskedString();
       loaded.push(reference);
       return implementations.has(reference)
         ? Computable.resolve(implementations.get(reference))
@@ -5313,20 +5343,20 @@ describe("declared rules and repositories", () => {
   it("hands a declared repository type's implementation the url and credential it is made with", async () => {
     const given: unknown[] = [];
     const provider: RepositoryProvider = (_context, url, credential) => {
-      given.push(url, credential);
+      given.push(url?.toUnmaskedString(), credential);
       return Computable.resolve(new FileSet(new Map()));
     };
     const model = declaredModel("targetdef dr { }\nrepository dr = @p/q:Repo;\n", new Map([["@p/q:Repo", { provider }]]), []);
     await model
       .getRepositoryImplementation("dr")!
-      .then(made => made.provider({} as TargetContext, "https://made.example", MEMBER_CREDENTIAL, NO_REQUIREMENTS));
+      .then(made => made.provider({} as TargetContext, SecureString.of("https://made.example"), MEMBER_CREDENTIAL, NO_REQUIREMENTS));
     expect(given).to.deep.equal(["https://made.example", MEMBER_CREDENTIAL]);
   });
 });
 
 /* A rule reading the global `READ_BY_RULE`, as a test rule reads its runner. */
 registerRule("test_global_reader", {}, context =>
-  context.getGlobalString("READ_BY_RULE").then(value => new FileSet(new Map([["f.txt", MemoryFile.from(value)]])))
+  context.getGlobalString("READ_BY_RULE").then(value => new FileSet(new Map([["f.txt", MemoryFile.from(value.toUnmaskedString())]])))
 );
 
 describe("rules written in .fabr", () => {
@@ -5843,10 +5873,14 @@ describe("rules written in .fabr", () => {
   describe("splicing a map into a target's body", () => {
     /* Writes its `content`, which it defaults to `inner`. */
     registerRule("test_defaulted", {}, context =>
-      context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
+      context
+        .getRequiredString("content")
+        .then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content.toUnmaskedString())]])))
     );
     registerRule("test_needs", {}, context =>
-      context.getRequiredString("content").then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content)]])))
+      context
+        .getRequiredString("content")
+        .then(content => new FileSet(new Map([["f.txt", MemoryFile.from(content.toUnmaskedString())]])))
     );
     const SPLICE_DEFS =
       "targetdef test_defaulted { content = STRING default inner; }\n" +
@@ -6012,7 +6046,18 @@ describe("a global MAP property", () => {
       .getGlobalMap("TYPES")
       .then(
         map =>
-          new FileSet(new Map([["out.txt", MemoryFile.from([...map].map(([key, value]) => `${key}=${String(value)}`).join(" "))]]))
+          new FileSet(
+            new Map([
+              [
+                "out.txt",
+                MemoryFile.from(
+                  [...map]
+                    .map(([key, value]) => `${key}=${(value as SecureString[]).map(word => word.toUnmaskedString()).join(",")}`)
+                    .join(" ")
+                ),
+              ],
+            ])
+          )
       )
   );
 
@@ -6137,7 +6182,9 @@ describe("private declarations", () => {
   }
 
   const read = async (model: BuildModel, name: string, constraints: Record<string, string> = {}): Promise<string[]> =>
-    (await internal(model.getConfig(Constraints.of(constraints), execution)).getProperty(name)).getValues();
+    (await internal(model.getConfig(Constraints.of(constraints), execution)).getProperty(name))
+      .getValues()
+      .map(value => value.toUnmaskedString());
 
   const TYPES = "targetdef test_file { content = STRING; }\ntargetdef test_good { deps = PACKAGES; }\n";
   const contentOf = async (model: BuildModel, name: string): Promise<string> => {

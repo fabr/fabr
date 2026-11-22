@@ -210,7 +210,9 @@ export function requireWhole(ref: INameValue, resolved: ReadonlyArray<Resolved>)
   for (const source of resolved) {
     if (source instanceof ProjectedPackage && source.base instanceof ResolvedTarget) {
       const name = source.base.packageName;
-      throw new FabrError(`'${ref.value.toString()}' selects files of '${name}'`).withHelp(`name it without the selection: '${name}'`);
+      throw new FabrError(`'${ref.value.toDisplayString()}' selects files of '${name}'`).withHelp(
+        `name it without the selection: '${name}'`
+      );
     }
   }
 }
@@ -252,7 +254,7 @@ function requireDeclared(config: BuildContext, ref: INameValue, prefix: boolean,
      * not declared. */
     return config.resolve(ref).then((resolved): void => {
       requireWhole(ref, resolved.denoted);
-      throw new FabrError(`'${ref.value.toString()}' is not a name the project declares`).withHelp(help);
+      throw new FabrError(`'${ref.value.toDisplayString()}' is not a name the project declares`).withHelp(help);
     });
   });
 }
@@ -439,7 +441,9 @@ function firstOfEach(): (source: Resolved) => boolean {
   return source => {
     const identity =
       source instanceof TargetRef
-        ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => `${prefix} ${pattern.toString()}`)].join(":")
+        ? [source.toString(), ...source.projections.map(({ pattern, prefix }) => [prefix, pattern.toUnmaskedString()].join(" "))].join(
+            ":"
+          )
         : source instanceof ResolvedNode
           ? source.content.key
           : source;

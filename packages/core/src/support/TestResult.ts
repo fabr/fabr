@@ -21,6 +21,7 @@ import { Computable } from "../core/Computable";
 import { FileSet, IFile } from "../core/FileSet";
 import type { SourceRef } from "../core/Repository";
 import { isJsonObject, readJsonFile } from "./Json";
+import { SecureString } from "../core/SecureString";
 import { FabrError, TestsFailedError } from "../core/Errors";
 import { globMatcher } from "./Glob";
 
@@ -122,10 +123,10 @@ const TEST_STABILITIES: ReadonlyArray<TestStability> = ["stable", "flaky", "unst
  * Convert a test target's stability property value to a {@link TestStability}.
  * @throws FabrError naming the values there are, where `value` is none of them.
  */
-export function toTestStability(value: string): TestStability {
-  const stability = TEST_STABILITIES.find(known => known === value);
+export function toTestStability(value: SecureString): TestStability {
+  const stability = TEST_STABILITIES.find(known => value.equals(known));
   if (stability === undefined) {
-    throw new FabrError(`'${value}' is not a test stability (${TEST_STABILITIES.join(", ")})`);
+    throw new FabrError(`'${value.toDisplayString()}' is not a test stability (${TEST_STABILITIES.join(", ")})`);
   }
   return stability;
 }
@@ -134,11 +135,11 @@ export function toTestStability(value: string): TestStability {
  * Convert the value of the `TEST_FLAKE_RETRIES` property to a count.
  * @throws FabrError where it is not a non-negative integer.
  */
-export function toFlakeRetries(value: string): number {
-  if (!/^[0-9]+$/.test(value)) {
-    throw new FabrError(`TEST_FLAKE_RETRIES must be a number of retries, not '${value}'`);
+export function toFlakeRetries(value: SecureString): number {
+  if (!value.test(/^[0-9]+$/)) {
+    throw new FabrError(`TEST_FLAKE_RETRIES must be a number of retries, not '${value.toDisplayString()}'`);
   }
-  return Number(value);
+  return Number(value.toUnmaskedString());
 }
 
 /**
@@ -311,11 +312,11 @@ function isCtrfReport(document: unknown): document is ITestReport {
 /** @return the test files among `tests` whose source path, relative to the
  * project (their name where they have none), the glob `pattern` matches; all
  * of them where `pattern` is empty. */
-export function selectTestFiles(tests: FileSet, pattern: string): FileSet {
-  if (pattern === "") {
+export function selectTestFiles(tests: FileSet, pattern: SecureString): FileSet {
+  if (pattern.length === 0) {
     return tests;
   }
-  const matches = globMatcher(pattern);
+  const matches = globMatcher(pattern.toUnmaskedString());
   return tests.remap(name => (matches(testFilePathOf(tests, name)) ? name : undefined));
 }
 

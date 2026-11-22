@@ -28,10 +28,15 @@ import { IProjection } from "./Reference";
 import { MemoryFile } from "./MemoryFS";
 import { Name, NameBuilder } from "./Name";
 import { parseName } from "../model/Parser";
-import { manifestArguments, RunnableFileSet, startLaunch, toArgv, toRunnable } from "./RunnableFileSet";
+import { manifestArguments, RunnableArgument, RunnableFileSet, startLaunch, toArgv, toRunnable } from "./RunnableFileSet";
 import { Computable } from "./Computable";
 import { ownerName, TREE_MOUNT } from "./BuildCache";
 import { registerProvenanceDescriber } from "./Provenance";
+
+/** @return the command line `args` are run as ({@link toArgv}), as text. */
+function argvText(args: readonly RunnableArgument[], anchor?: string): string[] {
+  return toArgv(args, anchor).map(arg => arg.toUnmaskedString());
+}
 
 const NODE = new HostLink("node-hash", "/opt/node/bin/node");
 
@@ -43,7 +48,7 @@ describe("RunnableFileSet", () => {
     expect(runnable.interpreter).to.equal(NODE);
     expect(runnable.size).to.equal(1);
     expect(runnable.toCommandLine()).to.deep.equal([NODE, { installFile: "run.js" }, "--flag"]);
-    expect(toArgv(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "run.js", "--flag"]);
+    expect(argvText(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "run.js", "--flag"]);
   });
 });
 
@@ -80,21 +85,21 @@ describe("RunnableFileSet's entry errors", () => {
 describe("RunnableFileSet.toCommandLine", () => {
   it("places interpreter, entry, fixed args, then caller args", () => {
     const runnable = RunnableFileSet.forEntry(new Map(), "run.js", ["fixed"], NODE);
-    expect(toArgv(runnable.toCommandLine(["extra"]))).to.deep.equal(["/opt/node/bin/node", "run.js", "fixed", "extra"]);
+    expect(argvText(runnable.toCommandLine(["extra"]))).to.deep.equal(["/opt/node/bin/node", "run.js", "fixed", "extra"]);
   });
 
   it("makes the entry itself the command when there is no interpreter", () => {
     const runnable = RunnableFileSet.forEntry(new Map(), "bin/tool", ["fixed"]);
-    expect(toArgv(runnable.toCommandLine(["extra"]))).to.deep.equal(["bin/tool", "fixed", "extra"]);
-    expect(toArgv(RunnableFileSet.forEntry(new Map(), "tool").toCommandLine())).to.deep.equal(["./tool"]);
+    expect(argvText(runnable.toCommandLine(["extra"]))).to.deep.equal(["bin/tool", "fixed", "extra"]);
+    expect(argvText(RunnableFileSet.forEntry(new Map(), "tool").toCommandLine())).to.deep.equal(["./tool"]);
   });
 
   it("anchors the install files against the install dir (for a cwd-independent launch)", () => {
     const withInterp = RunnableFileSet.forEntry(new Map(), "run.js", [], NODE);
-    expect(toArgv(withInterp.toCommandLine(), "/staged")).to.deep.equal(["/opt/node/bin/node", path.resolve("/staged", "run.js")]);
+    expect(argvText(withInterp.toCommandLine(), "/staged")).to.deep.equal(["/opt/node/bin/node", path.resolve("/staged", "run.js")]);
     /* interpreter-less: the anchored (absolute) entry becomes argv[0] itself. */
     const bare = RunnableFileSet.forEntry(new Map(), "bin/tool", []);
-    expect(toArgv(bare.toCommandLine(), "/staged")).to.deep.equal([path.resolve("/staged", "bin/tool")]);
+    expect(argvText(bare.toCommandLine(), "/staged")).to.deep.equal([path.resolve("/staged", "bin/tool")]);
   });
 
   it("runs through a runnable interpreter, reached by its hash in the tree pool beside the launch directory", async () => {
@@ -109,16 +114,16 @@ describe("RunnableFileSet.toCommandLine", () => {
     expect(ensured).to.deep.equal([hash]);
     /* The install carries nothing of the pool's. */
     expect([...runnable]).to.deep.equal([]);
-    expect(toArgv(runnable.toCommandLine(["x"]))).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
+    expect(argvText(runnable.toCommandLine(["x"]))).to.deep.equal([`${at}/bin/node`, "--flag", "run.js", "fixed", "x"]);
     /* Mounted below the launch directory, the entry moves and the pool does not. */
-    expect(toArgv(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
-    expect(toArgv(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` }))).to.deep.equal([
+    expect(argvText(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([`${at}/bin/node`, "--flag", "tool/run.js", "fixed"]);
+    expect(argvText(runnable.toCommandLine([], { base: "../tool", pool: `../${TREE_MOUNT}` }))).to.deep.equal([
       `../${at}/bin/node`,
       "--flag",
       "../tool/run.js",
       "fixed",
     ]);
-    expect(toArgv(runnable.toCommandLine(), "/staged/work")).to.deep.equal([
+    expect(argvText(runnable.toCommandLine(), "/staged/work")).to.deep.equal([
       path.resolve("/staged/work", at, "bin/node"),
       "--flag",
       path.resolve("/staged/work", "run.js"),
@@ -136,10 +141,15 @@ describe("RunnableFileSet.toCommandLine", () => {
     );
     expect(ensured).to.deep.equal([]);
     expect(runnable.interpreter).to.equal(NODE);
-    expect(toArgv(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal(["/opt/node/bin/node", "tool/run.js", "fixed", "x"]);
+    expect(argvText(runnable.toCommandLine(["x"], { base: "tool" }))).to.deep.equal([
+      "/opt/node/bin/node",
+      "tool/run.js",
+      "fixed",
+      "x",
+    ]);
     /* A program of the host as the entry is the command, wherever the install is. */
     expect(host.toCommandLine(["-e", "1"], { base: "tool" })).to.deep.equal([NODE, "-e", "1"]);
-    expect(toArgv(host.toCommandLine(["-e", "1"]), "/staged")).to.deep.equal(["/opt/node/bin/node", "-e", "1"]);
+    expect(argvText(host.toCommandLine(["-e", "1"]), "/staged")).to.deep.equal(["/opt/node/bin/node", "-e", "1"]);
   });
 });
 
@@ -157,14 +167,14 @@ describe("RunnableFileSet arguments naming install files", () => {
       undefined,
       ["--require", { installFile: "./preload.cjs" }]
     );
-    expect(toArgv(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "--require", "./preload.cjs", "run.js"]);
-    expect(toArgv(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([
+    expect(argvText(runnable.toCommandLine())).to.deep.equal(["/opt/node/bin/node", "--require", "./preload.cjs", "run.js"]);
+    expect(argvText(runnable.toCommandLine([], { base: "tool" }))).to.deep.equal([
       "/opt/node/bin/node",
       "--require",
       "./tool/preload.cjs",
       "tool/run.js",
     ]);
-    expect(toArgv(runnable.toCommandLine(), "/staged")[2]).to.equal(path.resolve("/staged", "preload.cjs"));
+    expect(argvText(runnable.toCommandLine(), "/staged")[2]).to.equal(path.resolve("/staged", "preload.cjs"));
   });
 
   it("names an install file wherever the install is reached, the program's own options before its entry", async () => {
@@ -177,14 +187,14 @@ describe("RunnableFileSet arguments naming install files", () => {
         .then(resolve, reject)
     );
     const at = `${TREE_MOUNT}/${java.toManifestHash()}`;
-    expect(toArgv(program.toCommandLine([], { base: "tool" }))).to.deep.equal([
+    expect(argvText(program.toCommandLine([], { base: "tool" }))).to.deep.equal([
       `${at}/bin/java`,
       "--module-path=tool/lib/a.jar:tool/lib/b.jar",
       "-jar",
       "tool/launcher.jar",
       "--config=tool/etc/app.conf",
     ]);
-    expect(toArgv(program.toCommandLine(), "/staged")).to.deep.equal([
+    expect(argvText(program.toCommandLine(), "/staged")).to.deep.equal([
       path.resolve("/staged", at, "bin/java"),
       `--module-path=${path.resolve("/staged/lib/a.jar")}:${path.resolve("/staged/lib/b.jar")}`,
       "-jar",
@@ -199,11 +209,11 @@ describe("RunnableFileSet.withArguments", () => {
     const runner = RunnableFileSet.forEntry(new Map(), "run.js").withArguments([
       { join: "", parts: ["--browser=", { installFile: "../.fabr-browser/chrome/chrome" }] },
     ]);
-    expect(toArgv(runner.toCommandLine([], { base: "../.runner" }))).to.deep.equal([
+    expect(argvText(runner.toCommandLine([], { base: "../.runner" }))).to.deep.equal([
       "../.runner/run.js",
       "--browser=../.fabr-browser/chrome/chrome",
     ]);
-    expect(toArgv(runner.toCommandLine([], { base: "../.runner" }), "/work/build")).to.deep.equal([
+    expect(argvText(runner.toCommandLine([], { base: "../.runner" }), "/work/build")).to.deep.equal([
       path.resolve("/work/.runner/run.js"),
       `--browser=${path.resolve("/work/.fabr-browser/chrome/chrome")}`,
     ]);
@@ -242,8 +252,8 @@ describe("manifestArguments and toArgv", () => {
   });
 
   it("writes each kind of argument as command-line text", () => {
-    expect(toArgv(args)).to.deep.equal(["-c", "/usr/bin/cc", "lib/a.jar", "--path=x:/usr/bin/cc:y"]);
-    expect(toArgv(args, "/staged")).to.deep.equal([
+    expect(argvText(args)).to.deep.equal(["-c", "/usr/bin/cc", "lib/a.jar", "--path=x:/usr/bin/cc:y"]);
+    expect(argvText(args, "/staged")).to.deep.equal([
       "-c",
       "/usr/bin/cc",
       path.resolve("/staged/lib/a.jar"),
@@ -274,7 +284,7 @@ describe("toRunnable", () => {
      * untouched by the rename. */
     const selected = toRunnable(ref);
     expect(selected).to.be.instanceOf(RunnableFileSet);
-    expect(toArgv(selected!.toCommandLine())).to.deep.equal(["bin/tool"]);
+    expect(argvText(selected!.toCommandLine())).to.deep.equal(["bin/tool"]);
   });
 
   it("yields no runnable when the projection matched nothing — the lenient miss", () => {
@@ -295,7 +305,7 @@ describe("toRunnable", () => {
     );
 
     expect(ref.projections).to.have.lengthOf(2);
-    expect(toArgv(toRunnable(ref)!.toCommandLine())).to.deep.equal(["bin/tool"]);
+    expect(argvText(toRunnable(ref)!.toCommandLine())).to.deep.equal(["bin/tool"]);
   });
 });
 

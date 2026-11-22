@@ -36,12 +36,16 @@ import {
   parseJson,
   Repository,
   RepositoryImplementation,
+  SecureString,
   SEMVER,
   SemverConstraint,
   SemverVersion,
+  shownUrl,
   TargetContext,
   toJsonObject,
   tripleToNpm,
+  urlJoin,
+  urlRoot,
   VersionNotFoundError,
 } from "@fabr-build/core";
 
@@ -121,20 +125,20 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
   constructor(
     context: TargetContext,
     /** The release trees, in the order a release's archive is looked for in them; the first lists the versions. */
-    private readonly urls: readonly [string, ...string[]]
+    private readonly urls: readonly [SecureString, ...SecureString[]]
   ) {
     super(context, urls[0]);
   }
 
   /** List the published versions, from nodejs.org's `index.json`, which lists every platform's. */
   protected listVersions(_target: string, revalidate: boolean): Computable<string[]> {
-    const url = `${this.url}/${INDEX_FILE}`;
+    const url = urlJoin(this.url, INDEX_FILE);
     return fetchDocument(this.context, {
       url,
       file: INDEX_FILE,
       tag: "node:versions:1",
       report: { resource: "version list", role: "index" },
-      convert: text => parseJson(text, `release list from ${this.url}`, toNodeVersions),
+      convert: text => parseJson(text, `release list from ${shownUrl(this.url)}`, toNodeVersions),
       options: { immutable: false, forceRevalidate: revalidate },
     }).then(listed => listed ?? []);
   }
@@ -147,12 +151,12 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
       return Computable.reject(this.unavailable(target));
     }
     const suffixes = platform.startsWith("win-") ? WINDOWS_ARCHIVE_SUFFIXES : ARCHIVE_SUFFIXES;
-    const find = (sums: Map<string, string> | undefined, base: string): IDownloadSource | undefined => {
+    const find = (sums: Map<string, string> | undefined, base: SecureString): IDownloadSource | undefined => {
       for (const suffix of suffixes) {
         const file = `node-v${version}-${platform}${suffix}`;
         const sha256 = sums?.get(file);
         if (sha256 !== undefined) {
-          return { url: `${base}/v${version}/${file}`, expected: { algorithm: "sha256", encoding: "hex", value: sha256 } };
+          return { url: urlJoin(base, `v${version}/${file}`), expected: { algorithm: "sha256", encoding: "hex", value: sha256 } };
         }
       }
       return undefined;
@@ -165,7 +169,11 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
             ? new FabrError(`Node.js ${version} is not published for ${target}`).withHelp(
                 "choose another version, or set NODE to a node binary for this platform"
               )
-            : new VersionNotFoundError(NODE_PACKAGE, version, `Node.js ${version} is not published at ${this.urls.join(" or ")}`)
+            : new VersionNotFoundError(
+                NODE_PACKAGE,
+                version,
+                `Node.js ${version} is not published at ${this.urls.map(shownUrl).join(" or ")}`
+              )
         );
       }
       const base = this.urls[at];
@@ -193,15 +201,15 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
   }
 
   /** Read a release's SHASUMS256.txt from `base`, or undefined where it has none (a 404). */
-  private releaseShasums(base: string, version: string): Computable<Map<string, string> | undefined> {
-    const url = `${base}/v${version}/${SHASUMS_FILE}`;
-    return this.shasums.getOrCreate(url, () =>
+  private releaseShasums(base: SecureString, version: string): Computable<Map<string, string> | undefined> {
+    const url = urlJoin(base, `v${version}/${SHASUMS_FILE}`);
+    return this.shasums.getOrCreate(url.toUnmaskedString(), () =>
       fetchDocument(this.context, {
         url,
         file: SHASUMS_FILE,
         tag: "node:shasums:1",
         report: { resource: "checksums", role: "index" },
-        convert: text => parseShasums(text, url),
+        convert: text => parseShasums(text, shownUrl(url)),
       })
     );
   }
@@ -209,7 +217,7 @@ export class NodeDistribution extends Distribution<SemverVersion, SemverConstrai
 
 function createRepository(context: TargetContext): Computable<Repository> {
   return context.getRequiredProperty("url").then(prop => {
-    const [first, ...rest] = prop.getValues().map(url => url.replace(/\/+$/, ""));
+    const [first, ...rest] = prop.getValues().map(urlRoot);
     if (first === undefined) {
       throw new FabrError("Missing required property url");
     }

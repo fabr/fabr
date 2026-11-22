@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "./SecureString";
 import { SILENT_REPORT } from "../support/Execute";
 import { Computable } from "./Computable";
 import { FileSet } from "./FileSet";
@@ -51,7 +52,7 @@ describe("Flag", () => {
         {
           name: "test",
           operation: "build",
-          getGlobalString: () => Computable.resolve("build"),
+          getGlobalString: () => Computable.resolve(SecureString.of("build")),
           launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
           memoize: (_t, _k, create) => create("unused"),
           runTask: (_task, run) => run(SILENT_REPORT),

@@ -35,10 +35,15 @@ import {
   MemoryFile,
   openUrlStream,
   parseJson,
+  secure,
+  SecureString,
   sendRequest,
+  shownUrl,
   TargetContext,
   toError,
   toJsonObject,
+  urlJoin,
+  urlResolved,
   verifiedStream,
 } from "@fabr-build/core";
 import { isDigest } from "./ImageReference";
@@ -254,7 +259,7 @@ interface IStoredLayer {
 export class Registry {
   constructor(
     private readonly context: TargetContext,
-    public readonly url: string,
+    public readonly url: SecureString,
     private readonly credential: Credential
   ) {}
 
@@ -264,7 +269,7 @@ export class Registry {
    * the digest the registry states; a digest's is verified against it.
    */
   public manifest(repository: string, version: string): Computable<IDigested<ManifestDocument> | undefined> {
-    const url = `${this.url}/v2/${repository}/manifests/${version}`;
+    const url = urlJoin(this.url, `v2/${repository}/manifests/${version}`);
     const byDigest = isDigest(version);
     return fetchDocument(this.context, {
       url,
@@ -275,9 +280,9 @@ export class Registry {
         const bytes = Buffer.from(text, "utf8");
         const digest = digestOf(bytes);
         if (byDigest && digest !== version) {
-          throw new FabrError(`${url} served a manifest whose digest is ${digest}`);
+          throw new FabrError(`${shownUrl(url)} served a manifest whose digest is ${digest}`);
         }
-        return { document: parseJson(text, `manifest from ${url}`, json => toManifestDocument(json)), bytes, digest };
+        return { document: parseJson(text, `manifest from ${shownUrl(url)}`, json => toManifestDocument(json)), bytes, digest };
       },
       headers: () => Computable.resolve({ accept: MANIFEST_ACCEPT }),
       credential: this.credential,
@@ -287,24 +292,24 @@ export class Registry {
 
   /** Fetch an image's config by its descriptor, verified against its digest. */
   public config(repository: string, descriptor: IDescriptor): Computable<IImageConfig> {
-    const url = `${this.url}/v2/${repository}/blobs/${descriptor.digest}`;
+    const url = urlJoin(this.url, `v2/${repository}/blobs/${descriptor.digest}`);
     return fetchDocument(this.context, {
       url,
-      key: `${this.url} ${descriptor.digest}`,
+      key: secure`${this.url} ${descriptor.digest}`.toUnmaskedString(),
       file: "config.json",
       tag: CONFIG_TAG,
       report: { resource: "image config", role: "index" },
       convert: text => {
         const digest = digestOf(Buffer.from(text, "utf8"));
         if (digest !== descriptor.digest) {
-          throw new FabrError(`${url} served a config whose digest is ${digest}`);
+          throw new FabrError(`${shownUrl(url)} served a config whose digest is ${digest}`);
         }
-        return parseJson(text, `image config from ${url}`, toImageConfig);
+        return parseJson(text, `image config from ${shownUrl(url)}`, toImageConfig);
       },
       credential: this.credential,
     }).then(config => {
       if (config === undefined) {
-        throw new FabrError(`${this.url} has no config ${descriptor.digest} for ${repository}`);
+        throw new FabrError(`${shownUrl(this.url)} has no config ${descriptor.digest} for ${repository}`);
       }
       return config;
     });
@@ -316,17 +321,17 @@ export class Registry {
    * against `diffId`, so a layer that does not match is never kept.
    */
   public layer(repository: string, descriptor: ILayerDescriptor, diffId: string): Computable<IStoredLayer> {
-    const url = `${this.url}/v2/${repository}/blobs/${descriptor.digest}`;
+    const url = urlJoin(this.url, `v2/${repository}/blobs/${descriptor.digest}`);
     return this.context
       .fetch(
-        `${this.url} ${descriptor.digest}`,
+        secure`${this.url} ${descriptor.digest}`.toUnmaskedString(),
         LAYER_TAG,
         () =>
           Computable.resolve({
             url,
             credential: this.credential,
             process: (content: Readable, { createOutput }: IFetchContext) =>
-              storeLayer(content, descriptor, diffId, url, createOutput),
+              storeLayer(content, descriptor, diffId, shownUrl(url), createOutput),
           }),
         { resource: "image layer", role: "content" }
       )
@@ -344,29 +349,37 @@ export class Registry {
    * header leads; undefined where the registry has no such repository.
    */
   public tags(repository: string): Computable<string[] | undefined> {
-    const page = (path: string, listed: string[]): Computable<string[] | undefined> =>
-      this.send(path, { method: "GET" }).then(response => {
+    const page = (url: SecureString, listed: string[]): Computable<string[] | undefined> =>
+      this.send(url, { method: "GET" }).then(response => {
         if (response.statusCode === 404) {
           return undefined;
         }
         this.expect(response, [200], `listing the tags of ${repository}`);
-        const tags = parseJson(response.body, `tags of ${repository} from ${this.url}`, toTags);
+        const tags = parseJson(response.body, `tags of ${repository} from ${shownUrl(this.url)}`, toTags);
         const next = nextPage(response.headers.link);
-        return next === undefined ? [...listed, ...tags] : page(new URL(next, this.url).toString(), [...listed, ...tags]);
+        return next === undefined ? [...listed, ...tags] : page(urlResolved(this.url, next), [...listed, ...tags]);
       });
-    return page(`/v2/${repository}/tags/list`, []);
+    return page(urlJoin(this.url, `v2/${repository}/tags/list`), []);
   }
 
   /** Open a stream of the blob `digest` in `repository`, as published, to push it to another registry. */
   public blobStream(repository: string, digest: string): Computable<Readable> {
-    return openUrlStream(`${this.url}/v2/${repository}/blobs/${digest}`, {}, Date.now, "content", undefined, this.credential).then(
-      response => response.stream!
-    );
+    return openUrlStream(
+      urlJoin(this.url, `v2/${repository}/blobs/${digest}`),
+      {},
+      Date.now,
+      "content",
+      undefined,
+      this.credential
+    ).then(response => response.stream!);
   }
 
   /** @return the digest `tag` names in `repository`, or undefined where it names nothing. */
   public taggedDigest(repository: string, tag: string): Computable<string | undefined> {
-    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "HEAD", headers: { accept: MANIFEST_ACCEPT } }).then(response => {
+    return this.send(urlJoin(this.url, `v2/${repository}/manifests/${tag}`), {
+      method: "HEAD",
+      headers: { accept: MANIFEST_ACCEPT },
+    }).then(response => {
       if (response.statusCode === 404) {
         return undefined;
       }
@@ -378,7 +391,7 @@ export class Registry {
 
   /** @return true if `repository` holds the blob `digest`, otherwise false. */
   public hasBlob(repository: string, digest: string): Computable<boolean> {
-    return this.send(`/v2/${repository}/blobs/${digest}`, { method: "HEAD" }).then(response => {
+    return this.send(urlJoin(this.url, `v2/${repository}/blobs/${digest}`), { method: "HEAD" }).then(response => {
       if (response.statusCode === 404) {
         return false;
       }
@@ -390,7 +403,7 @@ export class Registry {
   /** Mount the blob `digest` of `from`, on this registry, into `repository`: true where mounted, false where the registry declined. */
   public mountBlob(repository: string, digest: string, from: string): Computable<boolean> {
     const query = new URLSearchParams({ mount: digest, from });
-    return this.send(`/v2/${repository}/blobs/uploads/?${query.toString()}`, {
+    return this.send(urlJoin(this.url, `v2/${repository}/blobs/uploads/?${query.toString()}`), {
       method: "POST",
       headers: { "content-length": "0" },
     }).then(response => {
@@ -401,15 +414,18 @@ export class Registry {
 
   /** Upload the blob `digest`, `size` bytes, into `repository`, in one request. */
   public uploadBlob(repository: string, digest: string, size: number, body: Readable | Buffer): Computable<void> {
-    return this.send(`/v2/${repository}/blobs/uploads/`, { method: "POST", headers: { "content-length": "0" } }).then(started => {
+    return this.send(urlJoin(this.url, `v2/${repository}/blobs/uploads/`), {
+      method: "POST",
+      headers: { "content-length": "0" },
+    }).then(started => {
       this.expect(started, [202], `starting an upload to ${repository}`);
       const location = started.headers.location;
       if (typeof location !== "string") {
-        throw new FabrError(`${this.url} started an upload to ${repository} without saying where`);
+        throw new FabrError(`${shownUrl(this.url)} started an upload to ${repository} without saying where`);
       }
-      const url = new URL(location, this.url);
+      const url = new URL(location, this.url.toUnmaskedString());
       url.searchParams.set("digest", digest);
-      return this.send(url.toString(), {
+      return this.send(urlResolved(this.url, url.href), {
         method: "PUT",
         headers: { "content-type": "application/octet-stream", "content-length": String(size) },
         body,
@@ -423,7 +439,7 @@ export class Registry {
    * subject (`OCI-Subject`), or undefined where it says none.
    */
   public putManifest(repository: string, tag: string, manifest: Buffer, mediaType: string): Computable<string | undefined> {
-    return this.send(`/v2/${repository}/manifests/${tag}`, {
+    return this.send(urlJoin(this.url, `v2/${repository}/manifests/${tag}`), {
       method: "PUT",
       headers: { "content-type": mediaType },
       body: manifest,
@@ -439,7 +455,10 @@ export class Registry {
    * uncached, or undefined where there is none: for a document fabr changes.
    */
   public currentManifest(repository: string, tag: string): Computable<Buffer | undefined> {
-    return this.send(`/v2/${repository}/manifests/${tag}`, { method: "GET", headers: { accept: MANIFEST_ACCEPT } }).then(response => {
+    return this.send(urlJoin(this.url, `v2/${repository}/manifests/${tag}`), {
+      method: "GET",
+      headers: { accept: MANIFEST_ACCEPT },
+    }).then(response => {
       if (response.statusCode === 404) {
         return undefined;
       }
@@ -448,9 +467,8 @@ export class Registry {
     });
   }
 
-  /** Send a request to `path` (or a whole URL) on the registry, signed in. */
-  private send(path: string, request: HttpRequest): Computable<HttpResponse> {
-    const url = path.startsWith("/") ? `${this.url}${path}` : path;
+  /** Send a request to `url`, on the registry, signed in. */
+  private send(url: SecureString, request: HttpRequest): Computable<HttpResponse> {
     return sendRequest(url, { ...request, credential: this.credential });
   }
 
@@ -458,7 +476,9 @@ export class Registry {
   private expect(response: HttpResponse, statuses: readonly number[], doing: string): void {
     if (!statuses.includes(response.statusCode)) {
       const said = response.body.toString("utf8").trim();
-      throw new FabrError(`${this.url} refused ${doing} (${response.statusCode}${said === "" ? "" : `: ${said.substring(0, 300)}`})`);
+      throw new FabrError(
+        `${shownUrl(this.url)} refused ${doing} (${response.statusCode}${said === "" ? "" : `: ${said.substring(0, 300)}`})`
+      );
     }
   }
 }

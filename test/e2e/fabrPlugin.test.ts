@@ -26,7 +26,7 @@ import { runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 const GREETING_RULE = `const core = require("@fabr-build/core");
 exports.default = {
   evaluate: context =>
-    context.getProperty("text").then(text => new core.FileSet(new Map([["greeting.txt", core.MemoryFile.from(String(text) + "\\n")]]))),
+    context.getProperty("text").then(text => new core.FileSet(new Map([["greeting.txt", core.MemoryFile.from(text.toString().toUnmaskedString() + "\\n")]]))),
 };
 `;
 

@@ -46,7 +46,7 @@ export class DependencyFailedError extends FabrError {
   public readonly subtargetNames?: readonly string[];
 
   constructor(target: ITargetDecl, cause: Error, label?: string, subtargetNames?: readonly string[]) {
-    super(`dependency '${target.name}' failed`, cause);
+    super(`dependency '${target.name.toDisplayString()}' failed`, cause);
     this.target = target;
     this.label = label;
     this.subtargetNames = subtargetNames;
@@ -97,7 +97,7 @@ export class ReferenceLabel implements Label {
   public readonly name: string;
 
   constructor(public readonly site: IUseSite) {
-    this.name = site.value.value.toString();
+    this.name = site.value.value.toDisplayString();
   }
 }
 
@@ -144,7 +144,7 @@ export class NameResolutionError extends FabrError {
   public readonly useSite?: IUseSite;
 
   constructor(name: Name, position: ISourceSpan, useSite?: IUseSite, reason?: string) {
-    super(reason ?? `Unable to resolve '${name.toString()}'`);
+    super(reason ?? `Unable to resolve '${name.toDisplayString()}'`);
     this.position = position;
     this.useSite = useSite;
   }
@@ -165,7 +165,7 @@ export class NoRuleFoundError extends FabrError {
     public readonly constraints: Constraints,
     public readonly candidates: ReadonlyArray<readonly IJudgedKey[]> = []
   ) {
-    super(`No rule matches target '${target.name}' of type '${target.type}'`);
+    super(`No rule matches target '${target.name.toDisplayString()}' of type '${target.type}'`);
   }
 }
 
@@ -175,9 +175,9 @@ export interface IJudgedKey {
    *  configuration's. */
   key: string;
   own: boolean;
-  /** The pattern the rule requires of it. */
+  /** The pattern the rule requires of it, as output shows it. */
   pattern: string;
-  /** What it read as, or undefined where it has no value. */
+  /** What it read as, as output shows it, or undefined where it has no value. */
   value: string | undefined;
   matched: boolean;
 }

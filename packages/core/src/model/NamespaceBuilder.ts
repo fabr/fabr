@@ -193,7 +193,7 @@ export class NamespaceBuilder {
         : isNamespaceNode(existing)
           ? (existing.fallback ??= { kind: DeclKind.Property, decls: [], defaults: [] })
           : existing;
-    const clash = entry[tier].find(other => other.name.toString() === decl.name.toString());
+    const clash = entry[tier].find(other => other.name.toUnmaskedString() === decl.name.toUnmaskedString());
     if (clash) {
       this.conflictError(clash, decl);
       return false;

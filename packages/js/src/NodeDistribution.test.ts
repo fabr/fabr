@@ -43,14 +43,21 @@ import {
   PartialRepositoryRef,
   RepositoryRef,
   ResolvedNode,
+  RunnableArgument,
   RunnableFileSet,
+  SecureString,
   SymlinkFile,
   TARGET,
   TargetContext,
-  VersionNotFoundError,
   toArgv,
+  VersionNotFoundError,
 } from "@fabr-build/core";
 import { NodeDistribution } from "./NodeDistribution";
+
+/** @return the command line `args` are run as ({@link toArgv}), as text. */
+function argvText(args: readonly RunnableArgument[], anchor?: string): string[] {
+  return toArgv(args, anchor).map(arg => arg.toUnmaskedString());
+}
 
 const DIST = "https://dist.test";
 const UNOFFICIAL = "https://unofficial.test";
@@ -107,9 +114,10 @@ function servingContext(served: Map<string, Buffer>, cache: BuildCache, target: 
     name: "@node",
     operation,
     getGlobalString: (name: string) =>
-      name === TARGET ? Computable.resolve(target) : Computable.reject(new Error(`unexpected property: ${name}`)),
+      name === TARGET ? Computable.resolve(SecureString.of(target)) : Computable.reject(new Error(`unexpected property: ${name}`)),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>) =>
-      request().then(({ url, process }): Computable<FileSet> => {
+      request().then(({ url: requested, process }): Computable<FileSet> => {
+        const url = requested.toUnmaskedString();
         const body = served.get(url);
         if (body === undefined) {
           return Computable.reject(new HttpStatusError(404, url));
@@ -143,7 +151,10 @@ describe("NodeDistribution", () => {
   }
 
   function distribution(served: Map<string, Buffer>, target = "arm64-apple-darwin24.0.0", operation = "build"): NodeDistribution {
-    return new NodeDistribution(servingContext(served, cache, target, operation), [DIST, UNOFFICIAL]);
+    return new NodeDistribution(servingContext(served, cache, target, operation), [
+      SecureString.of(DIST),
+      SecureString.of(UNOFFICIAL),
+    ]);
   }
 
   /** Resolve `written` (after `@node:`) in `dist` to the node it names. */
@@ -207,7 +218,7 @@ describe("NodeDistribution", () => {
     served.set(`${DIST}/v24.22.1/SHASUMS256.txt`, Buffer.from(`${sha256(zip)}  node-v24.22.1-win-arm64.zip\n`));
     const runnable = (await toPromise(release(distribution(served, "aarch64-pc-windows-msvc", "run"), "24.22.1"))) as RunnableFileSet;
     const node = runnable.selectEntry([{ pattern: Name.fromLiteral("node"), prefix: "" }]);
-    expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["./node.exe", "--version"]);
+    expect(node && argvText(node.toCommandLine(["--version"]))).to.deep.equal(["./node.exe", "--version"]);
     expect(runnable.selectEntry([{ pattern: Name.fromLiteral("npm"), prefix: "" }])).to.equal(undefined);
     expect(await toPromise(runnable.readFile("node.exe"))).to.equal("node 24.22.1 win-arm64");
   });
@@ -231,7 +242,7 @@ describe("NodeDistribution", () => {
     const served = new Map<string, Buffer>();
     await publish(served, DIST, "24.15.0", ["linux-x64"]);
     await publish(served, UNOFFICIAL, "24.15.0", ["linux-x64-musl"]);
-    const alone = new NodeDistribution(servingContext(served, cache, "x86_64-unknown-linux-musl", "build"), [DIST]);
+    const alone = new NodeDistribution(servingContext(served, cache, "x86_64-unknown-linux-musl", "build"), [SecureString.of(DIST)]);
     const err = await rejection(alone.resolve(alone.getRepositoryRef(Name.fromLiteral("24.15.0")) as RepositoryRef));
     expect(err.message).to.equal("Node.js 24.15.0 is not published for x86_64-unknown-linux-musl");
   });
@@ -266,7 +277,7 @@ describe("NodeDistribution", () => {
     const dist = distribution(new Map());
     const ref = dist.getRepositoryRef(Name.fromLiteral("24.22.1:bin/node")) as RepositoryRef;
     expect([ref.name, ref.versionConstraint]).to.deep.equal(["node", "24.22.1"]);
-    expect(ref.projections.map(projection => projection.pattern.toString())).to.deep.equal(["bin/node"]);
+    expect(ref.projections.map(projection => projection.pattern.toUnmaskedString())).to.deep.equal(["bin/node"]);
     expect(dist.getRepositoryRef(Name.fromLiteral(""))).to.be.instanceOf(PartialRepositoryRef);
     expect(() => dist.getRepositoryRef(parseName("24.22.1!"))).to.throw(/override marker means nothing/);
   });
@@ -277,7 +288,7 @@ describe("NodeDistribution", () => {
     const runnable = (await toPromise(release(distribution(served, undefined, "run"), "24.22.1"))) as RunnableFileSet;
     for (const entry of ["bin/node", "node"]) {
       const node = runnable.selectEntry([{ pattern: Name.fromLiteral(entry), prefix: "" }]);
-      expect(node && toArgv(node.toCommandLine(["--version"]))).to.deep.equal(["bin/node", "--version"]);
+      expect(node && argvText(node.toCommandLine(["--version"]))).to.deep.equal(["bin/node", "--version"]);
     }
     expect(new Map(runnable.surface).has("bin/npm")).to.equal(false);
     expect(runnable.selectEntry([{ pattern: Name.fromLiteral("npm"), prefix: "" }])).to.equal(undefined);

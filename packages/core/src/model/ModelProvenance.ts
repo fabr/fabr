@@ -55,11 +55,11 @@ export interface ISubstitution {
 registerProvenanceRenderer<IModelStep>(MODEL_PROVENANCE, renderModelStep);
 registerProvenanceRenderer<ITargetOrigin>(TARGET_PROVENANCE, step => {
   const target = step.decl;
-  return [{ message: `built by ${target.type} '${target.name}'`, loc: declPosn(target) }];
+  return [{ message: `built by ${target.type} '${target.name.toDisplayString()}'`, loc: declPosn(target) }];
 });
 
 /* One-line attribution: the name as written, or the target's name. */
-registerProvenanceDescriber<IModelStep>(MODEL_PROVENANCE, step => step.value.value.toString());
+registerProvenanceDescriber<IModelStep>(MODEL_PROVENANCE, step => step.value.value.toDisplayString());
 registerProvenanceDescriber<ITargetOrigin>(TARGET_PROVENANCE, step => declName(step.decl));
 
 /** Render a model step as a note at the written value, with its
@@ -68,7 +68,7 @@ function renderModelStep(step: IModelStep, context: IRenderContext): IDiagnostic
   const verb = context.stepIndex === 0 ? "from" : "via";
   return [
     {
-      message: `${verb} '${step.value.value.toString()}' (${describeUseSite(step.property, step.target)})`,
+      message: `${verb} '${step.value.value.toDisplayString()}' (${describeUseSite(step.property, step.target)})`,
       loc: declPosn(step.value),
       label: constraintText(step, context),
     },

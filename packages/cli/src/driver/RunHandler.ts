@@ -24,15 +24,18 @@ import {
   Diagnostic,
   executeInteractive,
   FileSet,
-  findExecutable,
+  findCommand,
   ILaunch,
   killProcessGroup,
   Log,
   manifestArguments,
   RunnableFileSet,
+  secure,
+  SecureString,
   spawnInteractive,
   startLaunch,
   syncFileSet,
+  systemErrorText,
   toArgv,
   writeFileSet,
 } from "@fabr-build/core";
@@ -62,7 +65,7 @@ export function runInteractive(cache: BuildCache, key: string, runnable: Runnabl
       .then(() => {
         const launch = startLaunch(runnable, dir, launchEnv(runnable));
         return withTerminalSuspended(() =>
-          executeInteractive(findExecutable(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launch.env)
+          executeInteractive(findCommand(argv[0], launchDir(runnable, dir)), argv.slice(1), launchDir(runnable, dir), launch.env)
         ).finally(() => launch.end());
       })
       .finally(() => cache.releaseKeptWorkDir(dir))
@@ -91,7 +94,7 @@ function stageInstall(cache: BuildCache, dir: string, runnable: RunnableFileSet,
 /** Make the argv for launching `runnable` staged at `dir`: install-relative for
  * a runnable launched in the install (`launchCwd: "install"`), else made
  * absolute in `dir`. */
-function launchArgv(runnable: RunnableFileSet, callerArgs: string[], dir: string): string[] {
+function launchArgv(runnable: RunnableFileSet, callerArgs: string[], dir: string): SecureString[] {
   return toArgv(runnable.toCommandLine(callerArgs), runnable.launchCwd === "install" ? undefined : dir);
 }
 
@@ -108,7 +111,7 @@ function launchEnv(runnable: RunnableFileSet): Record<string, string> | undefine
     return undefined;
   }
   const inherited = Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined);
-  return Object.fromEntries([...inherited, ...runnable.env]);
+  return Object.fromEntries([...inherited, ...[...runnable.env].map(([name, value]) => [name, value.toUnmaskedString()])]);
 }
 
 /** How long a child stopped for a restart has to exit after SIGTERM before
@@ -203,7 +206,7 @@ export class RunSupervisor {
   public update(runnable: RunnableFileSet): Computable<void> {
     /* The command line's key text names no staged dir, so a restage alone
      * does not change it. */
-    const variables = [...runnable.env].map(([name, value]) => `${name}=${value}`).join("\0");
+    const variables = [...runnable.env].map(([name, value]) => secure`${name}=${value}`.toUnmaskedString()).join("\0");
     const programKey = `${runnable.programManifest()}\n$ ${manifestArguments(runnable.toCommandLine(this.callerArgs))}\n${variables}`;
     if (programKey === this.target?.programKey) {
       return this.updateContent(runnable);
@@ -265,7 +268,7 @@ export class RunSupervisor {
    * `install` retired. */
   private swap(
     install: Install,
-    argv: string[],
+    argv: SecureString[],
     runnable: RunnableFileSet,
     generation: number,
     wasRunning: boolean
@@ -296,7 +299,7 @@ export class RunSupervisor {
   /** Launch `install`'s child, unless a newer update superseded it while the
    * old child was exiting, in which case `install` is retired. A failure to
    * launch is logged, and the install discarded. */
-  private launch(install: Install, argv: string[], runnable: RunnableFileSet, generation: number, wasRunning: boolean): void {
+  private launch(install: Install, argv: SecureString[], runnable: RunnableFileSet, generation: number, wasRunning: boolean): void {
     if (generation !== this.generation) {
       this.retire(install);
       return;
@@ -308,7 +311,7 @@ export class RunSupervisor {
       const launch = startLaunch(runnable, install.dir, launchEnv(runnable));
       install.launch = launch;
       const child = spawnInteractive(
-        findExecutable(argv[0], launchDir(runnable, install.dir)),
+        findCommand(argv[0], launchDir(runnable, install.dir)),
         argv.slice(1),
         launchDir(runnable, install.dir),
         launch.env
@@ -319,7 +322,9 @@ export class RunSupervisor {
       install.child = child;
       this.current = install;
       /* `target` was set when this install was staged. */
-      child.on("error", err => this.onChildGone(install, err));
+      child.on("error", err =>
+        this.onChildGone(install, new Error(`unable to execute ${argv[0].toDisplayString()}: ${systemErrorText(err)}`))
+      );
       child.on("exit", () => this.onChildGone(install));
     } catch (err) {
       this.discard(install);

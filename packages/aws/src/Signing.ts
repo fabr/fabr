@@ -25,17 +25,13 @@
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { Hash } from "@smithy/hash-node";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { compareText, Computable, FabrError, toError } from "@fabr-build/core";
+import { compareText, Computable, FabrError, SecureString, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
   readonly method: "GET" | "HEAD" | "PUT" | "POST";
-  /** `https:`, or `http:` for an endpoint that says so. */
-  readonly protocol: string;
-  readonly hostname: string;
-  readonly port?: number;
-  /** The path, already URI-encoded. */
-  readonly path: string;
+  /** The URL it is sent to, without its query: its path already URI-encoded. */
+  readonly url: SecureString;
   /** The query parameters, unencoded. */
   readonly query: ReadonlyMap<string, string>;
   /** Headers sent with the request and signed with it, by lowercase name. */
@@ -66,17 +62,17 @@ export class RequestSigner {
       /* S3's canonical path is the path as sent, not encoded a second time. */
       uriEscapePath: service !== "s3",
     });
-    const host = request.port === undefined ? request.hostname : `${request.hostname}:${request.port}`;
+    const url = new URL(request.url.toUnmaskedString());
     return Computable.from<Record<string, string>>((resolve, reject) => {
       signer
         .sign({
           method: request.method,
-          protocol: request.protocol,
-          hostname: request.hostname,
-          port: request.port,
-          path: request.path,
+          protocol: url.protocol,
+          hostname: url.hostname,
+          port: url.port === "" ? undefined : Number(url.port),
+          path: url.pathname,
           query: Object.fromEntries(request.query),
-          headers: { ...Object.fromEntries(request.headers ?? []), host },
+          headers: { ...Object.fromEntries(request.headers ?? []), host: url.host },
           ...(request.body === undefined ? {} : { body: request.body }),
         })
         .then(
@@ -98,12 +94,15 @@ export function uriEncode(text: string): string {
   return encodeURIComponent(text).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+/** @return the URL of `service` in `region` on AWS, with `path`: `https://<service>.<region>.amazonaws.com/<path>`. */
+export function getServiceUrl(service: string, region: string, path = ""): SecureString {
+  return SecureString.of(`https://${service}.${region}.amazonaws.com/${path}`);
+}
+
 /** Make the URL `request` is sent to, its query encoded as it is signed. */
-export function requestUrl(request: IServiceRequest): string {
-  const host = request.port === undefined ? request.hostname : `${request.hostname}:${request.port}`;
-  const query = [...request.query]
+export function requestUrl(request: IServiceRequest): SecureString {
+  const parameters = [...request.query]
     .sort(([a], [b]) => compareText(a, b))
-    .map(([key, value]) => `${uriEncode(key)}=${uriEncode(value)}`)
-    .join("&");
-  return `${request.protocol}//${host}${request.path}${query === "" ? "" : `?${query}`}`;
+    .map(([key, value]) => `${uriEncode(key)}=${uriEncode(value)}`);
+  return parameters.length === 0 ? request.url : request.url.concat(`?${parameters.join("&")}`);
 }

@@ -322,7 +322,7 @@ export function importRewrites(rewrites: Name[]): Array<{ pattern: string; repla
       /* An aliased selector's base matches the pattern but must not be
        * renamed, which the driver cannot be told. Only a hand-written value
        * can carry an alias. */
-      throw new FabrError(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toString()}')`);
+      throw new FabrError(`js_compile: a 'rewrite_imports' rule may not use an alias ('${name.toDisplayString()}')`);
     }
     return [{ pattern, replacement }];
   });
@@ -347,6 +347,7 @@ export interface ICompileSetup {
   deps: FileSet[];
   /** The package the sources may import themselves as. */
   packageName?: string;
+  /** The extension the emitted JavaScript takes, where it is not `.js`. */
   moduleExtension?: string;
   rewrites?: Array<{ pattern: string; replacement: string }>;
   /** The files the sources import that are not compiled. */
@@ -379,20 +380,21 @@ function compileSetup(
       context.getRewriteRules("rewrite_imports"),
       context.getGlobalString(COVERAGE),
     ],
-    (target, buildType, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
+    (target, buildTypeText, packageNameProp, moduleExtensionProp, rewriteRules, coverage) => {
+      const buildType = buildTypeText.toUnmaskedString();
       assertOnePackagePerName(deps);
       /* The source-mode flags (strictness relaxations, the ES level) are among
        * `deps`. */
       const depFlags = deps.filter((dep): dep is Flag => dep instanceof Flag);
-      const jsTarget = parseJSTarget(target);
+      const jsTarget = parseJSTarget(target.toUnmaskedString());
       if (jsTarget.module === "dual") {
         /* Every caller pins a format (js_package makes one compile per format,
          * the test and bundle paths force theirs), so this is a rule's bug, not
          * a user's error. */
         throw new FabrError("js_compile cannot emit a dual target: its caller must pin a module format");
       }
-      const packageName = packageNameProp?.toString();
-      const moduleExtension = moduleExtensionProp?.toString();
+      const packageName = packageNameProp?.toString().toUnmaskedString();
+      const moduleExtension = moduleExtensionProp?.toString().toUnmaskedString();
       const srcs = FileSet.unionAll(...srcSets);
       /* The compilerOptions the flags set; empty leaves the strict tsconfig as
        * it is. */
@@ -425,7 +427,7 @@ function compileSetup(
           sourceVersion,
           usesDom(depFlags),
           automaticTypes(deps),
-          emitsSourceMap(buildType) || coverage === COVERAGE_ON
+          emitsSourceMap(buildType) || coverage.equals(COVERAGE_ON)
         );
         return {
           tsconfig,
@@ -483,7 +485,7 @@ function compileAction(
   /* The ES-module format of a dual package emits `.mjs` so its tree can ship
    * beside the CommonJS format's. The driver does the renaming, because the
    * specifiers it writes have to name the renamed siblings. */
-  const emitExtension = moduleExtension ? ["--emit-extension", moduleExtension] : [];
+  const emitExtension = moduleExtension !== undefined && moduleExtension.length > 0 ? ["--emit-extension", moduleExtension] : [];
   const rewriteFlag = rewrites ? [REWRITES_FLAG, REWRITES_FILE] : [];
   const resourcesFlag = resourceNames.length === 0 ? [] : [RESOURCES_FLAG, RESOURCES_FILE];
   const declarationsFlag = declarations.isEmpty() ? [] : [SOURCE_DECLARATIONS_FLAG, DECLARATIONS_DIR];

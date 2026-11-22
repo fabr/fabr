@@ -47,7 +47,7 @@ export class AbsolutePathSource<S extends FSFileSource = FSFileSource> implement
   public find(name: Name, prefix?: string): ComputableSource<FileSet> {
     const head = name.getLiteralPathPrefix();
     if (!path.isAbsolute(toHostPath(head))) {
-      return Computable.reject(new FabrError(`Internal error: '${name.toString()}' is no absolute path`));
+      return Computable.reject(new FabrError(`Internal error: '${name.toDisplayString()}' is no absolute path`));
     }
     /* On Windows a path rooted with no drive (`/x`) is on the current drive,
      * named from its root. */

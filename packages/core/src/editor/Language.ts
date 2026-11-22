@@ -131,7 +131,7 @@ function ruleSymbol(rule: IRuleDecl): IBuildFileSymbol {
   return {
     name: rule.type ?? "default rule",
     kind: "rule",
-    ...(guards.length === 0 ? {} : { detail: guards.map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ") }),
+    ...(guards.length === 0 ? {} : { detail: guards.map(([key, pattern]) => `${key}=${pattern.toDisplayString()}`).join(", ") }),
     range: {
       source: rule.source,
       offset: rule.offset,
@@ -145,7 +145,7 @@ function ruleSymbol(rule: IRuleDecl): IBuildFileSymbol {
 /** @return a target's symbol. */
 function targetSymbol(target: ITargetDecl): IBuildFileSymbol {
   return {
-    name: target.name.toString(),
+    name: target.name.toDisplayString(),
     kind: "target",
     detail: target.type,
     range: targetRange(target),
@@ -155,7 +155,7 @@ function targetSymbol(target: ITargetDecl): IBuildFileSymbol {
 
 /** @return a property's symbol. */
 function propertySymbol(property: IPropertyDecl): IBuildFileSymbol {
-  return { name: property.name.toString(), kind: "property", range: propertyRange(property), selection: nameRange(property) };
+  return { name: property.name.toDisplayString(), kind: "property", range: propertyRange(property), selection: nameRange(property) };
 }
 
 /** @return where a rule's implementation, or its block's result, ends. */
@@ -381,7 +381,7 @@ export function namedAt(model: BuildModel, written: Written, offset: number): IN
         documentation: describeTarget(written.target),
       };
     case "include": {
-      const included = written.include.name.toString();
+      const included = written.include.name.toUnmaskedString();
       const origin = span(written.include, written.include.endOffset ?? written.include.offset + included.length);
       if (/[*?[{]/.test(included) || included.includes(":")) {
         return { origin, declarations: [] };
@@ -572,11 +572,11 @@ function schemaNamed(model: BuildModel, type: string, name: string, origin: ISou
  */
 function entriesNaming(decl: ITargetDecl, member: string): INameValue[] {
   const names = (value: INameValue): boolean => {
-    const renamed = value.value.getRenameTo()?.toString();
+    const renamed = value.value.getRenameTo()?.toUnmaskedString();
     if (renamed !== undefined) {
       return renamed === member;
     }
-    const named = value.value.toString().replace(/^[^:]*:/, "");
+    const named = value.value.toUnmaskedString().replace(/^[^:]*:/, "");
     return named === member || named.startsWith(`${member}:`);
   };
   /* A splice writes no value of its own. */
@@ -600,7 +600,7 @@ function propertyNamed(model: BuildModel, name: string, origin: ISourceRange): I
 /** @return a target's documentation: its declaration, and the comment written above it. */
 function describeTarget(target: ITargetDecl): IDocumentation {
   return {
-    title: `${target.type} ${target.name.toString()}`,
+    title: `${target.type} ${target.name.toDisplayString()}`,
     ...(target.docComment === undefined ? {} : { comment: target.docComment }),
   };
 }
@@ -614,7 +614,9 @@ function describeProperty(name: string, entry: IPropertyEntry | ITargetDecl | un
     return describeTarget(entry);
   }
   const decls = [...entry.decls, ...entry.defaults];
-  const written = decls.map(decl => `${entry.defaults.includes(decl) ? "default " : ""}${decl.name.toString()} = ${valueText(decl)};`);
+  const written = decls.map(
+    decl => `${entry.defaults.includes(decl) ? "default " : ""}${decl.name.toDisplayString()} = ${valueText(decl)};`
+  );
   const comment = decls.find(decl => decl.docComment !== undefined)?.docComment;
   return { source: written.join("\n"), ...(comment === undefined ? {} : { comment }) };
 }

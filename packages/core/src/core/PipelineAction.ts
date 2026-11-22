@@ -22,7 +22,8 @@ import { ConflictError, FabrError } from "./Errors";
 import { EMPTY_FILESET, FileSet } from "./FileSet";
 import { MemoryFile } from "./MemoryFS";
 import { Name } from "./Name";
-import { executePipeline, findExecutable, ITaskReport, StageSpec, StageStreams, variableEntry } from "../support/Execute";
+import { executePipeline, foundStage, ITaskReport, StageSpec, StageStreams, variableEntry } from "../support/Execute";
+import { secure, SecureString } from "./SecureString";
 import { RunnableArgument, RunnableFileSet, toArgv } from "./RunnableFileSet";
 import {
   ActionConfig,
@@ -165,8 +166,8 @@ function replaceFiles(dir: string, files: FileSet): Computable<void> {
 function outputOf(captured: FileSet, written: FileSet, output: Name): FileSet {
   const collected = FileSet.unionAll(written, selectedCaptures(captured, written, output));
   if (collected.isEmpty()) {
-    throw new FabrError(`the command produced no files matching output pattern '${output.toString()}'`).withHelp(
-      `check the output pattern, or that the command writes its output where '${output.toString()}' looks`
+    throw new FabrError(`the command produced no files matching output pattern '${output.toDisplayString()}'`).withHelp(
+      `check the output pattern, or that the command writes its output where '${output.toDisplayString()}' looks`
     );
   }
   return collected;
@@ -222,7 +223,7 @@ export function stdinBytes(stdin: FileSet | undefined): Computable<Buffer | unde
  * spec means, changes. */
 export const PIPELINE_ACTION: IBuildActionDefinition = {
   id: "core:command-pipeline",
-  version: 8,
+  version: 9,
   run: runPipeline,
   stage: stagePipelineStep,
 };
@@ -231,25 +232,50 @@ export const PIPELINE_ACTION: IBuildActionDefinition = {
  * streams it captures, and the variables its runnable is launched with. */
 export interface IPipelineStage extends StageStreams {
   argv: readonly RunnableArgument[];
-  env?: string[];
+  /** The variables its runnable is launched with, each `NAME=value`. */
+  env?: readonly SecureString[];
 }
 
 /** @return the config members holding the command list `pipelines`: `spec`,
- * each pipeline's stages but their command lines, and each command line as
- * `argv.<n>`, numbered across the list. */
+ * each pipeline's stages but their command lines and variables, each command
+ * line as `argv.<n>`, numbered across the list, and the variables of each
+ * stage that has any as `env.<n>`. */
 export function pipelineConfig(pipelines: readonly (readonly IPipelineStage[])[]): ActionConfig {
-  const argvs = pipelines.flat().map(stage => stage.argv);
+  const stages = pipelines.flat();
   return {
-    spec: JSON.stringify(pipelines.map(stages => stages.map(stage => ({ ...stage, argv: undefined })))),
-    ...Object.fromEntries(argvs.map((argv, index) => [`argv.${index}`, argv])),
+    spec: JSON.stringify(pipelines.map(stages => stages.map(stage => ({ ...stage, argv: undefined, env: undefined })))),
+    ...Object.fromEntries(stages.map((stage, index) => [`argv.${index}`, stage.argv])),
+    ...Object.fromEntries(stages.flatMap((stage, index) => (stage.env === undefined ? [] : [[`env.${index}`, stage.env]]))),
   };
 }
 
 /** Read the command list {@link pipelineConfig} wrote, each command line as the text it is run as. */
 export function pipelineSpecs(action: BuildAction): StageSpec[][] {
-  const pipelines: Omit<IPipelineStage, "argv">[][] = JSON.parse(stringConfig(action, "spec"));
+  const pipelines: Omit<IPipelineStage, "argv" | "env">[][] = JSON.parse(stringConfig(action, "spec"));
   let index = 0;
-  return pipelines.map(stages => stages.map(stage => ({ ...stage, argv: toArgv(commandLineConfig(action, `argv.${index++}`)) })));
+  return pipelines.map(stages =>
+    stages.map(stage => {
+      const env = action.config[`env.${index}`];
+      return {
+        ...stage,
+        argv: toArgv(commandLineConfig(action, `argv.${index++}`)),
+        ...(Array.isArray(env) ? { env: textEntries(env) } : {}),
+      };
+    })
+  );
+}
+
+/** @return the text entries of a config member holding a list of them. */
+function textEntries(entries: readonly RunnableArgument[]): SecureString[] {
+  return entries.map(entry => {
+    if (typeof entry === "string") {
+      return SecureString.of(entry);
+    }
+    if (entry instanceof SecureString) {
+      return entry;
+    }
+    throw new FabrError("internal: a variable of a command is not text");
+  });
 }
 
 /** @return the inputs holding each pipeline's standard input, `stdin.<n>` for
@@ -287,13 +313,13 @@ export function stagedStdins(
 }
 
 /** @return the variables a command runs with, as the `env` config member holds them. */
-export function envEntries(env: ReadonlyMap<string, string>): string[] {
-  return [...env].map(([name, value]) => `${name}=${value}`);
+export function envEntries(env: ReadonlyMap<string, SecureString>): SecureString[] {
+  return [...env].map(([name, value]) => secure`${name}=${value}`);
 }
 
 /** Read the `env` config member: each variable written `NAME=value`, a name holding no `=`. */
-export function envConfig(action: BuildAction): Map<string, string> {
-  return new Map((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
+export function envConfig(action: BuildAction): Map<string, SecureString> {
+  return new Map(textEntries(Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
 /** Stage the pipeline's files into `dir` for `fabr shell`, and describe the
@@ -313,7 +339,7 @@ function stagePipelineStep(
     (stdins: (string | undefined)[]) => ({
       cwd: ".",
       commands: specs.map((stages, index) => ({
-        stages: stages.map(spec => ({ ...spec, argv: [findExecutable(spec.argv[0], dir), ...spec.argv.slice(1)] })),
+        stages: stages.map(spec => foundStage(spec, dir)),
         ...(stdins[index] === undefined ? {} : { stdin: stdins[index] }),
       })),
       env: envConfig(action),
@@ -325,9 +351,12 @@ function stagePipelineStep(
  * arguments and where its streams go. The same shape as context/Commands.ts's
  * `MaterializedCommandStage`, which this module cannot import (context/
  * imports it). */
-export interface RunnableStage extends StageStreams {
+export interface RunnableStage {
   runnable: RunnableFileSet;
-  args: string[];
+  args: readonly SecureString[];
+  stdout?: string;
+  stderr?: string;
+  mergedTo?: StageStreams["mergedTo"];
 }
 
 /**
@@ -400,7 +429,7 @@ export function createPipelineAction(
   stdins: ReadonlyArray<FileSet | undefined>,
   output: Name | undefined,
   label?: string,
-  env: ReadonlyMap<string, string> = new Map(),
+  env: ReadonlyMap<string, SecureString> = new Map(),
   kept: IKeptState = {}
 ): BuildAction {
   return new BuildAction(

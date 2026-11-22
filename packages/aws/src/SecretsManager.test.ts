@@ -28,6 +28,7 @@ import {
   parseName,
   RepositoryRef,
   SecretFile,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
@@ -113,7 +114,7 @@ function accountAt(service: IFakeSecretsManager, keys: string[] = []): AwsAccoun
     signer: new RequestSigner(undefined),
     credentials: "profile:default",
     region: "us-east-1",
-    endpoint: new URL(service.url),
+    endpoint: SecureString.of(service.url),
     repositoryTypes: new Map(),
   });
 }
@@ -191,7 +192,7 @@ describe("the Secrets Manager secrets of an AWS account", () => {
     expect(service.requests[0].authorization).to.match(
       /^AWS4-HMAC-SHA256 Credential=AKIDTEST\/\d{8}\/us-east-1\/secretsmanager\/aws4_request, /
     );
-    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${service.url}/ prod/db/password`]);
+    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${service.url} prod/db/password`]);
   });
 
   it("reads a binary secret as its bytes", async () => {
@@ -220,7 +221,7 @@ describe("the Secrets Manager secrets of an AWS account", () => {
 describe("Secrets Manager's GetSecretValue", () => {
   it("is a signed JSON POST to the region's Secrets Manager", () => {
     const request = secretValueRequest("prod/key", "eu-west-2");
-    expect(request.hostname).to.equal("secretsmanager.eu-west-2.amazonaws.com");
+    expect(request.url.toUnmaskedString()).to.equal("https://secretsmanager.eu-west-2.amazonaws.com/");
     expect(request.headers?.get("x-amz-target")).to.equal("secretsmanager.GetSecretValue");
     expect(JSON.parse(request.body)).to.deep.equal({ SecretId: "prod/key" });
   });

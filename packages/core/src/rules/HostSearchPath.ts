@@ -67,24 +67,24 @@ export class HostSearchPathRepository implements Repository, RepositoryLookup {
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     const command = name.toBaseString();
     if (name.getMarker() !== undefined) {
-      throw new FabrError(`'${name.toString()}' names a program of this host, so an override marker means nothing on it`).withHelp(
-        "write the reference without the marker"
-      );
+      throw new FabrError(
+        `'${name.toDisplayString()}' names a program of this host, so an override marker means nothing on it`
+      ).withHelp("write the reference without the marker");
     }
     /* On Windows a drive's `:` is part of an absolute path, and `\` separates its parts; any other `:` names no program. */
     const windows = process.platform === "win32";
     const drive = windows && /^[A-Za-z]:[\\/]/.test(command) ? 2 : 0;
     const isPath = command.includes("/") || (windows && command.includes("\\"));
     if (name.hasGlob() || command.length === 0 || command.includes(":", drive) || (isPath && !path.isAbsolute(command))) {
-      throw new FabrError(`'${name.toString()}' is not the name of a program`).withHelp(
+      throw new FabrError(`'${name.toDisplayString()}' is not the name of a program`).withHelp(
         "name a program as a shell runs it, as in '@host:clang', or by its absolute path"
       );
     }
-    return new RepositoryRef(this, { name: command, versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() });
+    return new RepositoryRef(this, { name: command, versionConstraint: undefined, renameTo: name.getRenameTo()?.toUnmaskedString() });
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`this host's programs are not a publish destination (cannot sync to '${name.toString()}')`);
+    throw new FabrError(`this host's programs are not a publish destination (cannot sync to '${name.toDisplayString()}')`);
   }
 
   /** Resolve the program `reference` names to a runnable whose entry is the

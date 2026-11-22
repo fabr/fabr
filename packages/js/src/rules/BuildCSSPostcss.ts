@@ -92,7 +92,13 @@ function buildCssPostcss(
        * `composes`: a loose file in `deps` has no package name to spell. */
       const packages = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
       const query = browserQueryOf(browsers.filter((browser): browser is PackageFileSet => browser instanceof PackageFileSet));
-      const options = buildPostcssOptions(fileNames, packageNameProp?.toString() ?? "", query, emitsSourceMap(buildType), packages);
+      const options = buildPostcssOptions(
+        fileNames,
+        packageNameProp?.toString().toUnmaskedString() ?? "",
+        query,
+        emitsSourceMap(buildType.toUnmaskedString()),
+        packages
+      );
       const workspace = {
         [CSS_SRC_ROOT]: srcs,
         [CSS_TOOL_DIR]: compiler,

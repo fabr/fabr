@@ -18,10 +18,12 @@ import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { expect } from "chai";
+import { inspect } from "util";
+import { secure, SecureString } from "./SecureString";
 import { Computable } from "./Computable";
 import type { Credential, IAuthChallenge } from "./Credential";
 import { HttpStatusError } from "./Errors";
-import { fetchUrl, openUrlStream, readStream, reportingProgress, sendRequest } from "./Fetch";
+import { fetchUrl, openUrlStream, readStream, reportingProgress, sendRequest, urlResolved } from "./Fetch";
 
 interface Received {
   method?: string;
@@ -56,7 +58,7 @@ describe("sendRequest", () => {
   it("sends method/headers/body and returns the response", async () => {
     const server = await withServer(201, '{"ok":true}');
     try {
-      const res = await sendRequest(server.url, {
+      const res = await sendRequest(SecureString.of(server.url), {
         method: "PUT",
         headers: { authorization: "Bearer tok", "content-type": "application/json" },
         body: '{"hello":"world"}',
@@ -76,7 +78,7 @@ describe("sendRequest", () => {
     const server = await withServer(201, "");
     try {
       const body = Readable.from([Buffer.from("one "), Buffer.from("two")]);
-      const res = await sendRequest(server.url, { method: "PUT", headers: { "content-length": "7" }, body });
+      const res = await sendRequest(SecureString.of(server.url), { method: "PUT", headers: { "content-length": "7" }, body });
       expect((await server.received).body).to.equal("one two");
       expect(res.statusCode).to.equal(201);
     } finally {
@@ -87,7 +89,7 @@ describe("sendRequest", () => {
   it("returns non-2xx responses (does not reject) so the caller can read the error body", async () => {
     const server = await withServer(409, '{"error":"cannot publish over existing version"}');
     try {
-      const res = await sendRequest(server.url, { method: "PUT", body: "{}" });
+      const res = await sendRequest(SecureString.of(server.url), { method: "PUT", body: "{}" });
       expect(res.statusCode).to.equal(409);
       expect(res.body.toString()).to.contain("existing version");
     } finally {
@@ -125,13 +127,71 @@ function routeServer(routes: (path: string) => { status: number; location?: stri
   );
 }
 
+describe("urlResolved", () => {
+  const base = secure`https://${SecureString.masked("reg.example", "${ENV.HOST}")}/v2/`;
+  const shown = (ref: string): [string, string] => {
+    const url = urlResolved(base, ref);
+    return [url.toUnmaskedString(), url.toDisplayString()];
+  };
+
+  it("keeps the base whole for a URL under it, and its origin for one of its origin", () => {
+    expect(shown("lib/tags/list?last=a")).to.deep.equal([
+      "https://reg.example/v2/lib/tags/list?last=a",
+      "https://${ENV.HOST}/v2/lib/tags/list?last=a",
+    ]);
+    expect(shown("https://reg.example/v2/x.tgz")).to.deep.equal(["https://reg.example/v2/x.tgz", "https://${ENV.HOST}/v2/x.tgz"]);
+    expect(shown("/other?n=1")).to.deep.equal(["https://reg.example/other?n=1", "https://${ENV.HOST}/other?n=1"]);
+  });
+
+  it("keeps the base whole only up to a path boundary", () => {
+    const short = secure`https://${SecureString.masked("reg", "${ENV.REG}")}`;
+    expect(urlResolved(short, "https://registry.example/x.tgz").toDisplayString()).to.equal("https://registry.example/x.tgz");
+    const prefix = secure`https://reg.example/${SecureString.masked("npm", "${ENV.PATH}")}`;
+    expect(urlResolved(prefix, "https://reg.example/npm-mirror/x.tgz").toDisplayString()).to.equal(
+      "https://reg.example/npm-mirror/x.tgz"
+    );
+  });
+
+  it("keeps a base's masked user:password@ in a URL of its origin", () => {
+    const credentialed = secure`https://user:${SecureString.masked("pw", "${ENV.PW}")}@host.example/v2/`;
+    expect(urlResolved(credentialed, "/other?n=1").toDisplayString()).to.equal("https://user:${ENV.PW}@host.example/other?n=1");
+    expect(urlResolved(credentialed, "/other?n=1").toUnmaskedString()).to.equal("https://user:pw@host.example/other?n=1");
+  });
+
+  it("takes a URL of another origin as it is", () => {
+    expect(shown("https://blobs.example/x")).to.deep.equal(["https://blobs.example/x", "https://blobs.example/x"]);
+  });
+});
+
+describe("a request to a masked URL", () => {
+  it("fails showing the URL as written where it is no URL, and holds nothing of its value", async () => {
+    const url = secure`${SecureString.masked("not a url", "${ENV.REGISTRY}")}/v2/`;
+    const err = await openUrlStream(url, {}).then(
+      () => undefined,
+      e => e as Error
+    );
+    expect(err?.message).to.equal("'${ENV.REGISTRY}/v2/' is not a URL");
+    expect(inspect(err)).not.to.include("not a url");
+  });
+
+  it("fails showing a host it could not reach as written", async () => {
+    const url = secure`http://${SecureString.masked("unreachable.invalid", "${ENV.HOST}")}/x`;
+    const err = await openUrlStream(url, {}).then(
+      () => undefined,
+      e => e as Error
+    );
+    expect(err?.message).to.include("${ENV.HOST}");
+    expect(err?.message).not.to.include("unreachable.invalid");
+  });
+});
+
 describe("openUrlStream redirects", () => {
   it("follows a redirect to the final 200 body", async () => {
     const server = await routeServer(path =>
       path === "/start" ? { status: 302, location: "/final" } : path === "/final" ? { status: 200, body: "arrived" } : undefined
     );
     try {
-      const body = await fetchUrl(`${server.origin}/start`);
+      const body = await fetchUrl(SecureString.of(`${server.origin}/start`));
       expect(body.toString()).to.equal("arrived");
     } finally {
       await server.close();
@@ -144,7 +204,7 @@ describe("openUrlStream redirects", () => {
     const server = await routeServer(() => ({ status: 302, location: "/loop" }));
     try {
       let thrown: unknown;
-      await fetchUrl(`${server.origin}/loop`).catch(err => (thrown = err));
+      await fetchUrl(SecureString.of(`${server.origin}/loop`)).catch(err => (thrown = err));
       expect(thrown).to.be.instanceOf(Error);
     } finally {
       await server.close();
@@ -156,7 +216,7 @@ describe("openUrlStream redirects", () => {
       path === "/a" ? { status: 302, location: "/b" } : path === "/b" ? { status: 200, body: "ok" } : undefined
     );
     try {
-      await openUrlStream(`${server.origin}/a`, { authorization: "Bearer tok" }).then(r => r.stream?.resume());
+      await openUrlStream(SecureString.of(`${server.origin}/a`), { authorization: "Bearer tok" }).then(r => r.stream?.resume());
       expect(server.authAt.get("/b")).to.equal("Bearer tok");
     } finally {
       await server.close();
@@ -167,7 +227,7 @@ describe("openUrlStream redirects", () => {
     const dest = await routeServer(() => ({ status: 200, body: "ok" }));
     const src = await routeServer(() => ({ status: 302, location: `${dest.origin}/x` }));
     try {
-      await openUrlStream(`${src.origin}/start`, { authorization: "Bearer tok" }).then(r => r.stream?.resume());
+      await openUrlStream(SecureString.of(`${src.origin}/start`), { authorization: "Bearer tok" }).then(r => r.stream?.resume());
       expect(src.authAt.get("/start")).to.equal("Bearer tok");
       expect(dest.authAt.get("/x")).to.equal(undefined);
     } finally {
@@ -224,7 +284,7 @@ describe("a request's credential", () => {
     const server = await withChallengingServer("Basic new", 'Basic realm="registry"');
     const asked: IAuthChallenge[] = [];
     try {
-      const response = await sendRequest(server.url, {
+      const response = await sendRequest(SecureString.of(server.url), {
         method: "GET",
         credential: renewingCredential("Basic old", "Basic new", asked),
       });
@@ -240,7 +300,7 @@ describe("a request's credential", () => {
     const server = await withChallengingServer("Bearer fresh", 'Bearer realm="https://auth.example/token"');
     try {
       const response = await openUrlStream(
-        server.url,
+        SecureString.of(server.url),
         {},
         Date.now,
         "content",
@@ -258,7 +318,7 @@ describe("a request's credential", () => {
     const server = await withChallengingServer("Basic right", 'Basic realm="registry"');
     try {
       const err = await openUrlStream(
-        server.url,
+        SecureString.of(server.url),
         {},
         Date.now,
         "content",
@@ -278,7 +338,10 @@ describe("a request's credential", () => {
   it("sends a request at most twice", async () => {
     const server = await withChallengingServer("never", 'Basic realm="registry"');
     try {
-      const response = await sendRequest(server.url, { method: "GET", credential: renewingCredential("Basic a", "Basic b") });
+      const response = await sendRequest(SecureString.of(server.url), {
+        method: "GET",
+        credential: renewingCredential("Basic a", "Basic b"),
+      });
       expect(response.statusCode).to.equal(401);
       expect(server.sent).to.deep.equal(["Basic a", "Basic b"]);
     } finally {
@@ -289,7 +352,7 @@ describe("a request's credential", () => {
   it("does not send a streamed body twice", async () => {
     const server = await withChallengingServer("Basic new", 'Basic realm="registry"');
     try {
-      const response = await sendRequest(server.url, {
+      const response = await sendRequest(SecureString.of(server.url), {
         method: "PUT",
         body: Readable.from([Buffer.from("once")]),
         credential: renewingCredential("Basic old", "Basic new"),

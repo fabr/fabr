@@ -26,8 +26,8 @@ import {
   defineRule,
   EMPTY_FILESET,
   FabrError,
-  fileSetInput,
   FileSet,
+  fileSetInput,
   FileSource,
   HostLink,
   IBuildActionDefinition,
@@ -41,18 +41,21 @@ import {
   PropertyMap,
   Repository,
   RepositoryLookup,
-  RunnableFileSet,
   RepositoryRef,
   ResolvedNode,
+  RunnableFileSet,
+  secure,
+  SecureString,
   SourceRef,
   stringConfig,
-  TargetRef,
-  Unbuilt,
   TARGET,
   TargetContext,
+  TargetRef,
+  Unbuilt,
+  variableEntry,
   writeTar,
 } from "@fabr-build/core";
-import { IImageSettings, imageConfig, stringEntries } from "../ImageConfig";
+import { IImageSettings, imageConfig, stringEntries, unmaskedWords } from "../ImageConfig";
 import { ImageFileSet, ImageLibc, imageOfRecords, layerRecordDir, libcOf, RECORD_CONFIG } from "../ImageFileSet";
 import { runBuildCommand } from "../BuildCommand";
 import { indexLayer, teeOutput } from "../LayerIndex";
@@ -74,19 +77,23 @@ export default defineRule({
   requirements(context) {
     return Computable.forAll(
       [context.getGlobalString(OCI_TARGET), context.getFileProperty("base").then(sources => baseLibc(context.name, sources))] as const,
-      (target: string, libc: ImageLibc | undefined) => ({
-        build: {
-          dependencies: context.getPackageProperty("base"),
-          files: context.getFileProperty("files", Constraints.of({ [TARGET]: contentsTriple(target, libc) })),
-        },
-        result: { package: context.name },
-      })
+      (written: SecureString, libc: ImageLibc | undefined) => {
+        const target = written.toUnmaskedString();
+        return {
+          build: {
+            dependencies: context.getPackageProperty("base"),
+            files: context.getFileProperty("files", Constraints.of({ [TARGET]: contentsTriple(target, libc) })),
+          },
+          result: { package: context.name },
+        };
+      }
     );
   },
   evaluateMaterialized(context, { dependencies: base, files }) {
     return Computable.forAll(
       [context.getGlobalString(OCI_TARGET), settingsOf(context), context.getMap("env")] as const,
-      (target: string, settings: IImageSettings, env: PropertyMap) => {
+      (written: SecureString, settings: IImageSettings, env: PropertyMap) => {
+        const target = written.toUnmaskedString();
         const image = soleImage(context.name, base);
         const contents = FileSet.unionAll(...files);
         const platform = ociPlatformOf(target);
@@ -95,9 +102,14 @@ export default defineRule({
             IMAGE_ACTION,
             { base: on?.toRecords() ?? EMPTY_FILESET, files: contents, ...(engine === undefined ? {} : { engine }) },
             {
-              settings: JSON.stringify(made),
+              settings: JSON.stringify({ ...made, env: undefined, build: undefined }),
+              env: made.env.map(([name, value]) => secure`${name}=${value}`),
+              ...(made.build === undefined ? {} : { build: made.build }),
               platform: JSON.stringify(platform),
-              created_by: made.build === undefined ? `fabr container_image ${context.name}` : `/bin/sh -c ${made.build}`,
+              created_by:
+                made.build === undefined
+                  ? `fabr container_image ${context.name}`
+                  : secure`/bin/sh -c ${made.build}`.toUnmaskedString(),
             }
           ).withReshape(output => imageOfRecords(output, context.name));
         if (settings.build === undefined) {
@@ -135,13 +147,13 @@ function settingsOf(context: TargetContext): Computable<IImageSettings> {
       value("build"),
     ] as const,
     (entry, cmd, workdir, user, ports, env: PropertyMap, metadata: PropertyMap, build): IImageSettings => ({
-      ...(entry === undefined ? {} : { entry: entry.getValues() }),
-      ...(cmd === undefined ? {} : { cmd: cmd.getValues() }),
-      ...(workdir === undefined ? {} : { workdir: workdir.toString() }),
-      ...(user === undefined ? {} : { user: user.toString() }),
+      ...(entry === undefined ? {} : { entry: unmaskedWords(entry) }),
+      ...(cmd === undefined ? {} : { cmd: unmaskedWords(cmd) }),
+      ...(workdir === undefined ? {} : { workdir: workdir.toString().toUnmaskedString() }),
+      ...(user === undefined ? {} : { user: user.toString().toUnmaskedString() }),
       env: stringEntries(context.name, "env", env),
-      metadata: stringEntries(context.name, "metadata", metadata),
-      ports: ports?.getValues() ?? [],
+      metadata: stringEntries(context.name, "metadata", metadata).map(([key, value]) => [key, value.toUnmaskedString()]),
+      ports: unmaskedWords(ports),
       ...(build === undefined ? {} : { build: build.toString() }),
     })
   );
@@ -239,12 +251,18 @@ export function contentsTriple(target: string, libc: ImageLibc | undefined): str
 function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const base = fileSetInput(action, "base");
   const files = fileSetInput(action, "files");
-  const settings = JSON.parse(stringConfig(action, "settings")) as IImageSettings;
+  const build = action.config.build;
+  const settings: IImageSettings = {
+    ...(JSON.parse(stringConfig(action, "settings")) as Omit<IImageSettings, "env" | "build">),
+    env: (Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry),
+    ...(build instanceof SecureString ? { build } : {}),
+  };
   const platform = JSON.parse(stringConfig(action, "platform")) as IOciPlatform;
   const layers = new Set([...base].map(([name]) => name.split("/").slice(0, 2).join("/")).filter(dir => dir.startsWith("layers/")))
     .size;
+  const command = settings.build;
   const layer: Computable<IWrittenLayer | undefined> =
-    settings.build !== undefined
+    command !== undefined
       ? imageOfRecords(base, "base").then(image =>
           runBuildCommand(
             ctx,
@@ -253,7 +271,7 @@ function runImage(action: BuildAction, ctx: ActionContext, report: ITaskReport):
             {
               engine: (fileSetInput(action, "engine").getFile("engine") as HostLink).location,
               platform,
-              command: settings.build!,
+              command,
               env: settings.env,
             },
             layerRecordDir(layers)
@@ -301,4 +319,4 @@ function writeLayer(files: FileSet, output: IOutputHandle, dir: string): Computa
   });
 }
 
-const IMAGE_ACTION: IBuildActionDefinition = { id: "container:image", version: 2, run: runImage };
+const IMAGE_ACTION: IBuildActionDefinition = { id: "container:image", version: 3, run: runImage };

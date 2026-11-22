@@ -28,18 +28,21 @@
 import {
   Computable,
   Distribution,
-  fetchDocument,
   FabrError,
+  fetchDocument,
   FileSet,
-  SymlinkFile,
   IDownloadSource,
   MemoryCache,
   PackageFileSet,
   parseJson,
   RunnableFileSet,
+  SecureString,
+  shownUrl,
+  SymlinkFile,
   TargetContext,
   toJsonObject,
   tripleToNpm,
+  urlJoin,
   VersionNotFoundError,
 } from "@fabr-build/core";
 import { BROWSER_FORMAT, BrowserConstraint, BrowserVersion } from "./BrowserVersion";
@@ -150,7 +153,7 @@ export class ChromeForTesting extends Distribution<BrowserVersion, BrowserConstr
 
   constructor(
     context: TargetContext,
-    url: string,
+    url: SecureString,
     /** The name the browser is written as (`@browser:chrome`). */
     private readonly written: string
   ) {
@@ -178,7 +181,7 @@ export class ChromeForTesting extends Distribution<BrowserVersion, BrowserConstr
     }
     const find = (builds: ChromeBuilds): IDownloadSource | undefined => {
       const url = builds.get(version)?.get(platform);
-      return url === undefined ? undefined : { url, expected: undefined };
+      return url === undefined ? undefined : { url: SecureString.of(url), expected: undefined };
     };
     return this.builds(false).then(
       held =>
@@ -212,11 +215,11 @@ export class ChromeForTesting extends Distribution<BrowserVersion, BrowserConstr
   private builds(revalidate: boolean): Computable<ChromeBuilds> {
     return this.lists.getOrCreate(String(revalidate), () =>
       fetchDocument(this.context, {
-        url: `${this.url}/${VERSIONS_FILE}`,
+        url: urlJoin(this.url, VERSIONS_FILE),
         file: VERSIONS_FILE,
         tag: "chrome-for-testing:versions:1",
         report: { resource: "version list", role: "index" },
-        convert: text => parseJson(text, `Chrome for Testing's version list from ${this.url}`, toChromeBuilds),
+        convert: text => parseJson(text, `Chrome for Testing's version list from ${shownUrl(this.url)}`, toChromeBuilds),
         options: { immutable: false, forceRevalidate: revalidate },
       }).then(builds => builds ?? new Map())
     );

@@ -70,6 +70,7 @@ export * from "./model/Errors";
 export { parseBuildString, parseName } from "./model/Parser";
 export * from "./editor/Language";
 export * from "./core/Name";
+export * from "./core/SecureString";
 export * from "./model/Property";
 export { declName, declPosn, isNameValue, isPropertyDecl, PropertyType, propertyTypeName, syntheticValue } from "./model/AST";
 export type { IBuildFileContents, INameValue, IPropertyDecl, ITargetDecl, ITargetDefDecl, IPropertySchema } from "./model/AST";

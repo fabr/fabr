@@ -34,6 +34,7 @@ import {
   PublishableFileSet,
   PublishMember,
   PublishStatus,
+  SecureString,
   TargetContext,
   toJsonObject,
 } from "@fabr-build/core";
@@ -258,15 +259,12 @@ function pushBlob(
     if (held) {
       return Computable.resolve(undefined);
     }
-    const sameRegistry = source !== undefined && source.registry === registry.url;
+    const sameRegistry = source !== undefined && registry.url.equals(source.registry);
     const upload = (): Computable<void> =>
       file !== undefined
         ? contentStream(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
         : source !== undefined
-          ? (sameRegistry
-              ? registry
-              : new Registry(context, source.registry, authFileSignIn(context, source.registry, source.loginUrl))
-            )
+          ? (sameRegistry ? registry : sourceRegistry(context, source))
               .blobStream(source.repository, blob.digest)
               .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
           : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
@@ -277,6 +275,12 @@ function pushBlob(
     }
     return upload();
   });
+}
+
+/** Make the registry a layer published before is had from, signed in to as its auth files say: `source` records its URL as text, as published. */
+function sourceRegistry(context: TargetContext, source: ILayerSource): Registry {
+  const url = SecureString.of(source.registry);
+  return new Registry(context, url, authFileSignIn(context, url, source.loginUrl));
 }
 
 /** Read the descriptor of the one manifest a carrier's layout index names. */

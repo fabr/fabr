@@ -26,8 +26,8 @@ import {
   FabrError,
   FileSet,
   IProvenanceStep,
-  isJsonObject,
   ISecretRecord,
+  isJsonObject,
   Name,
   parseJson,
   registerProvenanceDescriber,
@@ -37,9 +37,12 @@ import {
   RepositoryPublishRef,
   RepositoryRef,
   SecretFile,
+  secure,
+  SecureString,
+  shownUrl,
 } from "@fabr-build/core";
 import { describeServiceError, jsonRequest, postServiceRequest, serviceErrorOf } from "./JsonProtocol";
-import { IServiceRequest, requestUrl } from "./Signing";
+import { getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
 import { IAccountSettings } from "./Types";
 
 /** The name of the Secrets Manager service under an account. */
@@ -88,7 +91,7 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
 
   /** Vend the reference for the secret `name` names, which must be literal. */
   public getRepositoryRef(name: Name): RepositoryRef {
-    const written = `${this.written}:${name.toString()}`;
+    const written = `${this.written}:${name.toDisplayString()}`;
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${written}' is a secret, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -106,7 +109,7 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toString()}')`);
+    throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toDisplayString()}')`);
   }
 
   /** Read the current value of the secret `reference` names, as one secret file named as the secret is, without a leading `/`. */
@@ -114,10 +117,9 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
     const secret = reference.name;
     const { context, credentials, region, endpoint, name } = this.account;
     const request = secretValueRequest(secret, region, endpoint);
-    const url = requestUrl(request);
-    const cacheKey = `${name} ${credentials} ${region} ${endpoint?.href ?? ""} ${secret}`;
+    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${secret}`.toUnmaskedString();
     return context
-      .fetchSecret(cacheKey, SECRET_TAG, `secretsmanager:${secret}`, () => this.fetch(request, url, secret), {
+      .fetchSecret(cacheKey, SECRET_TAG, `secretsmanager:${secret}`, () => this.fetch(request, secret), {
         resource: "secret",
         role: "content",
       })
@@ -129,19 +131,23 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
   }
 
   /** Fetch the current value of `secret` with `GetSecretValue`. */
-  private fetch(request: IServiceRequest & { readonly body: string }, url: string, secret: string): Computable<ISecretRecord> {
-    return postServiceRequest(this.account, SECRETS_MANAGER_SERVICE, request, url, text =>
-      refusal(text, secret, this.account.name)
-    ).then(body => {
-      const found = parseJson(body, `the answer from ${url}`, toSecretValue);
-      return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
-    });
+  private fetch(request: IServiceRequest & { readonly body: string }, secret: string): Computable<ISecretRecord> {
+    return postServiceRequest(this.account, SECRETS_MANAGER_SERVICE, request, text => refusal(text, secret, this.account.name)).then(
+      body => {
+        const found = parseJson(body, `the answer from ${shownUrl(requestUrl(request))}`, toSecretValue);
+        return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
+      }
+    );
   }
 }
 
 /** Make the `GetSecretValue` request for `secret`'s current value: to `endpoint` where there is one, else to Secrets Manager in `region`. */
-export function secretValueRequest(secret: string, region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
-  return jsonRequest("secretsmanager.GetSecretValue", { SecretId: secret }, `secretsmanager.${region}.amazonaws.com`, endpoint);
+export function secretValueRequest(
+  secret: string,
+  region: string,
+  endpoint?: SecureString
+): IServiceRequest & { readonly body: string } {
+  return jsonRequest("secretsmanager.GetSecretValue", { SecretId: secret }, getServiceUrl("secretsmanager", region), endpoint);
 }
 
 /** Read a `GetSecretValue` answer. Throws where it holds no value. */

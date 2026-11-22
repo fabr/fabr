@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { FileSet, MemoryFile, Name, PropertyMap, Requirement } from "@fabr-build/core";
+import { FileSet, MemoryFile, Name, PropertyMap, PropertyMapValue, Requirement, SecureString } from "@fabr-build/core";
 import {
   createPackageJson,
   declaredDependencies,
@@ -33,6 +33,17 @@ import { cssImportRewrites } from "./CSSCompile";
 const JS_TARGET: JSTarget = { version: "esnext", module: "commonjs", environment: "node" };
 
 /** Generate a package.json and parse it back, for the given seed + metadata. */
+/** @return `map` as a MAP property's value: each list of strings as words, each map within it likewise. */
+function secured(map: Map<string, unknown>): PropertyMap {
+  const value = (entry: unknown): PropertyMapValue =>
+    Array.isArray(entry) && entry.every(word => typeof word === "string")
+      ? entry.map(word => SecureString.of(word))
+      : Array.isArray(entry)
+        ? entry.map(each => secured(each as Map<string, unknown>))
+        : secured(entry as Map<string, unknown>);
+  return new Map([...map].map(([key, entry]) => [key, value(entry)]));
+}
+
 async function generate(
   seed: Record<string, unknown> | undefined,
   metadata: PropertyMap,
@@ -105,10 +116,12 @@ describe("createPackageJson", () => {
   it("encodes a scalar metadata value per the field schema (array field vs string)", async () => {
     const pkg = await generate(
       undefined,
-      new Map([
-        ["keywords", ["build", "cli"]],
-        ["description", ["a", "small", "tool"]],
-      ])
+      secured(
+        new Map([
+          ["keywords", ["build", "cli"]],
+          ["description", ["a", "small", "tool"]],
+        ])
+      )
     );
     /* keywords is an array field → the list stays an array; description is not → joined. */
     expect(pkg.keywords).to.deep.equal(["build", "cli"]);
@@ -118,16 +131,18 @@ describe("createPackageJson", () => {
   it("encodes a sub-map as an object and a list of sub-maps as an array of objects", async () => {
     const pkg = await generate(
       undefined,
-      new Map<string, PropertyMap | PropertyMap[]>([
-        [
-          "repository",
-          new Map([
-            ["type", ["git"]],
-            ["url", ["https://example.com/x.git"]],
-          ]),
-        ],
-        ["maintainers", [new Map([["name", ["Alice"]]]), new Map([["name", ["Bob"]]])]],
-      ]) as PropertyMap
+      secured(
+        new Map<string, unknown>([
+          [
+            "repository",
+            new Map([
+              ["type", ["git"]],
+              ["url", ["https://example.com/x.git"]],
+            ]),
+          ],
+          ["maintainers", [new Map([["name", ["Alice"]]]), new Map([["name", ["Bob"]]])]],
+        ])
+      )
     );
     expect(pkg.repository).to.deep.equal({ type: "git", url: "https://example.com/x.git" });
     expect(pkg.maintainers).to.deep.equal([{ name: "Alice" }, { name: "Bob" }]);
@@ -202,8 +217,8 @@ describe("createPackageJson", () => {
         expect((err as Error).message).to.match(pattern);
       }
     };
-    await rejects(new Map([["name", ["x"]]]), /set by fabr/);
-    await rejects(new Map([["scripts", ["x"]]]), /not carried/);
+    await rejects(secured(new Map([["name", ["x"]]])), /set by fabr/);
+    await rejects(secured(new Map([["scripts", ["x"]]])), /not carried/);
   });
 
   it("publishes no exports map for a target declaring no entry points", async () => {

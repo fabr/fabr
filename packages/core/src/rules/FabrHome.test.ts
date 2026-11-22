@@ -76,7 +76,7 @@ const repository = (): FabrHomeRepository => new FabrHomeRepository(new Absolute
 function packageRef(repo: FabrHomeRepository, name: Name): RepositoryRef {
   const ref = repo.getRepositoryRef(name);
   if (!(ref instanceof RepositoryRef)) {
-    throw new Error(`'${name.toString()}' vended no package reference`);
+    throw new Error(`'${name.toDisplayString()}' vended no package reference`);
   }
   return ref;
 }

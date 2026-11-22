@@ -19,7 +19,8 @@
 
 import { Computable } from "./core/Computable";
 import { FabrError } from "./core/Errors";
-import { sendRequest } from "./core/Fetch";
+import { sendRequest, shownUrl, urlJoin, urlRoot } from "./core/Fetch";
+import type { SecureString } from "./core/SecureString";
 import { Dependency, Package } from "./core/PackageFileSet";
 import { ResolvedTarget } from "./context/index";
 import { madeFrom, nameEdges, namedPackages, ResolvedName, walkedEdges, WalkedEdge, walkReadingFiles } from "./Fabr";
@@ -269,19 +270,21 @@ const QUERY_BATCH = 1000;
  * where the server answers other than 200, with a body that does not convert,
  * or with a different number of answers than queries.
  */
-export function osvServer(base: string): AdvisoryServer {
-  const root = base.replace(/\/+$/, "");
+export function osvServer(base: SecureString): AdvisoryServer {
+  const root = urlRoot(base);
   const request = <T>(path: string, body: unknown, convert: (json: unknown) => T): Computable<T> => {
-    const url = `${root}/${path}`;
+    const url = urlJoin(root, path);
     return sendRequest(url, {
       method: body === undefined ? "GET" : "POST",
       headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }).then(response => {
       if (response.statusCode !== 200) {
-        throw new FabrError(`${url} answered ${response.statusCode}: ${response.body.toString("utf8").trim().split("\n")[0]}`);
+        throw new FabrError(
+          `${shownUrl(url)} answered ${response.statusCode}: ${response.body.toString("utf8").trim().split("\n")[0]}`
+        );
       }
-      return parseJson(response.body, `response from ${url}`, convert);
+      return parseJson(response.body, `response from ${shownUrl(url)}`, convert);
     });
   };
   /** Query `purls`, following each query's pages to the end. */
@@ -292,7 +295,7 @@ export function osvServer(base: string): AdvisoryServer {
       toQueryResults
     ).then(results => {
       if (results.length !== purls.length) {
-        throw new FabrError(`${root} answered ${results.length} of ${purls.length} queries`);
+        throw new FabrError(`${shownUrl(root)} answered ${results.length} of ${purls.length} queries`);
       }
       const more = results.flatMap((result, at) => (result.next === undefined ? [] : [at]));
       if (more.length === 0) {

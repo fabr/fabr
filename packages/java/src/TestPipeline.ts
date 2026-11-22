@@ -43,11 +43,12 @@ import {
   PackageFileSet,
   PERMISSIVE_RESOLUTION,
   RuleResult,
-  TargetContext,
-  TEST_FLAKE_RETRIES,
-  TEST_FILE_PATTERN,
-  TEST_NAME_PATTERN,
+  secure,
   selectTestFiles,
+  TargetContext,
+  TEST_FILE_PATTERN,
+  TEST_FLAKE_RETRIES,
+  TEST_NAME_PATTERN,
   testFilePathOf,
   toEnvironment,
   toFlakeRetries,
@@ -114,7 +115,7 @@ export function runJavaTests(context: TargetContext, settings: IJavaTestSettings
   return context
     .getGlobalString(TEST_FILE_PATTERN)
     .then(pattern =>
-      pattern === "" ? undefined : [...selectTestFiles(tests, pattern)].map(([name]) => testFilePathOf(tests, name)).sort()
+      pattern.length === 0 ? undefined : [...selectTestFiles(tests, pattern)].map(([name]) => testFilePathOf(tests, name)).sort()
     )
     .then(selected =>
       selected !== undefined && selected.length === 0
@@ -143,7 +144,7 @@ function runSelectedTests(
   const runner = singleJar(context, "JAVA_TEST_RUNNER");
   const namePattern = context.getGlobalString(TEST_NAME_PATTERN);
   const measuring = context.getGlobalString(COVERAGE).then(coverage =>
-    coverage === COVERAGE_ON && inputs.measured !== undefined
+    coverage.equals(COVERAGE_ON) && inputs.measured !== undefined
       ? Computable.forAll([coverageTools(context), inputs.measured.packages ?? Computable.resolve(undefined)], (tools, packages) => ({
           tools,
           packages,
@@ -195,7 +196,7 @@ function runSelectedTests(
             ])
           )
         );
-        const selection = pattern === "" ? [] : [`--name-pattern=${pattern}`];
+        const selection = pattern.length === 0 ? [] : [secure`--name-pattern=${pattern}`];
         const measured = coverage && measuredRun(coverage.tools, inputs.measured!.jars, coverage.packages);
         const argv = java.toCommandLine(
           [

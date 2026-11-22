@@ -113,7 +113,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
       placed,
     ],
     (jvmTarget, javac, buildType, processorPath, { modulePath, classpath }) => {
-      const release = javaRelease(jvmTarget, deps);
+      const release = javaRelease(jvmTarget.toUnmaskedString(), deps);
       const pool = context.execution.buildCache;
       return pool.ensureTree(javac).then(() => {
         const argumentsText = [
@@ -123,7 +123,7 @@ function compileJava(context: TargetContext, { srcs, deps }: { srcs: FileSet[]; 
           "UTF-8",
           ...(processorPath.length === 0 ? ["-proc:none"] : pathOption("-processorpath", PROCESSOR_PATH_DIR, processorPath)),
           "-implicit:none",
-          debugInformation(buildType),
+          debugInformation(buildType.toUnmaskedString()),
           ...(deps.some(dep => dep instanceof Flag && dep.name === NO_PARAMETERS_FLAG) ? [] : ["-parameters"]),
           ...(deps.some(dep => dep instanceof Flag && dep.name === WERROR_FLAG) ? ["-Werror"] : []),
           "-d",

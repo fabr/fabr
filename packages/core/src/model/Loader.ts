@@ -402,7 +402,7 @@ class ProjectLoader {
     const files = matchOptionalLibs(plugin, lib.path);
     if (files.length === 0) {
       const listed = plugin.optionalLibs.map(one => one.name).sort();
-      const detail = `'${plugin.name}' has no optional lib ${lib.path.toString()}`;
+      const detail = `'${plugin.name}' has no optional lib ${lib.path.toDisplayString()}`;
       return [
         {
           decl,
@@ -557,7 +557,7 @@ class ProjectLoader {
   /** Report `include` as naming no file, by `diagnostic`, with the chain of includes that reached it. */
   private includeFailed(diagnostic: Diagnostic<{ filename: string; loc: ISourceSpan }>, include: IIncludeDecl): IncludedFiles {
     this.execution.log.log(diagnostic, {
-      filename: include.name.toString(),
+      filename: include.name.toDisplayString(),
       loc: declPosn(include),
       notes: includeChain(this.includeSites, include),
     });
@@ -590,7 +590,9 @@ class ProjectLoader {
       this.libs.set(target, byProperty);
       /* Report each splice in the body: the body is read before anything is built. */
       const splices = target.properties.filter((item): item is ISpliceDecl => !isPropertyDecl(item));
-      splices.forEach(splice => this.execution.log.log(DIAG_PLUGIN_SPLICE, { name: splice.ref.toString(), loc: declPosn(splice) }));
+      splices.forEach(splice =>
+        this.execution.log.log(DIAG_PLUGIN_SPLICE, { name: splice.ref.toDisplayString(), loc: declPosn(splice) })
+      );
       spliced = splices.length;
     }
     let resolved = byProperty.get(property);

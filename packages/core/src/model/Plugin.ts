@@ -209,13 +209,13 @@ function packagedPlugin(decl: IPluginDecl, manifest: string, files: FileSet): Pl
   const json = readManifest(manifest);
   if (json[PLUGIN_MANIFEST_FIELD] === undefined) {
     throw new FabrError(
-      `Package '${decl.name.toString()}' is not a fabr plugin: its package.json has no "${PLUGIN_MANIFEST_FIELD}"`
+      `Package '${decl.name.toDisplayString()}' is not a fabr plugin: its package.json has no "${PLUGIN_MANIFEST_FIELD}"`
     ).withHelp("a plugin built in the project is named by its fabr_plugin target");
   }
   if (typeof json.name !== "string") {
     throw new FabrError(`${manifest}: a plugin's package.json names it`);
   }
-  checkCoreVersion(decl.name.toString(), json);
+  checkCoreVersion(decl.name.toDisplayString(), json);
   let listed: PluginLibs;
   try {
     listed = toPluginLibs(json[PLUGIN_MANIFEST_FIELD]);
@@ -272,7 +272,7 @@ export function implementationLoader(plugins: ReadonlyMap<string, () => Computab
     }
   };
   return implementation => {
-    const written = implementation.value.toString();
+    const written = implementation.value.toUnmaskedString();
     const colon = written.indexOf(":");
     const name = written.substring(0, colon);
     const manifest = name === CORE_PACKAGE ? Computable.resolve(undefined).then(coreManifestFile) : plugins.get(name)?.();
@@ -428,7 +428,9 @@ function pluginManifest(
     .materialize(reference)
     .then(sources => {
       if (sources.length !== 1) {
-        throw new FabrError(`Plugin '${decl.name.toString()}' names ${sources.length === 0 ? "nothing" : "more than one package"}`);
+        throw new FabrError(
+          `Plugin '${decl.name.toDisplayString()}' names ${sources.length === 0 ? "nothing" : "more than one package"}`
+        );
       }
       const [source] = sources;
       if (source instanceof RunnableFileSet) {
@@ -439,7 +441,7 @@ function pluginManifest(
       const directory =
         source instanceof FileSet && source.getFile("package.json") !== undefined ? installedDirectoryOf(source) : undefined;
       if (directory === undefined) {
-        throw new FabrError(`Plugin '${decl.name.toString()}' names no package`);
+        throw new FabrError(`Plugin '${decl.name.toDisplayString()}' names no package`);
       }
       return { manifest: path.join(directory, "package.json"), files: () => source as FileSet };
     });

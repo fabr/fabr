@@ -303,7 +303,7 @@ export class SyncSource implements FileSource {
   /** Make the error for a literal naming no member, listing the members there are. */
   private unknownMember(name: Name): Error {
     const declared = [...this.table.keys()].sort();
-    return new FabrError(`${this.context.name} has no member matching '${name.toString()}'`).withHelp(
+    return new FabrError(`${this.context.name} has no member matching '${name.toDisplayString()}'`).withHelp(
       declared.length > 0 ? `it declares: ${declared.join(", ")}` : "it declares no members"
     );
   }
@@ -383,7 +383,7 @@ function declaredMembers(context: TargetContext): Computable<Map<string, Member>
             member.decl.name,
             declPosn(member.decl),
             undefined,
-            `'${member.assigned.toString()}' is already published by this sync (declared as '${clash.decl.name}')`
+            `'${member.assigned.toString()}' is already published by this sync (declared as '${clash.decl.name.toDisplayString()}')`
           );
         }
         table.set(path, member);

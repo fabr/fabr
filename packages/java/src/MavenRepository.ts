@@ -39,13 +39,14 @@ import {
   HttpRequest,
   HttpResponse,
   IFile,
+  IVersionMetadata,
   MemoryCache,
-  onlyTo,
   MemoryFile,
   Name,
-  PartialRepositoryRef,
+  onlyTo,
   packageCoordinateOf,
   PackageFileSet,
+  PartialRepositoryRef,
   Property,
   PublishableFileSet,
   PublishAttachment,
@@ -53,20 +54,23 @@ import {
   PublishStatus,
   Reference,
   Repository,
+  RepositoryImplementation,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   RepositoryWriter,
   Requirement,
   resolveBarePackage,
+  SecureString,
   sendRequest,
+  shownUrl,
   SOURCES_OPERATION,
   TargetContext,
+  urlJoin,
+  urlRoot,
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
-  IVersionMetadata,
-  RepositoryImplementation,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext, MavenAuth } from "./MavenAuth";
@@ -102,14 +106,8 @@ const CLASSIFIERS = new Map([
 const OPERATIONS = new Map([...CLASSIFIERS].map(([operation, classifier]) => [classifier, operation]));
 
 /** @return the classifiers `value`, a repository's `auto_attach`, lists, refusing any that is not a jar an operation answers with. */
-function autoAttachOf(repository: string, value: { toString(): string } | undefined): string[] {
-  const classifiers =
-    value === undefined
-      ? []
-      : value
-          .toString()
-          .split(/\s+/)
-          .filter(word => word !== "");
+function autoAttachOf(repository: string, value: Property | undefined): string[] {
+  const classifiers = (value?.getValues() ?? []).map(word => word.toUnmaskedString()).filter(word => word !== "");
   const unknown = classifiers.find(classifier => !OPERATIONS.has(classifier));
   if (unknown !== undefined) {
     throw new FabrError(`${repository}'s auto_attach names '${unknown}', which is not ${[...OPERATIONS.keys()].join(" or ")}`);
@@ -189,7 +187,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   constructor(
     private readonly context: TargetContext,
-    private readonly url: string,
+    private readonly url: SecureString,
     /** The id of the `settings.xml` server whose credentials it uses. */
     private readonly serverId: string,
     /** The classifiers of the jars published beside each artifact a sync publishes here: `sources`, `javadoc`. */
@@ -199,7 +197,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   ) {
     /* Send the credential to the repository's own origin only, whatever URL a request is made to. */
     this.credential = onlyTo(
-      new URL(url).origin,
+      new URL(url.toUnmaskedString()).origin,
       credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId)
     );
   }
@@ -207,7 +205,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   private readonly credential: Credential;
 
   public get identity(): string {
-    return this.url;
+    return this.url.toUnmaskedString();
   }
 
   public get name(): string {
@@ -227,7 +225,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     if (!name.includes("/")) {
       return Computable.reject(
         new FabrError(
-          `the repository at ${this.url} cannot list ${name === "" ? "every package it holds" : `the packages in ${name}`}`
+          `the repository at ${shownUrl(this.url)} cannot list ${name === "" ? "every package it holds" : `the packages in ${name}`}`
         ).withHelp(`name a package to list its versions, as in '${this.name}:${name === "" ? "<group>" : name}:<artifact>'`)
       );
     }
@@ -362,13 +360,15 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /** Make a request to `path` in the repository, signed in. */
   private request(path: string, request: HttpRequest): Computable<HttpResponse> {
-    return sendRequest(`${this.url}/${path}`, { ...request, credential: this.credential });
+    return sendRequest(urlJoin(this.url, path), { ...request, credential: this.credential });
   }
 
   /** Make the error for a failed request, with the response's body as its detail. */
   private failure(doing: string, path: string, response: HttpResponse): FabrError {
     const detail = response.body.toString("utf8").trim();
-    return new FabrError(`${doing} ${this.url}/${path} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`);
+    return new FabrError(
+      `${doing} ${shownUrl(urlJoin(this.url, path))} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`
+    );
   }
 
   /** Get the environment a resolution for `operation` depends on: the Java
@@ -380,7 +380,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 
   /** Get the Java release programs run on, which `JVM_TARGET` names. */
   private release(): Computable<number> {
-    return this.context.getGlobalString("JVM_TARGET").then(target => javaRelease(target, []));
+    return this.context.getGlobalString("JVM_TARGET").then(target => javaRelease(target.toUnmaskedString(), []));
   }
 
   /**
@@ -394,14 +394,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       if (!raw.gradleMetadata) {
         return undefined;
       }
-      const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}.module`;
-      const module = this.modules.getOrCreate(url, () =>
+      const url = urlJoin(this.versionUrl(coordinate), `${coordinate.artifactId}-${coordinate.version}.module`);
+      const module = this.modules.getOrCreate(url.toUnmaskedString(), () =>
         fetchDocument(this.context, {
           url,
           file: "module.json",
           tag: "maven:module:1",
           report: { resource: "module metadata", role: "index" },
-          convert: text => parseGradleModule(text, url),
+          convert: text => parseGradleModule(text, shownUrl(url)),
           credential: this.credential,
         })
       );
@@ -502,7 +502,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const files = variant.availableAt === undefined ? variant.files : [];
     return Computable.forAll(
       files.map(file => {
-        const url = `${this.versionUrl(coordinate)}/${file.url}`;
+        const url = urlJoin(this.versionUrl(coordinate), file.url);
         return fetchFile(this.context, {
           key: `${this.identity} ${coordinateText(coordinate)} ${file.name}`,
           tag: "maven:module-file:2",
@@ -548,7 +548,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const coordinate = this.coordinateOf(name, version.text);
     return this.effectivePomOf(name, version.text).then(pom => {
       const file = this.artifactFileOf(coordinate, pom);
-      const artifactUrl = `${this.versionUrl(coordinate)}/${file}`;
+      const artifactUrl = urlJoin(this.versionUrl(coordinate), file);
       const fetchArtifact = (sha1: () => Computable<string | undefined>): Computable<PackageFileSet> =>
         fetchFile(this.context, {
           key: `${this.identity} ${coordinateText(coordinate)}`,
@@ -580,13 +580,15 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const classifier = CLASSIFIERS.get(operation);
     const coordinate = this.coordinateOf(name, version.text);
     if (classifier === undefined) {
-      return Computable.reject(new FabrError(`${this.url} publishes nothing for '${operation}' beside ${coordinateText(coordinate)}`));
+      return Computable.reject(
+        new FabrError(`${shownUrl(this.url)} publishes nothing for '${operation}' beside ${coordinateText(coordinate)}`)
+      );
     }
-    const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}-${classifier}.jar`;
+    const url = urlJoin(this.versionUrl(coordinate), `${coordinate.artifactId}-${coordinate.version}-${classifier}.jar`);
     return this.sha1Of(url).then(sha1 => {
       if (sha1 === undefined) {
         throw new FabrError(`${coordinateText(coordinate)} publishes no ${classifier} jar`).withHelp(
-          `${this.url} has no ${coordinate.artifactId}-${coordinate.version}-${classifier}.jar beside it`
+          `${shownUrl(this.url)} has no ${coordinate.artifactId}-${coordinate.version}-${classifier}.jar beside it`
         );
       }
       return fetchArchive(this.context, {
@@ -613,12 +615,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const coordinate = this.coordinateOf(name, version.text);
     const { classifier, extension } = mavenVariantOf(variant);
     const file = `${coordinate.artifactId}-${coordinate.version}${classifier === undefined ? "" : `-${classifier}`}.${extension}`;
-    const url = `${this.versionUrl(coordinate)}/${file}`;
+    const url = urlJoin(this.versionUrl(coordinate), file);
     return this.sha1Of(url).then(sha1 => {
       if (sha1 === undefined) {
         throw new FabrError(
           `${coordinateText(coordinate)} publishes no ${classifier === undefined ? "" : `${classifier} `}${extension}`
-        ).withHelp(`${this.url} has no ${file}; require a version of ${name} that publishes one`);
+        ).withHelp(`${shownUrl(this.url)} has no ${file}; require a version of ${name} that publishes one`);
       }
       return fetchFile(this.context, {
         key: `${this.identity} ${coordinateText(coordinate)} ${variant}`,
@@ -639,12 +641,12 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     return { ...splitMavenName(name), version };
   }
 
-  private artifactUrl({ groupId, artifactId }: { groupId: string; artifactId: string }): string {
-    return `${this.url}/${groupId.replace(/\./g, "/")}/${artifactId}`;
+  private artifactUrl({ groupId, artifactId }: { groupId: string; artifactId: string }): SecureString {
+    return urlJoin(this.url, `${groupId.replace(/\./g, "/")}/${artifactId}`);
   }
 
-  private versionUrl(coordinate: PomCoordinate): string {
-    return `${this.artifactUrl(coordinate)}/${coordinate.version}`;
+  private versionUrl(coordinate: PomCoordinate): SecureString {
+    return urlJoin(this.artifactUrl(coordinate), coordinate.version);
   }
 
   /** Build the effective POM of a package; a version with no POM is not published. */
@@ -661,7 +663,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
         throw new VersionNotFoundError(
           mavenName(coordinate.groupId, coordinate.artifactId),
           coordinate.version,
-          `${coordinateText(coordinate)} is not published at ${this.url}`
+          `${coordinateText(coordinate)} is not published at ${shownUrl(this.url)}`
         );
       }
       return raw;
@@ -676,14 +678,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
       /* What is no Maven version (the lowest version of `(1.0,…`, written `(1.0`) is published nowhere. */
       return Computable.resolve(undefined);
     }
-    const url = `${this.versionUrl(coordinate)}/${coordinate.artifactId}-${coordinate.version}.pom`;
-    return this.poms.getOrCreate(url, () =>
+    const url = urlJoin(this.versionUrl(coordinate), `${coordinate.artifactId}-${coordinate.version}.pom`);
+    return this.poms.getOrCreate(url.toUnmaskedString(), () =>
       fetchDocument(this.context, {
         url,
         file: "pom.xml",
         tag: "maven:pom:1",
         report: { resource: "POM", role: "index" },
-        convert: text => parsePom(text, url),
+        convert: text => parsePom(text, shownUrl(url)),
         credential: this.credential,
       })
     );
@@ -697,7 +699,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   private publishedSha1Of(coordinate: PomCoordinate, file: string): Computable<string | undefined> {
     return this.context
       .memoize("maven:published-sha1:1", `${this.identity} ${coordinateText(coordinate)} ${file}`, () =>
-        this.sha1Of(`${this.versionUrl(coordinate)}/${file}`).then(
+        this.sha1Of(urlJoin(this.versionUrl(coordinate), file)).then(
           sha1 => new FileSet(sha1 === undefined ? new Map() : new Map([[SHA1_FILE, MemoryFile.from(sha1)]]))
         )
       )
@@ -705,14 +707,14 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   }
 
   /** Read the SHA-1 published beside an artifact, or undefined where there is none. */
-  private sha1Of(artifactUrl: string): Computable<string | undefined> {
-    const url = `${artifactUrl}.sha1`;
+  private sha1Of(artifactUrl: SecureString): Computable<string | undefined> {
+    const url = artifactUrl.concat(".sha1");
     return fetchDocument(this.context, {
       url,
       file: "sha1",
       tag: "maven:sha1:1",
       report: { resource: "checksum", role: "index" },
-      convert: text => toSha1(text, url),
+      convert: text => toSha1(text, shownUrl(url)),
       credential: this.credential,
     });
   }
@@ -722,18 +724,18 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
    *  re-reads a held list, for a caller asking about a version it may lack.
    *  Read once per run either way. */
   private publishedVersions(name: string, forceRevalidate: boolean): Computable<MavenVersion[] | undefined> {
-    const url = `${this.artifactUrl(splitMavenName(name))}/${METADATA_FILE}`;
-    return (forceRevalidate ? this.revalidatedVersions : this.versions).getOrCreate(url, () =>
+    const url = urlJoin(this.artifactUrl(splitMavenName(name)), METADATA_FILE);
+    return (forceRevalidate ? this.revalidatedVersions : this.versions).getOrCreate(url.toUnmaskedString(), () =>
       fetchDocument(this.context, {
         url,
         file: METADATA_FILE,
         tag: "maven:metadata:1",
         report: { resource: "version list", role: "index" },
-        convert: text => toMetadataVersions(text, url),
+        convert: text => toMetadataVersions(text, shownUrl(url)),
         credential: this.credential,
         options: { immutable: false, forceRevalidate },
       }).then(listed =>
-        listed?.flatMap(text => {
+        listed?.flatMap((text: string) => {
           try {
             return [MAVEN_VERSIONS.parseVersion(text)];
           } catch {
@@ -746,7 +748,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 }
 
 /** Make the repository a `maven_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `settings.xml`'s. */
-function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
+function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
     [context.getProperty("url"), context.getProperty("id"), context.getProperty("auto_attach")],
     (declared: Property | undefined, id: Property | undefined, autoAttach: Property | undefined) => {
@@ -756,8 +758,8 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       }
       return new MavenRepository(
         context,
-        at.replace(/\/+$/, ""),
-        id?.toString() ?? context.name,
+        urlRoot(at),
+        id?.toString().toUnmaskedString() ?? context.name,
         autoAttachOf(context.name, autoAttach),
         credential
       );

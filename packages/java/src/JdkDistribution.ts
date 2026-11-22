@@ -40,9 +40,13 @@ import {
   parseJson,
   Repository,
   RepositoryImplementation,
+  SecureString,
+  shownUrl,
   TargetContext,
   toJsonObject,
   tripleToNpm,
+  urlJoin,
+  urlRoot,
 } from "@fabr-build/core";
 import { JDK_VERSIONS, JdkConstraint, JdkVersion } from "./JdkVersion";
 
@@ -110,7 +114,7 @@ export class JdkDistribution extends Distribution<JdkVersion, JdkConstraint> {
   protected readonly unavailableHelp = "set JAVA and JAVAC to a JDK for this platform";
   protected readonly binDirectories = JDK_BIN_DIRECTORIES;
 
-  constructor(context: TargetContext, url: string) {
+  constructor(context: TargetContext, url: SecureString) {
     super(context, url);
   }
 
@@ -126,20 +130,23 @@ export class JdkDistribution extends Distribution<JdkVersion, JdkConstraint> {
 
   /** Find a release's archive for `target` in the API's assets document for it. */
   private assets(release: string, target: string): Computable<IDownloadSource> {
-    const url = `${this.url}/v3/assets/release_name/eclipse/${encodeURIComponent(releaseNameOf(release))}?${this.platformQuery(target)}`;
+    const url = urlJoin(
+      this.url,
+      `v3/assets/release_name/eclipse/${encodeURIComponent(releaseNameOf(release))}?${this.platformQuery(target)}`
+    );
     return fetchDocument(this.context, {
       url,
       file: "assets.json",
       tag: "jdk:assets:2",
       report: { resource: "release", role: "index" },
-      convert: text => parseJson(text, `JDK ${release} release from ${this.url}`, toArchive),
+      convert: text => parseJson(text, `JDK ${release} release from ${shownUrl(this.url)}`, toArchive),
     }).then(archive => {
       if (archive === undefined) {
         throw new FabrError(`JDK ${release} is not published for ${target}`).withHelp(
           "`fabr ls @jdk` lists the releases published for the target platform"
         );
       }
-      return { url: archive.url, expected: { algorithm: "sha256", encoding: "hex", value: archive.sha256 } };
+      return { url: SecureString.of(archive.url), expected: { algorithm: "sha256", encoding: "hex", value: archive.sha256 } };
     });
   }
 
@@ -164,15 +171,15 @@ export class JdkDistribution extends Distribution<JdkVersion, JdkConstraint> {
   /** List the releases from page `page` on, after `listed`; throws past {@link MAX_PAGES}. */
   private releasePages(query: string, revalidate: boolean, page: number, listed: string[]): Computable<string[]> {
     if (page >= MAX_PAGES) {
-      throw new FabrError(`${this.url} lists more than ${MAX_PAGES * PAGE_SIZE} JDK releases`);
+      throw new FabrError(`${shownUrl(this.url)} lists more than ${MAX_PAGES * PAGE_SIZE} JDK releases`);
     }
-    const url = `${this.url}/v3/info/release_names?${query}&sort_order=DESC&page_size=${PAGE_SIZE}&page=${page}`;
+    const url = urlJoin(this.url, `v3/info/release_names?${query}&sort_order=DESC&page_size=${PAGE_SIZE}&page=${page}`);
     return fetchDocument(this.context, {
       url,
       file: "versions.json",
       tag: "jdk:releases:1",
       report: { resource: "version list", role: "index" },
-      convert: text => parseJson(text, `JDK release list from ${this.url}`, toReleases),
+      convert: text => parseJson(text, `JDK release list from ${shownUrl(this.url)}`, toReleases),
       options: { immutable: false, forceRevalidate: revalidate },
     }).then(releases => {
       /* End at a missing or empty page, not a short one: the API may list fewer than PAGE_SIZE on a page. */
@@ -184,7 +191,7 @@ export class JdkDistribution extends Distribution<JdkVersion, JdkConstraint> {
 }
 
 function createRepository(context: TargetContext): Computable<Repository> {
-  return context.getRequiredString("url").then(url => new JdkDistribution(context, url.replace(/\/+$/, "")));
+  return context.getRequiredString("url").then(url => new JdkDistribution(context, urlRoot(url)));
 }
 
 /** The implementation JAVA.fabr's `repository` declaration names. */

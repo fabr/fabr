@@ -22,6 +22,7 @@ import { GLOB_METACHAR, globCaptureRegex, globMatcher, globPrefixRegex, isGlob }
 import { PatternEdit, renderPatternEdit } from "../support/PatternEdit";
 import type { CommandList } from "../model/AST";
 import { FabrError } from "./Errors";
+import { SecureString } from "./SecureString";
 
 /** The kind of a {@link NamePart}. */
 export enum NamePartKind {
@@ -70,6 +71,36 @@ export interface NamePart {
    * `${FOO/a/b}`), applied to the value's text as a whole.
    */
   edit?: PatternEdit;
+  /**
+   * A literal's text as a SecureString, where any of it is masked; its
+   * unmasked text is `value`. Absent where none of it is.
+   */
+  secure?: SecureString;
+}
+
+/** @return a literal part's text, its masked runs kept. */
+function partText(part: NamePart): SecureString {
+  return part.secure ?? SecureString.of(part.value);
+}
+
+/** Make a literal part of `text`. */
+function literalPart(text: SecureString): NamePart {
+  const value = text.toUnmaskedString();
+  return text.isMasked() ? { kind: NamePartKind.Literal, value, secure: text } : { kind: NamePartKind.Literal, value };
+}
+
+/** @return a literal part's text from `from` up to `to`, as a part. */
+function sliceLiteral(part: NamePart, from: number, to?: number): NamePart {
+  return part.secure === undefined
+    ? { kind: NamePartKind.Literal, value: part.value.substring(from, to) }
+    : literalPart(part.secure.substring(from, to ?? part.value.length));
+}
+
+/** @return two literal parts joined into one. */
+function joinLiterals(first: NamePart, second: NamePart): NamePart {
+  return first.secure === undefined && second.secure === undefined
+    ? { kind: NamePartKind.Literal, value: first.value + second.value }
+    : literalPart(partText(first).concat(partText(second)));
 }
 
 /** The separator between a name's path components: `/`, on every platform. */
@@ -173,13 +204,19 @@ export class Name {
     }
     const parts = this.parts.slice(0, -1);
     const last = this.parts[this.parts.length - 1];
-    const rest = last.value.slice(0, -1);
-    return new Name(rest === "" ? parts : [...parts, { ...last, value: rest }], this.constraints, this.renameTo);
+    const rest =
+      last.kind === NamePartKind.Literal ? sliceLiteral(last, 0, last.value.length - 1) : { ...last, value: last.value.slice(0, -1) };
+    return new Name(rest.value === "" ? parts : [...parts, rest], this.constraints, this.renameTo);
   }
 
   /** Make a name of one literal part, `str`. */
   static fromLiteral(str: string): Name {
     return new Name([{ kind: NamePartKind.Literal, value: str }]);
+  }
+
+  /** Make a name of one literal part, `text`, its masked runs kept. */
+  static fromSecureString(text: SecureString): Name {
+    return new Name([literalPart(text)]);
   }
 
   /**
@@ -422,14 +459,16 @@ export class Name {
       }
       /* Each separator inside a literal ends the component in progress; the
        * pieces between them are the literal text of their components. */
+      let from = 0;
       part.value.split(SEPARATOR).forEach((text, index) => {
         if (index > 0) {
           result.push(new Name(current));
           current = [];
         }
         if (text !== "") {
-          current.push({ kind: NamePartKind.Literal, value: text });
+          current.push(sliceLiteral(part, from, from + text.length));
         }
+        from += text.length + 1;
       });
     }
     result.push(new Name(current));
@@ -457,19 +496,22 @@ export class Name {
    * literal head. Used to rejoin a reference split by a `<...>` (`pkg` +
    * `:build/*.js`). The result carries no constraints or rename target (the
    * caller attaches them), and `other`'s override marker, since it ends the
-   * name.
+   * name. A string is appended as a literal (`url.concat("/v2")`).
    */
-  public concat(other: Name): Name {
+  public concat(other: Name | string): Name {
+    const tail = typeof other === "string" ? Name.fromLiteral(other) : other;
     const merged: NamePart[] = [];
-    for (const part of [...this.parts, ...other.parts]) {
+    for (const part of [...this.parts, ...tail.parts]) {
       const last = merged[merged.length - 1];
-      if (last && last.kind === part.kind && part.kind !== NamePartKind.VarSubst) {
+      if (last && last.kind === NamePartKind.Literal && part.kind === NamePartKind.Literal) {
+        merged[merged.length - 1] = joinLiterals(last, part);
+      } else if (last && last.kind === part.kind && part.kind !== NamePartKind.VarSubst) {
         last.value += part.value;
       } else {
         merged.push({ ...part });
       }
     }
-    return new Name(merged, [], undefined, other.marked);
+    return new Name(merged, [], undefined, tail.marked);
   }
 
   public hasConstraints(): boolean {
@@ -528,13 +570,13 @@ export class Name {
    * keyed by the part objects {@link getSubstitutions} returned, so a variable
    * `X` and a command written `X` are different keys.
    */
-  public substitute(resolved: ReadonlyMap<NamePart, string>): Name {
+  public substitute(resolved: ReadonlyMap<NamePart, SecureString>): Name {
     /* Merge adjacent literals only: two adjacent back-references (`$1$2`)
      * merged would read as `$12`. */
     const parts = this.parts.reduce<NamePart[]>((rest, part) => {
-      const newPart = isSubstituted(part) ? { kind: NamePartKind.Literal, value: resolved.get(part)! } : part;
+      const newPart = isSubstituted(part) ? literalPart(resolved.get(part)!) : part;
       if (rest.length > 0 && newPart.kind === NamePartKind.Literal && rest[rest.length - 1].kind === NamePartKind.Literal) {
-        rest[rest.length - 1] = { kind: NamePartKind.Literal, value: rest[rest.length - 1].value + newPart.value };
+        rest[rest.length - 1] = joinLiterals(rest[rest.length - 1], newPart);
       } else {
         rest.push(newPart);
       }
@@ -566,8 +608,8 @@ export class Name {
     const [head, ...parts] = this.parts;
     if (head.kind === NamePartKind.Literal && head.value.startsWith(prefix)) {
       const length = head.value[prefix.length] === NAME_COMPONENT_SEPARATOR ? prefix.length + 1 : prefix.length;
-      const value = head.value.substring(length);
-      return new Name(value === "" ? [...parts] : [{ kind: NamePartKind.Literal, value }, ...parts]);
+      const tail = sliceLiteral(head, length);
+      return new Name(tail.value === "" ? [...parts] : [tail, ...parts]);
     }
     return new Name([head, ...parts]);
   }
@@ -591,9 +633,9 @@ export class Name {
       }
       if (parts.length === 0 && start > offset) {
         if (part.kind !== NamePartKind.Literal) {
-          throw new FabrError(`internal: '${this.toString()}' cannot be split inside a pattern (at offset ${start})`);
+          throw new FabrError(`internal: '${this.toDisplayString()}' cannot be split inside a pattern (at offset ${start})`);
         }
-        parts.push({ kind: NamePartKind.Literal, value: part.value.substring(start - offset) });
+        parts.push(sliceLiteral(part, start - offset));
       } else {
         parts.push(part);
       }
@@ -612,8 +654,11 @@ export class Name {
   public withPrefix(prefix: string): Name {
     if (this.parts[0].kind === NamePartKind.Literal) {
       const [head, ...rest] = this.parts;
-      const value = prefix + head.value.replace(/^\.\//, "");
-      return new Name([{ kind: NamePartKind.Literal, value }, ...rest], this.constraints, this.renameTo, this.marked);
+      const joined = joinLiterals(
+        { kind: NamePartKind.Literal, value: prefix },
+        sliceLiteral(head, head.value.startsWith("./") ? 2 : 0)
+      );
+      return new Name([joined, ...rest], this.constraints, this.renameTo, this.marked);
     } else {
       return new Name([{ kind: NamePartKind.Literal, value: prefix }, ...this.parts], this.constraints, this.renameTo, this.marked);
     }
@@ -659,7 +704,7 @@ export class Name {
     if (!head.value.startsWith(prefix)) {
       return this;
     }
-    const rebased: NamePart = { kind: NamePartKind.Literal, value: head.value.substring(prefix.length) };
+    const rebased = sliceLiteral(head, prefix.length);
     return new Name([rebased, ...this.parts.slice(1)], this.constraints, this.renameTo, this.marked);
   }
 
@@ -708,7 +753,7 @@ export class Name {
         const constraints =
           part.constraints === undefined
             ? ""
-            : "<" + part.constraints.map(([key, value]) => `${key}=${value.toString()}`).join(", ") + ">";
+            : "<" + part.constraints.map(([key, value]) => `${key}=${value.toDisplayString()}`).join(", ") + ">";
         return "${" + part.value + constraints + (part.edit === undefined ? "" : renderPatternEdit(part.edit)) + "}";
       }
       case NamePartKind.Backref:
@@ -733,17 +778,51 @@ export class Name {
     return result;
   }
 
+  /** @return true if any of this name's text came from a masked source,
+   * otherwise false. */
+  public isMasked(): boolean {
+    return (
+      this.parts.some(part => part.secure !== undefined) ||
+      this.constraints.some(([, value]) => value.isMasked()) ||
+      this.renameTo?.isMasked() === true
+    );
+  }
+
   /**
-   * @return this name as written: literal parts verbatim, glob metacharacters
-   * as they are, facets appended. This is the name's text: what it means as a
-   * value (a STRING property, a command argument, a constraint value, a
-   * destination coordinate), and what a diagnostic shows. It does not parse
-   * back to the same name: a literal containing metacharacters (a quoted
-   * `'!(a)'`) renders as the syntax it is not. Use {@link toGlobString} for a
-   * matcher and for identity (a cache key).
+   * @return this name as written, its masked runs kept: literal parts
+   * verbatim, glob metacharacters as they are, facets appended. This is the
+   * name's text as a value (a STRING property, a command argument, a constraint
+   * value, a destination coordinate). It does not parse back to the same name:
+   * a literal containing metacharacters (a quoted `'!(a)'`) renders as the
+   * syntax it is not. Use {@link toGlobString} for a matcher and for identity
+   * (a cache key).
    */
-  public toString(): string {
-    return this.withFacets(this.renderParts(false), name => name.toString());
+  public toString(): SecureString {
+    let text = SecureString.join(
+      this.parts.map(part => (part.kind === NamePartKind.Literal ? partText(part) : SecureString.of(Name.renderPart(part, false)))),
+      ""
+    );
+    if (this.constraints.length > 0) {
+      text = text.concat(
+        "<",
+        SecureString.join(
+          this.constraints.map(([key, value]) => SecureString.of(`${key}=`).concat(value.toString())),
+          ", "
+        ),
+        ">"
+      );
+    }
+    return this.renameTo === undefined ? text : text.concat(" -> ", this.renameTo.toString());
+  }
+
+  /** @return this name as output shows it: as {@link toString}, each masked run as the text given for it (`${TOKEN}`). */
+  public toDisplayString(): string {
+    return this.isMasked() ? this.toString().toDisplayString() : this.toUnmaskedString();
+  }
+
+  /** @return this name's text as {@link toString}, its masked runs as their values: for where it is used, never for output. */
+  public toUnmaskedString(): string {
+    return this.withFacets(this.renderParts(false), name => name.toUnmaskedString());
   }
 
   /**
@@ -790,7 +869,7 @@ export function makeRewrite(names: Name[]): RewriteFn {
     if (renameTo) {
       return name.makeRenamer(renameTo);
     }
-    const constant = name.toString();
+    const constant = name.toUnmaskedString();
     return () => constant;
   });
   return (path: string) => {

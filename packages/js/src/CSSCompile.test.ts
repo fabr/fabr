@@ -351,7 +351,9 @@ describe("cssImportRewrites", () => {
     /* The point of rules over resolved pairs: this document is action key
      * material, and per-file entries would rebuild the package's whole compile
      * whenever any stylesheet appeared. */
-    expect(cssImportRewrites().map(String)).to.deep.equal(cssImportRewrites().map(String));
+    expect(cssImportRewrites().map(name => name.toUnmaskedString())).to.deep.equal(
+      cssImportRewrites().map(name => name.toUnmaskedString())
+    );
     expect(cssImportRewrites()).to.have.lengthOf(5);
   });
 });

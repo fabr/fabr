@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { SecureString } from "../core/SecureString";
 import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
@@ -75,7 +76,7 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
   constructor(
     protected readonly context: TargetContext,
     /** The URL the distribution is published under. */
-    protected readonly url: string
+    protected readonly url: SecureString
   ) {}
 
   protected get name(): string {
@@ -109,7 +110,7 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(
-        `'${name.toString()}' names a ${this.title} release, which is looked up, not resolved, so an override marker means nothing on it`
+        `'${name.toDisplayString()}' names a ${this.title} release, which is looked up, not resolved, so an override marker means nothing on it`
       ).withHelp("write the reference without the marker");
     }
     const written = name.toBaseString();
@@ -120,7 +121,11 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
     const slash = written.indexOf("/");
     const boundary = colon === -1 ? slash : slash === -1 ? colon : Math.min(colon, slash);
     if (boundary === -1) {
-      return new RepositoryRef(this, { name: this.packageName, versionConstraint: written, renameTo: name.getRenameTo()?.toString() });
+      return new RepositoryRef(this, {
+        name: this.packageName,
+        versionConstraint: written,
+        renameTo: name.getRenameTo()?.toUnmaskedString(),
+      });
     }
     const version = written.substring(0, boundary);
     if (version.endsWith("?") || version.endsWith("!")) {
@@ -138,7 +143,7 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
   public children(): Computable<Map<string, Reference>> {
     return this.context
       .getGlobalString(TARGET)
-      .then(target => this.publishedVersions(target, true))
+      .then(target => this.publishedVersions(target.toUnmaskedString(), true))
       .then(
         versions =>
           new Map(
@@ -159,11 +164,12 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
    * release as a program.
    */
   public resolve(reference: RepositoryRef): Computable<ResolvedNode> {
-    return this.context.getGlobalString(TARGET).then(target =>
-      this.select(reference.versionConstraint, target).then(selected => {
+    return this.context.getGlobalString(TARGET).then(written => {
+      const target = written.toUnmaskedString();
+      return this.select(reference.versionConstraint, target).then(selected => {
         const version = this.domain.versionToString(selected);
         return this.archive(version, target).then(source => {
-          const key = source.url;
+          const key = source.url.toUnmaskedString();
           const release = (): Computable<FileSet> =>
             fetchArchive(this.context, {
               key,
@@ -179,8 +185,8 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
               : { key, files: pkg };
           return new ResolvedNode(content, this.packageName, version);
         });
-      })
-    );
+      });
+    });
   }
 
   /** Make a release runnable (see {@link releaseRunnable}). */

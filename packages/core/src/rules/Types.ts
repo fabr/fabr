@@ -21,6 +21,7 @@ import type { Credential } from "../core/Credential";
 import { Computable } from "../core/Computable";
 import type { BuildAction } from "../core/BuildAction";
 import { FileSource } from "../core/FileSet";
+import { SecureString } from "../core/SecureString";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
 import type { Namespace } from "../core/NamespaceRef";
@@ -55,7 +56,8 @@ export enum PropertyType {
  * a `Flag` included (read back with `getFlags`). The inputs are not themselves
  * cache-key material: only the actions the sub-target's rule yields are keyed.
  */
-export type SubTargetInput = string | string[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
+export type SubTargetInput =
+  string | string[] | SecureString | SecureString[] | Name | Name[] | FileSource | FileSource[] | PropertyMap | CommandValue;
 /** A sub-target's inputs, by property name. */
 export type SubTargetInputs = Record<string, SubTargetInput>;
 
@@ -93,7 +95,7 @@ export type RuleResult = FileSource | FileSource[] | BuildAction;
  */
 export type RepositoryProvider = (
   context: TargetContext,
-  url: string | undefined,
+  url: SecureString | undefined,
   credential: Credential | undefined,
   requirements: ResolvedRequirements
 ) => Computable<Repository | Namespace | FileSource>;

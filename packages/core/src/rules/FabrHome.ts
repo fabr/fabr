@@ -229,7 +229,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
     if (name.getMarker() !== undefined) {
       throw new FabrError(
-        `'${name.toString()}' is installed with fabr, not resolved, so an override marker means nothing on it`
+        `'${name.toDisplayString()}' is installed with fabr, not resolved, so an override marker means nothing on it`
       ).withHelp("write the reference without the marker");
     }
     const literal = name.getLiteralPrefix();
@@ -238,7 +238,11 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
       return new PartialRepositoryRef(this, literal);
     }
     return colon === -1
-      ? new RepositoryRef(this, { name: name.toBaseString(), versionConstraint: undefined, renameTo: name.getRenameTo()?.toString() })
+      ? new RepositoryRef(this, {
+          name: name.toBaseString(),
+          versionConstraint: undefined,
+          renameTo: name.getRenameTo()?.toUnmaskedString(),
+        })
       : new RepositoryRef(this, { name: literal.substring(0, colon), versionConstraint: undefined }).find(name.substring(colon + 1));
   }
 
@@ -270,7 +274,7 @@ export class FabrHomeRepository implements Repository, RepositoryLookup {
   }
 
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`fabr's installation is not a publish destination (cannot sync to '${name.toString()}')`);
+    throw new FabrError(`fabr's installation is not a publish destination (cannot sync to '${name.toDisplayString()}')`);
   }
 
   /** Resolve `reference` to the package it names, as installed, with its dependencies. Rejects where it is not installed. */

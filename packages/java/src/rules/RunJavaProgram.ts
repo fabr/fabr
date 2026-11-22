@@ -32,6 +32,7 @@ import {
   FabrError,
   FileSet,
   PackageFileSet,
+  RunnableArgument,
   RunnableFileSet,
   TargetContext,
   toEnvironment,
@@ -84,7 +85,7 @@ export default defineRule({
         context.getMap("env").then(toEnvironment),
       ] as const,
       (mainClass, args, jvmArgs, defines, env) =>
-        runnableProgram(context, inputs, mainClass?.toString(), {
+        runnableProgram(context, inputs, mainClass?.toString().toUnmaskedString(), {
           args: args?.getValues() ?? [],
           jvmArgs: [...defines, ...(jvmArgs?.getValues() ?? [])],
         }).then(runnable => runnable.withEnvironment(env))
@@ -106,7 +107,7 @@ function runnableProgram(
   context: TargetContext,
   { srcs, deps, classpath, agents }: ProgramInputs,
   stated: string | undefined,
-  options: { args: string[]; jvmArgs: string[] }
+  options: { args: readonly RunnableArgument[]; jvmArgs: readonly RunnableArgument[] }
 ): Computable<RunnableFileSet> {
   const sources = FileSet.unionAll(...srcs);
   const classes = sources.isEmpty()

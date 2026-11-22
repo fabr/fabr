@@ -285,7 +285,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
       notes,
       help:
         shadowed && rest.length === 0
-          ? [`'${cause.name}' names this target, not the path '${cause.name}' — write './${written}' for the path`]
+          ? [`'${cause.name}' names this target, not the path '${cause.name}' — write './${written.toDisplayString()}' for the path`]
           : undefined,
     };
   }
@@ -299,7 +299,7 @@ export class DiagnosticErrorFormatter implements ErrorFormatter {
     const overrides = shownConstraints(cause.constraints, this.ambientConstraintKeys).map(([key, value]) => `${key}=${value}`);
     const suffix = overrides.length > 0 ? ` (${overrides.join(", ")})` : "";
     return {
-      message: `Cannot ${verb} '${cause.target.name}': no rule matches target type '${cause.target.type}'${suffix}`,
+      message: `Cannot ${verb} '${cause.target.name.toDisplayString()}': no rule matches target type '${cause.target.type}'${suffix}`,
       loc: declPosn(cause.target),
       help: noRuleHelp(cause),
     };
@@ -384,7 +384,9 @@ function noRuleHelp(cause: NoRuleFoundError): string[] | undefined {
     const operations = [...new Set(cause.candidates.map(keys => keys.find(isOperation)?.pattern ?? "*"))].sort();
     const preferred = preferredOperation(operations);
     const supported = operations.map(operation => `'${operation}'`).join(", ");
-    return preferred ? [`'${type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name}'`] : undefined;
+    return preferred
+      ? [`'${type}' targets support ${supported} — try 'fabr ${preferred} ${cause.target.name.toDisplayString()}'`]
+      : undefined;
   }
   const operation = cause.candidates.flat().find(isOperation)?.value ?? operationOf(cause.constraints);
   const name = (key: IJudgedKey): string => (key.own ? `target.${key.key}` : key.key);
@@ -436,7 +438,7 @@ function trailKey(trail: IDiagnosticNote[]): string {
 
 /** @return the name a failure is reported under: its target's, after the names of the target of a rule's block it is and those that one is built for ("jar for shop"). */
 function failedName(err: DependencyFailedError): string {
-  return [...(err.subtargetNames ?? []), err.target.name].join(" for ");
+  return [...(err.subtargetNames ?? []), declName(err.target)].join(" for ");
 }
 
 /**
@@ -511,7 +513,7 @@ export function cycleErrorOf(labels: ReadonlyArray<Label>): Error {
     ...new Map([...labels.slice(start), ...labels.slice(0, start)].flatMap(siteOf).map(site => [site.value, site])).values(),
   ];
   const circular = new CircularDependencyError(
-    entered?.name ?? sites[0]?.value.value.toString() ?? "a computation",
+    entered?.name ?? sites[0]?.value.value.toDisplayString() ?? "a computation",
     sites.reverse(),
     entered?.target
   );

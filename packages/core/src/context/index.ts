@@ -23,7 +23,7 @@
 export { BuildContext } from "./BuildContext";
 export type { IRepositoryMember } from "./BuildContext";
 export { ResolvedTarget } from "./ResolvedTarget";
-export { mapEntryError, mapEntryOrigin, PropertyMap, PropertyMapValue, toEnvironment } from "./PropertyMap";
+export { isWords, mapEntryError, mapEntryOrigin, PropertyMap, PropertyMapValue, toEnvironment } from "./PropertyMap";
 export { TargetContext } from "./TargetContext";
 export { CommandValue, MaterializedCommandList, MaterializedCommandPipeline, MaterializedCommandStage } from "./Commands";
 export { collectLists, PERMISSIVE_RESOLUTION, ResolutionOptions } from "./CollectionPoint";

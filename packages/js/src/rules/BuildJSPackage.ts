@@ -108,8 +108,8 @@ export default defineRule({
    */
   requirements(context: TargetContext): Computable<ResolutionSpec<PackageRequirements>> {
     return context.getProperty("version").then(version => {
-      assertPackageVersion(version?.toString());
-      const written = version?.toString();
+      const written = version?.toString().toUnmaskedString();
+      assertPackageVersion(written);
       const builds = { package: context.name, format: NPM_FORMAT, ...(written === undefined ? {} : { version: written }) };
       return {
         build: {
@@ -178,7 +178,7 @@ function describePackage(
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
     (target, version, metadata) => {
-      const jsTarget = parseJSTarget(target);
+      const jsTarget = parseJSTarget(target.toUnmaskedString());
       const constraints =
         jsTarget.module === "dual" ? Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: "esm" }) }) : undefined;
       return compileContents(context, compileSources, compileDeps, { packageName: context.name, constraints, describe: true }).then(
@@ -186,7 +186,7 @@ function describePackage(
           const manifest = createPackageJson({
             files: conventionalEmit(compileSources, jsTarget),
             name: context.name,
-            version: version?.toString(),
+            version: version?.toString().toUnmaskedString(),
             declared: [],
             provided: [],
             optionalProvided: [],
@@ -327,8 +327,8 @@ function buildJsPackage(
   return Computable.forAll(
     [context.getGlobalString("JS_TARGET"), context.getProperty("version"), context.getMap("metadata")],
     (target, version, metadata) => {
-      const jsTarget = parseJSTarget(target);
-
+      const jsTarget = parseJSTarget(target.toUnmaskedString());
+      const written = version?.toString().toUnmaskedString();
       return Computable.resolve(gathered).then(
         ({
           srcs: srcSets,
@@ -412,7 +412,7 @@ function buildJsPackage(
                     files: shebanged,
                     seed,
                     name: context.name,
-                    version: version?.toString(),
+                    version: written,
                     declared,
                     provided: providedDeclared,
                     optionalProvided: optionalDeclared,
@@ -424,7 +424,7 @@ function buildJsPackage(
                     rewrites,
                   });
                   const assembled = FileSet.unionAll(shebanged, new FileSet(new Map([["package.json", packageJson]])));
-                  return packageOf(context, assembled, version?.toString(), edges);
+                  return packageOf(context, assembled, written, edges);
                 });
               };
 

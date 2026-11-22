@@ -35,8 +35,11 @@ import {
   FabrError,
   HttpResponse,
   parseJson,
+  SecureString,
   sendRequest,
+  shownUrl,
   toJsonObject,
+  urlResolved,
   UserInteraction,
 } from "@fabr-build/core";
 
@@ -215,8 +218,8 @@ export class NPMAuth {
    * With no `interaction`, answering a challenge fails, with help naming the
    * credentials that publish without one.
    */
-  public otpProvider(registryUrl: string, interaction: UserInteraction | undefined): OtpProvider {
-    const session = this.sessionFor(registryUrl);
+  public otpProvider(registryUrl: SecureString, interaction: UserInteraction | undefined): OtpProvider {
+    const session = this.sessionFor(registryUrl.toUnmaskedString());
     return (challenge, rejected) => session.obtain(() => this.acquireSecondFactor(challenge, registryUrl, interaction), rejected);
   }
 
@@ -238,26 +241,26 @@ export class NPMAuth {
    */
   private acquireSecondFactor(
     challenge: OtpChallenge,
-    registryUrl: string,
+    registryUrl: SecureString,
     interaction: UserInteraction | undefined
   ): Computable<AcquiredOtp> {
     if (!interaction) {
       throw new FabrError(
-        `publishing to ${registryUrl} requires a second factor (2FA), and this run has no terminal to authenticate on`
+        `publishing to ${shownUrl(registryUrl)} requires a second factor (2FA), and this run has no terminal to authenticate on`
       ).withHelp(
         `re-run from an interactive terminal to authenticate with your passkey or one-time password, ` +
           `or supply a credential that publishes unattended (a granular access token in .npmrc, or trusted publishing from CI)`
       );
     }
     if (challenge.authUrl && challenge.doneUrl) {
-      const doneUrl = replaceDoneUrlOrigin(challenge.doneUrl, registryUrl);
+      const doneUrl = urlResolved(registryUrl, replaceDoneUrlOrigin(challenge.doneUrl, registryUrl.toUnmaskedString()));
       return interaction
-        .openUrl(challenge.authUrl, `Authenticate to ${registryUrl} in your browser`)
-        .then(() => pollWebAuthToken(doneUrl, this.getHeadersFor(registryUrl)))
+        .openUrl(challenge.authUrl, `Authenticate to ${shownUrl(registryUrl)} in your browser`)
+        .then(() => pollWebAuthToken(doneUrl, this.getHeadersFor(registryUrl.toUnmaskedString())))
         .then(password => ({ password, reusable: false }));
     }
     return interaction
-      .prompt(`Publishing to ${registryUrl} requires a one-time password.\nEnter OTP: `)
+      .prompt(`Publishing to ${shownUrl(registryUrl)} requires a one-time password.\nEnter OTP: `)
       .then(otp => ({ password: otp.trim(), reusable: true }));
   }
 }
@@ -380,7 +383,7 @@ function toWebAuthToken(json: unknown): string {
  * status, or where the next poll would pass `timeoutMs`.
  */
 export function pollWebAuthToken(
-  doneUrl: string,
+  doneUrl: SecureString,
   authHeaders: Record<string, string>,
   timeoutMs: number = WEB_AUTH_TIMEOUT_MS
 ): Computable<string> {
@@ -398,7 +401,9 @@ export function pollWebAuthToken(
         }
         return delay(wait).then(poll);
       }
-      throw new FabrError(`browser authentication at ${doneUrl} failed (${response.statusCode}): ${response.body.toString("utf8")}`);
+      throw new FabrError(
+        `browser authentication at ${shownUrl(doneUrl)} failed (${response.statusCode}): ${response.body.toString("utf8")}`
+      );
     });
   return poll();
 }

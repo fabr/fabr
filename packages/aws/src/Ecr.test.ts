@@ -20,7 +20,7 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { Computable, Name, NamespaceRef, PartialRepositoryRef, parseName, TargetContext } from "@fabr-build/core";
+import { Computable, Name, NamespaceRef, parseName, PartialRepositoryRef, SecureString, TargetContext } from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
 import { EcrSignIn, tokenRequest, toEcrToken } from "./Ecr";
 import { RequestSigner, requestUrl } from "./Signing";
@@ -34,8 +34,8 @@ const TYPES = new Map([
 
 /* A registry that vends a reference written as it is asked for, standing in for the container plugin's. */
 const STUB_REGISTRY = {
-  getRepositoryRef: (name: { toString(): string }) => stubRef(name.toString()),
-  getRepositoryPublishRef: (name: { toString(): string }) => stubRef(name.toString()),
+  getRepositoryRef: (name: Name) => stubRef(name.toUnmaskedString()),
+  getRepositoryPublishRef: (name: Name) => stubRef(name.toUnmaskedString()),
 };
 
 function stubRef(
@@ -66,8 +66,10 @@ function refOf(account: AwsAccount, name: string): Computable<unknown> {
 
 describe("ECR's token request", () => {
   it("goes to ECR's API in the region, or to the endpoint", () => {
-    expect(requestUrl(tokenRequest("eu-west-2"))).to.equal("https://api.ecr.eu-west-2.amazonaws.com/");
-    expect(requestUrl(tokenRequest("us-east-1", new URL("http://localhost:4566")))).to.equal("http://localhost:4566/");
+    expect(requestUrl(tokenRequest("eu-west-2")).toUnmaskedString()).to.equal("https://api.ecr.eu-west-2.amazonaws.com/");
+    expect(requestUrl(tokenRequest("us-east-1", SecureString.of("http://localhost:4566"))).toUnmaskedString()).to.equal(
+      "http://localhost:4566/"
+    );
     expect(tokenRequest("us-east-1").headers?.get("x-amz-target")).to.equal(
       "AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken"
     );
@@ -88,7 +90,7 @@ describe("ECR's token request", () => {
 
 describe("signing in to ECR", () => {
   let server: http.Server;
-  let endpoint: URL;
+  let endpoint: SecureString;
   /* The tokens handed out, and what each request for one was signed with. */
   const signed: string[] = [];
   /* How many token requests to refuse before answering. */
@@ -118,7 +120,7 @@ describe("signing in to ECR", () => {
       });
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
-    endpoint = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    endpoint = SecureString.of(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
   });
 
   afterEach(async () => {
@@ -152,8 +154,8 @@ describe("signing in to ECR", () => {
     const context = {
       name: "@aws",
       hasRepositoryType: () => true,
-      makeRepository: (type: string, member: { name: string; url?: string }) => {
-        made.push({ type, name: member.name, url: member.url });
+      makeRepository: (type: string, member: { name: string; url?: Name }) => {
+        made.push({ type, name: member.name, url: member.url?.toUnmaskedString() });
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
@@ -168,7 +170,7 @@ describe("signing in to ECR", () => {
     });
     await refOf(account, "ecr");
     await refOf(account, "ecr:app:1");
-    expect(made).to.deep.equal([{ type: "oci_repository", name: "ecr", url: endpoint.href }]);
+    expect(made).to.deep.equal([{ type: "oci_repository", name: "ecr", url: endpoint.toUnmaskedString() }]);
     expect(signed).to.have.lengthOf(0);
   });
 
@@ -177,8 +179,8 @@ describe("signing in to ECR", () => {
     const context = {
       name: "@aws",
       hasRepositoryType: () => true,
-      makeRepository: (_type: string, member: { url?: string }) => {
-        made.push(member.url);
+      makeRepository: (_type: string, member: { url?: Name }) => {
+        made.push(member.url?.toUnmaskedString());
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;
@@ -242,8 +244,8 @@ describe("an account's ECR registry", () => {
     const context = {
       name: "@aws",
       hasRepositoryType: () => true,
-      makeRepository: (_type: string, member: { name: string; url?: string }) => {
-        made.push({ name: member.name, url: member.url });
+      makeRepository: (_type: string, member: { name: string; url?: Name }) => {
+        made.push({ name: member.name, url: member.url?.toUnmaskedString() });
         return Computable.resolve(STUB_REGISTRY);
       },
     } as unknown as TargetContext;

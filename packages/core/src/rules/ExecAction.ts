@@ -21,7 +21,7 @@ import { ActionContext } from "../core/BuildCache";
 import { getResultFileSet, writeFileSet } from "../core/Staging";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
-import { execute, findExecutable, ITaskReport } from "../support/Execute";
+import { execute, findCommand, foundStage, ITaskReport } from "../support/Execute";
 import {
   BuildAction,
   BuildResult,
@@ -58,7 +58,7 @@ function runExec(action: BuildAction, ctx: ActionContext, report: ITaskReport): 
   return (
     ctx
       .admit(report, () => writeFileSet(ctx.workDir, files))
-      .then(() => execute(ctx.processLimit, findExecutable(argv[0], ctx.workDir), argv.slice(1), ctx.workDir, {}, report))
+      .then(() => execute(ctx.processLimit, findCommand(argv[0], ctx.workDir), argv.slice(1), ctx.workDir, {}, report))
       /* Collecting — reading and hashing what the tool wrote — is admitted as
        * its own unit, once the execution's slot has been given back. */
       .then(() => ctx.admit(report, () => getResultFileSet(ctx.workDir, outputs)))
@@ -75,7 +75,7 @@ function stageExec(action: BuildAction, dir: string): Computable<IStagedStep> {
   const argv = toArgv(commandLineConfig(action, "argv"));
   return writeFileSet(dir, FileSet.unionAll(fileSetInput(action, "files"), configFiles(action))).then(() => ({
     cwd: ".",
-    commands: [{ stages: [{ argv: [findExecutable(argv[0], dir), ...argv.slice(1)] }] }],
+    commands: [{ stages: [foundStage({ argv }, dir)] }],
     env: new Map(),
   }));
 }

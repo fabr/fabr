@@ -47,7 +47,9 @@ export default defineRule({
     };
   },
   evaluateMaterialized(context, { pkg, agents }) {
-    return context.getProperty("main_class").then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString()));
+    return context
+      .getProperty("main_class")
+      .then(mainClass => runnableJar(context, pkg, agents, mainClass?.toString().toUnmaskedString()));
   },
 });
 

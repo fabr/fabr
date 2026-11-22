@@ -17,7 +17,7 @@
 import { expect } from "chai";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
-import { Computable, HttpResponse } from "@fabr-build/core";
+import { Computable, HttpResponse, SecureString } from "@fabr-build/core";
 import { AcquiredOtp, NPMAuth, otpChallengeOf, OtpSession, parseNpmrc, pollWebAuthToken, replaceDoneUrlOrigin } from "./NPMAuth";
 
 /** Base64, for building `_auth`/`_password` fixtures. */
@@ -216,7 +216,7 @@ describe("pollWebAuthToken", () => {
       index === 0 ? { status: 202, headers: { "retry-after": "0.01" }, body: "{}" } : { status: 200, body: `{"token":"webtok"}` }
     );
     try {
-      expect(await pollWebAuthToken(`${server.url}/-/v1/done`, { authorization: "Bearer t" })).to.equal("webtok");
+      expect(await pollWebAuthToken(SecureString.of(`${server.url}/-/v1/done`), { authorization: "Bearer t" })).to.equal("webtok");
       expect(server.seen.length).to.equal(2);
       expect(server.seen[0].headers.authorization).to.equal("Bearer t");
     } finally {
@@ -228,7 +228,7 @@ describe("pollWebAuthToken", () => {
     const server = await scriptedServer(() => ({ status: 202, body: "{}" }));
     try {
       let thrown: unknown;
-      await pollWebAuthToken(`${server.url}/-/v1/done`, {}, 5).catch(err => (thrown = err));
+      await pollWebAuthToken(SecureString.of(`${server.url}/-/v1/done`), {}, 5).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/not completed within/);
     } finally {
       server.close();
@@ -239,7 +239,7 @@ describe("pollWebAuthToken", () => {
     const server = await scriptedServer(() => ({ status: 200, body: "{}" }));
     try {
       let thrown: unknown;
-      await pollWebAuthToken(`${server.url}/-/v1/done`, {}).catch(err => (thrown = err));
+      await pollWebAuthToken(SecureString.of(`${server.url}/-/v1/done`), {}).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/web-auth completion response/);
     } finally {
       server.close();
@@ -250,7 +250,7 @@ describe("pollWebAuthToken", () => {
     const server = await scriptedServer(() => ({ status: 410, body: `{"error":"gone"}` }));
     try {
       let thrown: unknown;
-      await pollWebAuthToken(`${server.url}/-/v1/done`, {}).catch(err => (thrown = err));
+      await pollWebAuthToken(SecureString.of(`${server.url}/-/v1/done`), {}).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/failed \(410\)/);
     } finally {
       server.close();

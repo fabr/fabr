@@ -269,10 +269,10 @@ export class LanguageServer {
               : LENSES.filter(
                   ({ operation, served: whereServed }) =>
                     model.getOperations(target.type).includes(operation) &&
-                    (!whereServed || this.isServed(served({ name: target.name.toString(), operation })))
+                    (!whereServed || this.isServed(served({ name: target.name.toUnmaskedString(), operation })))
                 ).map(({ operation, title, command }) => ({
                   range,
-                  command: { title, command, arguments: [served({ name: target.name.toString(), operation })] },
+                  command: { title, command, arguments: [served({ name: target.name.toUnmaskedString(), operation })] },
                 }));
           });
       }

@@ -213,14 +213,14 @@ export class RepositoryGroup<V, C> implements Repository, RepositoryReader<V, C>
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
     const member = this.memberFor(name.getLiteralPathPrefix());
     if (!member) {
-      throw new FabrError(`${this.groupName} has no route serving publish coordinate '${name.toString()}'`).withHelp(
+      throw new FabrError(`${this.groupName} has no route serving publish coordinate '${name.toDisplayString()}'`).withHelp(
         `its routes are: ${this.routes.map(route => routeKeyText(route.key)).join(", ")}`
       );
     }
     const destination = member as Partial<Repository>;
     if (typeof destination.getRepositoryPublishRef !== "function") {
       throw new FabrError(
-        `publish coordinate '${name.toString()}' routes to a member of ${this.groupName} that is not a publish destination`
+        `publish coordinate '${name.toDisplayString()}' routes to a member of ${this.groupName} that is not a publish destination`
       ).withHelp("a content route serves declared files and cannot be published to — route the name to a registry to publish it");
     }
     return destination.getRepositoryPublishRef(name);

@@ -27,6 +27,7 @@ import {
   packToZip,
   RefSource,
   RepositoryRef,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import TestJarPackage from "./rules/TestJarPackage";
@@ -204,16 +205,23 @@ describe("manifests", () => {
 
 describe("toDefineOptions", () => {
   it("makes a -D option per entry in name order, a value's words joined by a space", () => {
+    const words = (...text: string[]): SecureString[] => text.map(word => SecureString.of(word));
     const defines = new Map([
-      ["spring.profiles.active", ["dev"]],
-      ["app.banner", ["hello", "world"]],
-      ["flag", []],
+      ["spring.profiles.active", words("dev")],
+      ["app.banner", words("hello", "world")],
+      ["flag", words()],
     ]);
-    expect(toDefineOptions(defines)).to.deep.equal(["-Dapp.banner=hello world", "-Dflag=", "-Dspring.profiles.active=dev"]);
+    expect(toDefineOptions(defines).map(option => option.toUnmaskedString())).to.deep.equal([
+      "-Dapp.banner=hello world",
+      "-Dflag=",
+      "-Dspring.profiles.active=dev",
+    ]);
   });
 
   it("refuses a name holding '=' and a nested map", () => {
-    expect(() => toDefineOptions(new Map([["a=b", ["c"]]]))).to.throw("'a=b' is not a valid system property name");
-    expect(() => toDefineOptions(new Map([["a", new Map([["b", ["c"]]])]]))).to.throw("system property 'a' must be a string");
+    expect(() => toDefineOptions(new Map([["a=b", [SecureString.of("c")]]]))).to.throw("'a=b' is not a valid system property name");
+    expect(() => toDefineOptions(new Map([["a", new Map([["b", [SecureString.of("c")]]])]]))).to.throw(
+      "system property 'a' must be a string"
+    );
   });
 });

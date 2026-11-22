@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { parseName } from "@fabr-build/core";
+import { parseName, SecureString } from "@fabr-build/core";
 import {
   bucketsRequest,
   listRequest,
@@ -61,28 +61,30 @@ describe("S3 requests", () => {
   const aws = { bucket: "acme-models", region: "eu-west-2" };
 
   it("names a bucket in the hostname, and its key in the path, encoded", () => {
-    expect(requestUrl(objectRequest(aws, "v3/a model (1).bin"))).to.equal(
+    expect(requestUrl(objectRequest(aws, "v3/a model (1).bin")).toUnmaskedString()).to.equal(
       "https://acme-models.s3.eu-west-2.amazonaws.com/v3/a%20model%20%281%29.bin"
     );
   });
 
   it("names a bucket with a '.' in the path, which S3's certificate would not match as a hostname", () => {
-    expect(requestUrl(objectRequest({ bucket: "acme.models", region: "us-east-1" }, "k"))).to.equal(
+    expect(requestUrl(objectRequest({ bucket: "acme.models", region: "us-east-1" }, "k")).toUnmaskedString()).to.equal(
       "https://s3.us-east-1.amazonaws.com/acme.models/k"
     );
   });
 
   it("addresses an endpoint by path", () => {
-    const endpoint = new URL("http://localhost:9000/store/");
-    expect(requestUrl(objectRequest({ ...aws, endpoint }, "v3/x"))).to.equal("http://localhost:9000/store/acme-models/v3/x");
-    expect(requestUrl(listRequest({ ...aws, endpoint }, "v3/", "t+1", "/"))).to.equal(
+    const endpoint = SecureString.of("http://localhost:9000/store/");
+    expect(requestUrl(objectRequest({ ...aws, endpoint }, "v3/x")).toUnmaskedString()).to.equal(
+      "http://localhost:9000/store/acme-models/v3/x"
+    );
+    expect(requestUrl(listRequest({ ...aws, endpoint }, "v3/", "t+1", "/")).toUnmaskedString()).to.equal(
       "http://localhost:9000/store/acme-models?continuation-token=t%2B1&delimiter=%2F&list-type=2&prefix=v3%2F"
     );
   });
 
   it("stores an object with the headers it is signed with", () => {
     const request = putRequest(aws, "v3/x", new Map([["content-type", "text/plain"]]));
-    expect([request.method, requestUrl(request), [...request.headers!]]).to.deep.equal([
+    expect([request.method, requestUrl(request).toUnmaskedString(), [...request.headers!]]).to.deep.equal([
       "PUT",
       "https://acme-models.s3.eu-west-2.amazonaws.com/v3/x",
       [["content-type", "text/plain"]],
@@ -90,19 +92,23 @@ describe("S3 requests", () => {
   });
 
   it("lists a bucket from its root", () => {
-    expect(requestUrl(listRequest(aws, ""))).to.equal("https://acme-models.s3.eu-west-2.amazonaws.com/?list-type=2&prefix=");
+    expect(requestUrl(listRequest(aws, "")).toUnmaskedString()).to.equal(
+      "https://acme-models.s3.eu-west-2.amazonaws.com/?list-type=2&prefix="
+    );
   });
 
   it("lists the account's buckets from the account's region, or the endpoint's root", () => {
-    expect(requestUrl(bucketsRequest("eu-west-2", undefined))).to.equal("https://s3.eu-west-2.amazonaws.com/?max-buckets=10000");
-    expect(requestUrl(bucketsRequest("us-east-1", new URL("http://localhost:4566"), "t"))).to.equal(
+    expect(requestUrl(bucketsRequest("eu-west-2", undefined)).toUnmaskedString()).to.equal(
+      "https://s3.eu-west-2.amazonaws.com/?max-buckets=10000"
+    );
+    expect(requestUrl(bucketsRequest("us-east-1", SecureString.of("http://localhost:4566"), "t")).toUnmaskedString()).to.equal(
       "http://localhost:4566/?continuation-token=t&max-buckets=10000"
     );
   });
 
   it("asks AWS's global endpoint for a bucket's region", () => {
-    expect(regionProbeUrl("acme-models")).to.equal("https://acme-models.s3.amazonaws.com/");
-    expect(regionProbeUrl("acme.models")).to.equal("https://s3.amazonaws.com/acme.models");
+    expect(regionProbeUrl("acme-models").toUnmaskedString()).to.equal("https://acme-models.s3.amazonaws.com/");
+    expect(regionProbeUrl("acme.models").toUnmaskedString()).to.equal("https://s3.amazonaws.com/acme.models");
   });
 });
 

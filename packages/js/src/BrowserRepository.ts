@@ -30,30 +30,32 @@
  */
 
 import {
+  COMPATIBILITY_OPERATION,
   Computable,
   FabrError,
   FILES_OVERRIDE,
   FileSet,
   Name,
-  PartialRepositoryRef,
+  Namespace,
+  NamespaceRef,
+  NO_REFERENCE_FIELDS,
   PackageFileSet,
+  parseJson,
+  PartialRepositoryRef,
+  Reference,
   Repository,
+  RepositoryImplementation,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   Requirement,
   resolveBarePackage,
-  parseJson,
+  SecureString,
   TargetContext,
   toJsonObject,
+  urlRoot,
   vendPackageRef,
   VersionNotFoundError,
-  RepositoryImplementation,
-  COMPATIBILITY_OPERATION,
-  Namespace,
-  NamespaceRef,
-  Reference,
-  NO_REFERENCE_FIELDS,
 } from "@fabr-build/core";
 import * as path from "path";
 import { ChromeForTesting } from "./ChromeForTesting";
@@ -284,10 +286,10 @@ function createRepository(context: TargetContext): Computable<Repository | Names
   return context.operation === COMPATIBILITY_OPERATION
     ? createCompatibilityRepository(context)
     : context.getString("chrome_url").then(url => {
-        if (url === undefined || url === "") {
+        if (url === undefined || url.equals("")) {
           throw new FabrError("Missing required property chrome_url");
         }
-        return new FetchableBrowsers(context, url.replace(/\/+$/, ""));
+        return new FetchableBrowsers(context, urlRoot(url));
       });
 }
 
@@ -298,7 +300,7 @@ class FetchableBrowsers extends Namespace {
   constructor(
     private readonly context: TargetContext,
     /** Where Chrome for Testing publishes its version list. */
-    private readonly chromeUrl: string
+    private readonly chromeUrl: SecureString
   ) {
     super();
   }

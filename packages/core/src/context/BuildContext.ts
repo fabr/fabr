@@ -35,6 +35,7 @@ import type { Constraints } from "../model/Constraints";
 import type { ExecutionContext } from "../model/ExecutionContext";
 import type { Property } from "../model/Property";
 import type { SubTargetInputs } from "../rules/Types";
+import type { SecureString } from "../core/SecureString";
 import type { CommandListLookup } from "./Commands";
 import type { PropertyMap } from "./PropertyMap";
 import type { IDependencyStack } from "./Stack";
@@ -423,7 +424,7 @@ export interface IRepositoryMember {
   /** Values it is made with, read as if its declaration wrote them. */
   readonly properties?: SubTargetInputs;
   /** The url it is made with, where its properties write none. */
-  readonly url?: string;
+  readonly url?: SecureString;
   /** What signs its requests in. */
   readonly credential?: Credential;
 }

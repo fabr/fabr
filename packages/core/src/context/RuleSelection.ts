@@ -75,7 +75,7 @@ function mostSpecificRule<R extends SelectableRule>(applicable: R[], ruleSet: st
   if (tiedAt) {
     /* Two equally specific rules both apply, and neither is picked. */
     const show = (rule: R): string =>
-      `{${[...guardOf(rule.properties), ...guardOf(rule.targetProperties)].map(([key, pattern]) => `${key}=${pattern.toString()}`).join(", ")}}`;
+      `{${[...guardOf(rule.properties), ...guardOf(rule.targetProperties)].map(([key, pattern]) => `${key}=${pattern.toDisplayString()}`).join(", ")}}`;
     throw new FabrError(`Ambiguous ${ruleSet} rule selection: ${show(best)} and ${show(tiedAt)} are equally specific`);
   }
   return best;
@@ -149,8 +149,8 @@ function judgeRule(rule: SelectableRule, target: TargetContext, guards: IRuleGua
     (value === undefined ? Computable.resolve(false) : guards.admits(pattern, value, stack)).then(matched => ({
       key,
       own,
-      pattern: pattern.toString(),
-      value: value?.toString(),
+      pattern: pattern.toDisplayString(),
+      value: value?.toDisplayString(),
       matched,
     }));
   return Computable.forAll(

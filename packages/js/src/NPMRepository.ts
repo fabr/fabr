@@ -26,12 +26,15 @@ import {
   fetchDocument,
   FileSet,
   IFile,
+  INTOTO_PAYLOAD_TYPE,
+  ISigstoreInstance,
   isRepositoryReader,
+  ITaskReport,
+  IVersionMetadata,
   lowestSatisfying,
   MemoryCache,
   MemoryFile,
   Name,
-  PartialRepositoryRef,
   NpmPlatform,
   packageCoordinateOf,
   packageCoordinates,
@@ -40,42 +43,44 @@ import {
   packToTarball,
   parseJson,
   parseVersion,
+  PartialRepositoryRef,
+  provenanceStatement,
+  PUBLIC_SIGSTORE,
   PublishableFileSet,
   PublishMember,
   PublishStatus,
   readJsonFile,
   Reference,
   Repository,
+  RepositoryImplementation,
   RepositoryPublishRef,
   RepositoryReader,
   RepositoryRef,
   RepositoryWriter,
   Requirement,
   resolveBarePackage,
+  SecureString,
   select,
   Selected,
   SEMVER,
   SemverConstraint,
   SemverVersion,
+  SerializedBundle,
+  shownUrl,
+  signDsse,
+  SIGSTORE_AUDIENCE,
   stripArchiveRoot,
   TARGET,
   TargetContext,
   toJsonObject,
   tripleToNpm,
+  urlJoin,
+  urlResolved,
+  urlRoot,
   vendPackageRef,
   versionChildren,
   VersionNotFoundError,
   versionToString,
-  IVersionMetadata,
-  RepositoryImplementation,
-  provenanceStatement,
-  INTOTO_PAYLOAD_TYPE,
-  ISigstoreInstance,
-  PUBLIC_SIGSTORE,
-  SerializedBundle,
-  SIGSTORE_AUDIENCE,
-  signDsse,
-  ITaskReport,
 } from "@fabr-build/core";
 import {
   expectedTarballDigest,
@@ -158,7 +163,7 @@ function packagePath(pkg: string): string {
  */
 export class NPMRepository implements Repository, RepositoryWriter, RepositoryReader<SemverVersion, SemverConstraint> {
   public readonly format = NPM_FORMAT;
-  private readonly url: string;
+  private readonly url: SecureString;
   private readonly context: TargetContext;
   /** The access this repository's publishes request (see {@link PublishAccess}). */
   private readonly access: PublishAccess;
@@ -183,7 +188,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   private readonly sigstore: ISigstoreInstance;
 
   constructor(
-    url: string,
+    url: SecureString,
     context: TargetContext,
     access: PublishAccess = null,
     extensions?: PackageExtensions,
@@ -191,7 +196,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     provenance = true,
     sigstore: ISigstoreInstance = PUBLIC_SIGSTORE
   ) {
-    this.url = url.replace(/\/+$/, "");
+    this.url = urlRoot(url);
     this.context = context;
     this.access = access;
     this.extensions = extensions === undefined ? installedPackageExtensions : () => extensions;
@@ -202,7 +207,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
 
   /** The registry's identity, its URL, in the resolution memo key. */
   public get identity(): string {
-    return this.url;
+    return this.url.toUnmaskedString();
   }
 
   public get name(): string {
@@ -219,7 +224,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     if (namespace === "" || /^@[^/]*$/.test(namespace)) {
       return Computable.reject(
         new FabrError(
-          `the registry at ${this.url} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`
+          `the registry at ${shownUrl(this.url)} cannot list every package ${namespace === "" ? "it holds" : `in ${namespace}`}`
         ).withHelp(`name a package to list its versions, as in '${this.name}:${namespace === "" ? "" : `${namespace}/`}<package>'`)
       );
     }
@@ -355,7 +360,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
       const signedIn =
         offered && "token" in offered
           ? Computable.resolve(new Map([["authorization", `Bearer ${offered.token}`]]))
-          : this.credential.authorize({ method: "PUT", url: this.url, headers: new Map() });
+          : this.credential.authorize({ method: "PUT", url: this.url.toUnmaskedString(), headers: new Map() });
       return Computable.forAll([tgz.getBuffer(), manifest.readString(), signedIn], (data, manifestJson, headers) => {
         const authHeaders = Object.fromEntries(headers ?? []);
         const manifest = JSON.parse(manifestJson) as Record<string, unknown>;
@@ -389,7 +394,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
           if (refused !== undefined && err instanceof FabrError) {
             err.withHelp(
               `trusted publishing was refused for ${name}: ${refused}; configure this job's workflow or pipeline as its ` +
-                `trusted publisher on the registry (\`npm trust\`), or give a credential for ${this.url} in .npmrc`
+                `trusted publisher on the registry (\`npm trust\`), or give a credential for ${shownUrl(this.url)} in .npmrc`
             );
           }
           throw err;
@@ -444,7 +449,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
    * has no value for. Used only for the os/cpu/libc gates.
    */
   private targetPlatform(): Computable<NpmPlatform> {
-    return this.context.getGlobalString(TARGET).then(triple => tripleToNpm(triple));
+    return this.context.getGlobalString(TARGET).then(triple => tripleToNpm(triple.toUnmaskedString()));
   }
 
   /**
@@ -586,8 +591,8 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   private packument(pkg: string, forceRevalidate: boolean): Computable<ReadonlyMap<string, INPMPackageMetadata> | undefined> {
     const held = forceRevalidate ? this.revalidatedPackuments : this.packuments;
     return held.getOrCreate(pkg, () => {
-      const url = `${this.url}/${packagePath(pkg)}`;
-      const what = `package document for ${pkg} from ${this.url}`;
+      const url = urlJoin(this.url, packagePath(pkg));
+      const what = `package document for ${pkg} from ${shownUrl(this.url)}`;
       return fetchDocument<ReadonlyMap<string, INPMPackageMetadata>>(this.context, {
         url,
         file: PACKUMENT_FILE,
@@ -681,7 +686,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   private versionDocument(pkg: string, version: string): Computable<INPMPackageMetadata> {
     const key = pkg + "/" + version;
     return this.metadataCache.getOrCreate(key, () => {
-      const metadataUrl = `${this.url}/${packagePath(pkg)}/${version}`;
+      const metadataUrl = urlJoin(this.url, `${packagePath(pkg)}/${version}`);
       return fetchDocument(this.context, {
         url: metadataUrl,
         file: METADATA_FILE,
@@ -695,7 +700,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
         /* The registry's 404: typed, so the resolver can raise a lower bound
          * that was never published. */
         if (meta === undefined) {
-          throw new VersionNotFoundError(pkg, version, `NPM package ${pkg}@${version} not found at ${this.url}`);
+          throw new VersionNotFoundError(pkg, version, `NPM package ${pkg}@${version} not found at ${shownUrl(this.url)}`);
         }
         return meta;
       });
@@ -713,7 +718,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
       source: () =>
         this.getVersionEntry(pkg, exact).then(meta =>
           Computable.resolve({
-            url: meta.dist.tarball,
+            url: urlResolved(this.url, meta.dist.tarball),
             expected: expectedTarballDigest(meta.dist),
             credential: this.credential,
           })
@@ -727,7 +732,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
  * namespace makes with `url` and `credential`: the declaration's own `url`
  * takes precedence, and `credential` replaces `.npmrc`'s. Rejects where there
  * is no URL, or `provenance` is neither `on` nor `off`. */
-function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
+function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
     [context.getProperty("url"), context.getString("access"), context.getString("provenance")],
     (declared, access, provenance) => {
@@ -735,10 +740,10 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       if (at === undefined) {
         throw new FabrError("Missing required property url");
       }
-      if (provenance !== undefined && provenance !== "on" && provenance !== "off") {
-        throw new FabrError(`invalid provenance value ${JSON.stringify(provenance)} (expected "on" or "off")`);
+      if (provenance !== undefined && !provenance.equals("on") && !provenance.equals("off")) {
+        throw new FabrError(`invalid provenance value '${provenance.toDisplayString()}' (expected "on" or "off")`);
       }
-      return new NPMRepository(at, context, toPublishAccess(access), undefined, credential, provenance !== "off");
+      return new NPMRepository(at, context, toPublishAccess(access), undefined, credential, !(provenance?.equals("off") ?? false));
     }
   );
 }

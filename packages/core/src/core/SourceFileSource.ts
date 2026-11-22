@@ -175,7 +175,7 @@ export class SourceFileSource extends IndexedFileSource {
      * written name: a `<k=v>` or `-> tmpl` facet is no path, and an alias
      * prefix may hide a `..`. The glob remainder never moves the walk's base. */
     if (!this.contains(staticPath(name))) {
-      return Computable.reject(new FabrError(`'${name.toString()}' is outside the source tree`));
+      return Computable.reject(new FabrError(`'${name.toDisplayString()}' is outside the source tree`));
     }
     return super.find(name, prefix);
   }

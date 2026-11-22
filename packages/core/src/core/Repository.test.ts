@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "./SecureString";
 import { SILENT_REPORT } from "../support/Execute";
 import { Computable } from "./Computable";
 import { FileSet, IFile } from "./FileSet";
@@ -123,7 +124,7 @@ class StubRepository implements Repository {
   }
 
   public getRepositoryPublishRef(name: Name): never {
-    throw new Error(`not a publish destination ('${name.toString()}')`);
+    throw new Error(`not a publish destination ('${name.toDisplayString()}')`);
   }
 
   public resolve(reference: RepositoryRef): Computable<FileSet> {
@@ -143,7 +144,7 @@ describe("PartialRepositoryRef", () => {
     }
 
     public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-      const [coordinate, version] = name.toString().split(":");
+      const [coordinate, version] = name.toUnmaskedString().split(":");
       return new PackagePublishRef({} as RepositoryWriter, { name: coordinate, version });
     }
 
@@ -215,7 +216,7 @@ describe("PartialRepositoryRef", () => {
 const RESOLUTION_CONTEXT: ResolutionContext = {
   name: "test",
   operation: "build",
-  getGlobalString: () => Computable.resolve("build"),
+  getGlobalString: () => Computable.resolve(SecureString.of("build")),
   launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
   memoize: (_tag, _key, create) => create("unused"),
   runTask: (_task, run) => run(SILENT_REPORT),

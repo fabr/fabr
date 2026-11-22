@@ -17,6 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type { SecureString } from "../core/SecureString";
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { contentOf, isPackage, Package, UsedFor } from "../core/PackageFileSet";
@@ -150,7 +151,7 @@ export class CatalogRepository implements Repository, RepositoryCollection {
     return new RepositoryRef(this, {
       name: member.toBaseString(),
       versionConstraint: undefined,
-      renameTo: member.getRenameTo()?.toString(),
+      renameTo: member.getRenameTo()?.toUnmaskedString(),
       ...(override === undefined ? {} : { override }),
     });
   }
@@ -173,7 +174,7 @@ export class CatalogRepository implements Repository, RepositoryCollection {
 
   /** Throw: a catalog is no publish destination. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    throw new FabrError(`a catalog is not a publish destination (cannot sync to '${name.toString()}')`);
+    throw new FabrError(`a catalog is not a publish destination (cannot sync to '${name.toDisplayString()}')`);
   }
 }
 
@@ -281,7 +282,7 @@ function catalogOf(catalogName: string, requirements: ResolvedRequirements, requ
 /** Make the catalog a `catalog` declaration is, from its resolved requirements. */
 function createCatalog(
   context: TargetContext,
-  _url: string | undefined,
+  _url: SecureString | undefined,
   _credential: Credential | undefined,
   requirements: ResolvedRequirements
 ): Computable<Repository> {

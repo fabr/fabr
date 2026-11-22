@@ -29,6 +29,8 @@ import {
   BuildAction,
   BuildCache,
   Computable,
+  deleteTreeSync,
+  dependenciesOn,
   FileSet,
   IFile,
   Log,
@@ -36,8 +38,6 @@ import {
   PackageFileSet,
   Semaphore,
   SILENT_REPORT,
-  dependenciesOn,
-  deleteTreeSync,
 } from "@fabr-build/core";
 import { PNP } from "../Layout";
 import { createNodeExecAction, NODE_EXEC_ACTION } from "../NodeExecAction";

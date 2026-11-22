@@ -27,6 +27,7 @@ import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
 import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
+import { secure, SecureString } from "../core/SecureString";
 import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "./Tasks";
 
@@ -236,9 +237,14 @@ function executableFile(candidate: string): string | undefined {
  * what it finds (the `sh` a `script` runs on) is an input fabr does not track.
  * On Windows a name with no extension is also looked for with `.exe`.
  * @return the executable's path, absolute where `name` has a path separator.
- * @throws ExecutionError if the executable cannot be found.
+ * @throws ExecutionError if the executable cannot be found, naming it as output shows `name`.
  */
-export function findExecutable(name: string, cwd = process.cwd(), platform: NodeJS.Platform = process.platform): string {
+export function findExecutable(
+  written: string | SecureString,
+  cwd = process.cwd(),
+  platform: NodeJS.Platform = process.platform
+): string {
+  const name = unmasked(written);
   const names = executableNames(name, platform);
   if (path.basename(name) !== name) {
     for (const candidate of names) {
@@ -247,7 +253,7 @@ export function findExecutable(name: string, cwd = process.cwd(), platform: Node
         return found;
       }
     }
-    throw new ExecutionError(`'${name}' is not an executable file`);
+    throw new ExecutionError(secure`'${written}' is not an executable file`);
   }
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     if (dir.length === 0) {
@@ -260,7 +266,7 @@ export function findExecutable(name: string, cwd = process.cwd(), platform: Node
       }
     }
   }
-  throw new ExecutionError(`Unable to find '${name}' in PATH`);
+  throw new ExecutionError(secure`Unable to find '${written}' in PATH`);
 }
 
 /**
@@ -430,9 +436,37 @@ const DETACHED = GROUPS_SUPPORTED ? { detached: true } : {};
 const FORCE_COLOR_ENV = { FORCE_COLOR: "1", CLICOLOR_FORCE: "1" };
 
 /** Render the `$ cmd args…` line shown at the head of an execution error, each
- * argument quoted where a shell would not read it back as written. */
-function commandLine(cmd: string, args: string[]): string {
-  return "$ " + [cmd, ...args].map(quoteArg).join(" ");
+ * argument as output shows it, quoted where a shell would not read it back as
+ * written. */
+function commandLine(cmd: string | SecureString, args: readonly (string | SecureString)[]): string {
+  return "$ " + [cmd, ...args].map(arg => quoteArg(displayed(arg))).join(" ");
+}
+
+/** @return `text` as a process is given it. */
+function unmasked(text: string | SecureString): string {
+  return typeof text === "string" ? text : text.toUnmaskedString();
+}
+
+/** @return `text` as output shows it. */
+function displayed(text: string | SecureString): string {
+  return typeof text === "string" ? text : text.toDisplayString();
+}
+
+/** @return `env` as a process is given it. */
+function unmaskedEnvironment(env: Record<string, string | SecureString>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).map(([name, value]) => [name, unmasked(value)]));
+}
+
+/**
+ * Find the executable `command` names, as {@link findExecutable} does, in
+ * `cwd`: where any of `command` is masked, the path found is masked whole,
+ * shown as the command is.
+ */
+export function findCommand(command: string | SecureString, cwd?: string): SecureString {
+  const found = findExecutable(command, cwd);
+  return typeof command !== "string" && command.isMasked()
+    ? SecureString.masked(found, command.toDisplayString())
+    : SecureString.of(found);
 }
 
 /**
@@ -450,10 +484,10 @@ function commandLine(cmd: string, args: string[]): string {
  */
 export function execute(
   limit: Semaphore,
-  cmd: string,
-  args: string[],
+  cmd: string | SecureString,
+  args: readonly (string | SecureString)[],
   cwd: string,
-  env: Record<string, string>,
+  env: Record<string, string | SecureString>,
   report: ITaskReport
 ): Computable<void> {
   return admitted(limit, report, () => executeUnbounded(cmd, args, cwd, env, report.output));
@@ -479,10 +513,10 @@ export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => C
 }
 
 function executeUnbounded(
-  cmd: string,
-  args: string[],
+  cmd: string | SecureString,
+  args: readonly (string | SecureString)[],
   cwd: string,
-  env: Record<string, string>,
+  env: Record<string, string | SecureString>,
   sink?: IOutputSink
 ): Computable<void> {
   /* A failed spawn emits 'error' then 'close' (code -2): Computable.from keeps
@@ -496,9 +530,9 @@ function executeUnbounded(
      * whether or not there is a sink. */
     const output: ICommandOutputLine[] = [];
     const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "pipe", "pipe"];
-    const proc = spawn(cmd, args, {
+    const proc = spawn(unmasked(cmd), args.map(unmasked), {
       cwd,
-      env: stepEnvironment({ ...FORCE_COLOR_ENV, ...env }),
+      env: stepEnvironment({ ...FORCE_COLOR_ENV, ...unmaskedEnvironment(env) }),
       stdio,
       windowsHide: true,
       ...DETACHED,
@@ -623,6 +657,7 @@ export function executeInternalCapture(
  * (`mergedTo: "out"` leaves `stderr` unset, and vice versa).
  */
 export interface StageStreams {
+  /** The file the stage's stdout, and its stderr, is captured in. */
   stdout?: string;
   stderr?: string;
   mergedTo?: "out" | "err";
@@ -645,22 +680,33 @@ export type PipelineInput = Uint8Array | (() => Readable);
 /** One stage of an {@link executePipeline}: the argv to run and its
  * redirections. */
 export interface StageSpec extends StageStreams {
-  argv: string[];
+  argv: readonly (string | SecureString)[];
   /** The variables its runnable is launched with, each `NAME=value`, under the pipeline's own. */
-  env?: string[];
+  env?: readonly (string | SecureString)[];
   /** A file, relative to the pipeline's directory, the last stage's stdout is
    *  written to as it is, neither captured nor shown; with no `stdout` or
    *  `mergedTo` of its own. */
   stdoutFile?: string;
 }
 
-/** Split a `NAME=value` variable at its first `=`; an entry with none is an error. */
-export function variableEntry(entry: string): [string, string] {
-  const at = entry.indexOf("=");
+/** Split a `NAME=value` variable at its first `=`, the value's masked runs kept; an entry with none is an error. */
+export function variableEntry(entry: string | SecureString): [string, SecureString] {
+  const text = typeof entry === "string" ? SecureString.of(entry) : entry;
+  const at = text.indexOf("=");
   if (at === -1) {
-    throw new FabrError(`environment entry '${entry}' is not of the form NAME=value`);
+    throw new FabrError(`environment entry '${text.toDisplayString()}' is not of the form NAME=value`);
   }
-  return [entry.slice(0, at), entry.slice(at + 1)];
+  return [text.slice(0, at).toUnmaskedString(), text.slice(at + 1)];
+}
+
+/** @return `entries`, each `NAME=value`, as the variables a process is given. */
+export function unmaskedVariables(entries: readonly (string | SecureString)[]): Record<string, string> {
+  return Object.fromEntries(entries.map(variableEntry).map(([name, value]) => [name, value.toUnmaskedString()]));
+}
+
+/** @return `spec` to run as `found`, the executable found for its command ({@link findCommand}). */
+export function foundStage(spec: StageSpec, cwd?: string): StageSpec {
+  return { ...spec, argv: [findCommand(spec.argv[0], cwd), ...spec.argv.slice(1)] };
 }
 
 function stageCommandLine(spec: StageSpec): string {
@@ -705,7 +751,7 @@ export function executePipeline(
   createOutput: () => IOutputHandle,
   stdin: PipelineInput | undefined,
   report: ITaskReport,
-  env: ReadonlyMap<string, string> = new Map()
+  env: ReadonlyMap<string, string | SecureString> = new Map()
 ): Computable<FileSet> {
   return admitted(limit, report, () => pipelineUnbounded(specs, cwd, createOutput, stdin, report.output, env));
 }
@@ -716,7 +762,7 @@ function pipelineUnbounded(
   createOutput: () => IOutputHandle,
   stdin: PipelineInput | undefined,
   sink: IOutputSink | undefined,
-  env: ReadonlyMap<string, string>
+  env: ReadonlyMap<string, string | SecureString>
 ): Computable<FileSet> {
   const captures: Capture[] = [];
   return Computable.from<void>((resolve, reject) => {
@@ -725,7 +771,7 @@ function pipelineUnbounded(
     const argvs: string[][] = [];
     for (const spec of specs) {
       try {
-        argvs.push([findExecutable(spec.argv[0], cwd), ...spec.argv.slice(1)]);
+        argvs.push([findCommand(spec.argv[0], cwd), ...spec.argv.slice(1)].map(unmasked));
       } catch (e) {
         return reject(new ExecutionError(`${stageCommandLine(spec)}\nunable to execute: ${systemErrorText(e)}`));
       }
@@ -790,7 +836,10 @@ function pipelineUnbounded(
         try {
           proc = spawn(argvs[i][0], argvs[i].slice(1), {
             cwd,
-            env: stepEnvironment({ ...Object.fromEntries((specs[i].env ?? []).map(variableEntry)), ...Object.fromEntries(env) }),
+            env: stepEnvironment({
+              ...unmaskedVariables(specs[i].env ?? []),
+              ...unmaskedEnvironment(Object.fromEntries(env)),
+            }),
             stdio: [stdinCfg, stdoutCfg, "pipe"],
             windowsHide: true,
             ...DETACHED,
@@ -1035,12 +1084,22 @@ function hasTerminal(): boolean {
  * Windows). Rejects with an ExecutionError only
  * where it cannot be spawned.
  */
-export function executeInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): Computable<number> {
+export function executeInteractive(
+  cmd: string | SecureString,
+  args: readonly (string | SecureString)[],
+  cwd?: string,
+  env?: Record<string, string | SecureString>
+): Computable<number> {
   /* A failed spawn emits 'error' then 'close': Computable.from keeps the
    * rejection. */
   return Computable.from((resolve, reject) => {
     const line = commandLine(cmd, args);
-    const proc = spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env });
+    const proc = spawn(unmasked(cmd), args.map(unmasked), {
+      stdio: "inherit",
+      windowsHide: true,
+      cwd,
+      env: env === undefined ? undefined : unmaskedEnvironment(env),
+    });
     trackInteractive(proc);
     proc.on("error", e => {
       releaseInteractive(proc);
@@ -1065,8 +1124,19 @@ export function executeInteractive(cmd: string, args: string[], cwd?: string, en
  * it with any workers it forked. It does not receive the terminal's
  * Ctrl-C; the caller must forward it. It is not tracked for the exit hook.
  */
-export function spawnInteractive(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): ChildProcess {
-  return spawn(cmd, args, { stdio: "inherit", windowsHide: true, cwd, env, ...DETACHED });
+export function spawnInteractive(
+  cmd: string | SecureString,
+  args: readonly (string | SecureString)[],
+  cwd?: string,
+  env?: Record<string, string | SecureString>
+): ChildProcess {
+  return spawn(unmasked(cmd), args.map(unmasked), {
+    stdio: "inherit",
+    windowsHide: true,
+    cwd,
+    env: env === undefined ? undefined : unmaskedEnvironment(env),
+    ...DETACHED,
+  });
 }
 
 /**

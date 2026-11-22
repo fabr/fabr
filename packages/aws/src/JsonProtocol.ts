@@ -23,27 +23,27 @@
  * the error document a refusal answers with.
  */
 
-import { Computable, HttpStatusError, parseJson, sendRequest, toJsonObject } from "@fabr-build/core";
-import { IServiceRequest } from "./Signing";
+import { Computable, HttpStatusError, parseJson, SecureString, sendRequest, shownUrl, toJsonObject, urlJoin } from "@fabr-build/core";
+import { IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
 /**
  * Make a request for the operation `target` with `body`: to `endpoint` where
- * there is one, else to `host` (`ssm.eu-west-2.amazonaws.com`).
+ * there is one, else to `service`, its URL on AWS (`https://ssm.eu-west-2.amazonaws.com/`).
  */
-export function jsonRequest(target: string, body: unknown, host: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
+export function jsonRequest(
+  target: string,
+  body: unknown,
+  service: SecureString,
+  endpoint?: SecureString
+): IServiceRequest & { readonly body: string } {
   const headers = new Map([
     ["content-type", "application/x-amz-json-1.1"],
     ["x-amz-target", target],
   ]);
-  const base =
-    endpoint === undefined
-      ? { protocol: "https:", hostname: host }
-      : { protocol: endpoint.protocol, hostname: endpoint.hostname, ...(endpoint.port === "" ? {} : { port: Number(endpoint.port) }) };
   return {
-    ...base,
     method: "POST",
-    path: endpoint === undefined ? "/" : `${endpoint.pathname.replace(/\/+$/, "")}/`,
+    url: endpoint === undefined ? service : urlJoin(endpoint, ""),
     query: new Map(),
     headers,
     body: JSON.stringify(body),
@@ -98,7 +98,7 @@ export function isThrottling(error: IServiceError): boolean {
 }
 
 /**
- * Sign `request` for `service` and send it to `url`, resolving to the body of
+ * Sign `request` for `service` and send it, resolving to the body of
  * a 200. A 5xx rejects with an `HttpStatusError` of that status, and a
  * throttling error (see {@link isThrottling}) with one of 429, both of which a
  * fetch retries as transient; any other answer rejects with `refuse` of its
@@ -108,21 +108,21 @@ export function postServiceRequest(
   settings: IServiceSettings,
   service: string,
   request: IServiceRequest & { readonly body: string },
-  url: string,
   refuse: (text: string) => Error
 ): Computable<Buffer> {
+  const url = requestUrl(request);
   return settings.signer
     .sign(request, service, settings.region)
     .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
     .then(response => {
       if (response.statusCode >= 500) {
-        throw new HttpStatusError(response.statusCode, url);
+        throw new HttpStatusError(response.statusCode, shownUrl(url));
       }
       if (response.statusCode !== 200) {
         const text = response.body.toString("utf8");
         /* AWS answers throttling with a 400: reject it as a 429, "too many requests". */
         if (isThrottling(serviceErrorOf(text))) {
-          throw new HttpStatusError(429, url);
+          throw new HttpStatusError(429, shownUrl(url));
         }
         throw refuse(text);
       }

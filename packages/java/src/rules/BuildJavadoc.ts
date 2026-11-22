@@ -75,7 +75,7 @@ function generateJavadoc(context: TargetContext, { srcs, deps }: { srcs: FileSet
   return Computable.forAll(
     [context.getGlobalString("JVM_TARGET"), context.getGlobalRunnable("JAVADOC"), placedJars(sources, jars)],
     (jvmTarget, javadoc, { modulePath, classpath }) => {
-      const release = javaRelease(jvmTarget, deps);
+      const release = javaRelease(jvmTarget.toUnmaskedString(), deps);
       const pool = context.execution.buildCache;
       return pool.ensureTree(javadoc).then(() => {
         const argumentsText = [

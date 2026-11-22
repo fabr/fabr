@@ -25,19 +25,20 @@
 import * as path from "path";
 import {
   ActionContext,
-  BuildAction,
   BUILD_OVERRIDE,
+  BuildAction,
   BuildResult,
   Computable,
-  DescribedPackage,
   Dependency,
   dependencyName,
+  DescribedPackage,
   FabrError,
   FileSet,
   fileSetInput,
   Flag,
   IBuildActionDefinition,
   IFile,
+  isWords,
   ITaskReport,
   mapEntryError,
   MemoryFile,
@@ -47,12 +48,14 @@ import {
   PropertyMap,
   readZipMember,
   readZipMembers,
-  writeZip,
   ResolutionContext,
   RunnableArgument,
   RunnableFileSet,
+  secure,
+  SecureString,
   stringConfig,
   TargetContext,
+  writeZip,
 } from "@fabr-build/core";
 
 /** Where a jar's manifest is. */
@@ -356,9 +359,9 @@ export interface JavaProgramOptions {
   /** Classes compiled for the program itself, first on the classpath. */
   classes?: FileSet;
   /** Arguments given the program, before the caller's. */
-  args?: readonly string[];
+  args?: readonly RunnableArgument[];
   /** Arguments given the JVM, before the program. */
-  jvmArgs?: readonly string[];
+  jvmArgs?: readonly RunnableArgument[];
   /** Java agents the program runs with: each one's own jar is given the JVM
    *  as a `-javaagent`, and what it requires joins the classpath. */
   agents?: readonly FileSet[];
@@ -370,16 +373,16 @@ export interface JavaProgramOptions {
  * space (`-Dname=` for none). A name that is empty or holds `=`, or a nested
  * map for a value, is refused at the entry that wrote it.
  */
-export function toDefineOptions(map: PropertyMap): string[] {
+export function toDefineOptions(map: PropertyMap): SecureString[] {
   return [...map.keys()].sort().map(name => {
     const value = map.get(name)!;
     if (name === "" || name.includes("=")) {
       throw mapEntryError(map, name, `'${name}' is not a valid system property name`);
     }
-    if (!Array.isArray(value) || !value.every((word): word is string => typeof word === "string")) {
+    if (!isWords(value)) {
       throw mapEntryError(map, name, `system property '${name}' must be a string`);
     }
-    return `-D${name}=${value.join(" ")}`;
+    return secure`-D${name}=${SecureString.join(value, " ")}`;
   });
 }
 

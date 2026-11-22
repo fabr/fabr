@@ -30,20 +30,21 @@ import {
   Computable,
   contentSize,
   FetchOptions,
+  FileSet,
   IFetchContext,
   IFetchRequest,
-  FileSet,
   IFile,
   MemoryFile,
-  PartialRepositoryRef,
-  packToTarball,
   openUrlStream,
+  packToTarball,
   parseName,
+  PartialRepositoryRef,
   RepositoryRef,
   ResolvedNode,
+  SecureString,
+  SILENT_REPORT,
   SymlinkFile,
   TargetContext,
-  SILENT_REPORT,
 } from "@fabr-build/core";
 import { ILayerRecord, ImageFileSet } from "./ImageFileSet";
 import { indexLayer } from "./LayerIndex";
@@ -308,7 +309,7 @@ function fetchingContext(triple: string, options: Array<FetchOptions | undefined
   return {
     name: "@test",
     execution: { getOrCreatePluginContext: () => auth },
-    getGlobalString: () => Computable.resolve(triple),
+    getGlobalString: () => Computable.resolve(SecureString.of(triple)),
     memoize: (_tag: string, _key: string, make: (workDir: string) => Computable<FileSet>) => {
       const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-oci-test-"));
       workDirs.push(workDir);
@@ -352,7 +353,11 @@ describe("OciRepository", () => {
     const context = fetchingContext(triple, options);
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     const reference = repository.getRepositoryRef(parseName(name)) as RepositoryRef;
@@ -394,7 +399,11 @@ describe("OciRepository", () => {
     const context = fetchingContext("x86_64-unknown-linux");
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
@@ -445,7 +454,11 @@ describe("OciRepository", () => {
     const context = fetchingContext("x86_64-unknown-linux");
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     const layer = await builtLayer({ "app/main": "built" });
@@ -480,7 +493,11 @@ describe("OciRepository", () => {
       const context = fetchingContext("x86_64-unknown-linux");
       const repository = new OciRepository(
         context,
-        new Registry(context, declining.url, new RegistrySignIn(declining.url, () => Computable.resolve(undefined))),
+        new Registry(
+          context,
+          SecureString.of(declining.url),
+          new RegistrySignIn(SecureString.of(declining.url), () => Computable.resolve(undefined))
+        ),
         "library"
       );
       const node = await Promise.resolve(repository.resolve(repository.getRepositoryRef(parseName("demo:1.0")) as RepositoryRef));
@@ -507,7 +524,11 @@ describe("OciRepository", () => {
       const context = fetchingContext("x86_64-unknown-linux", [], logins);
       const source = new OciRepository(
         context,
-        new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+        new Registry(
+          context,
+          SecureString.of(registry.url),
+          new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+        ),
         "library",
         "https://login.example/v1/"
       );
@@ -519,7 +540,11 @@ describe("OciRepository", () => {
       ]);
       const destination = new OciRepository(
         context,
-        new Registry(context, target.url, new RegistrySignIn(target.url, () => Computable.resolve(undefined)))
+        new Registry(
+          context,
+          SecureString.of(target.url),
+          new RegistrySignIn(SecureString.of(target.url), () => Computable.resolve(undefined))
+        )
       );
       const [carrier] = await Promise.resolve(
         destination.package([{ destination: destination.getRepositoryPublishRef(parseName("myorg/copy:2")), content: image }])
@@ -539,7 +564,11 @@ describe("OciRepository", () => {
     const context = fetchingContext("x86_64-unknown-linux");
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     for (const tag of ["2.0", "1.1", "0.9"]) {
@@ -561,11 +590,30 @@ describe("OciRepository", () => {
     expect((missing as Error).message).to.match(/has no image absent/);
   });
 
+  it("shows a registry URL written as an environment variable as written where the registry refuses", async () => {
+    const context = fetchingContext("x86_64-unknown-linux");
+    const url = SecureString.masked(registry.url, "${ENV.REGISTRY}");
+    const repository = new OciRepository(
+      context,
+      new Registry(context, url, new RegistrySignIn(url, () => Computable.resolve(undefined))),
+      "library"
+    );
+    const missing = await Promise.resolve(
+      repository.children(repository.getRepositoryRef(parseName("absent")) as PartialRepositoryRef)
+    ).catch((err: Error) => err);
+    expect((missing as Error).message).to.match(/^\$\{ENV\.REGISTRY\}.* has no image absent/);
+    expect((missing as Error).message).not.to.contain(registry.url);
+  });
+
   it("refuses a digest, or a name with no tag, as a coordinate to publish to", () => {
     const context = fetchingContext("x86_64-unknown-linux");
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     expect(() => repository.getRepositoryPublishRef(parseName(`myorg/app:sha256:${"a".repeat(64)}`))).to.throw(
@@ -583,7 +631,12 @@ describe("OciRepository", () => {
     const credential = {
       authorize: (): Computable<ReadonlyMap<string, string>> => Computable.resolve(new Map([["authorization", "Basic c"]])),
     };
-    const signIn = registrySignIn(fetchingContext("x86_64-unknown-linux"), "https://registry.example", undefined, credential);
+    const signIn = registrySignIn(
+      fetchingContext("x86_64-unknown-linux"),
+      SecureString.of("https://registry.example"),
+      undefined,
+      credential
+    );
     const at = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
       method: "PUT",
       url,
@@ -600,7 +653,11 @@ describe("OciRepository", () => {
     const context = fetchingContext("x86_64-unknown-linux");
     const repository = new OciRepository(
       context,
-      new Registry(context, registry.url, new RegistrySignIn(registry.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(registry.url),
+        new RegistrySignIn(SecureString.of(registry.url), () => Computable.resolve(undefined))
+      ),
       "library"
     );
     expect(repository.getRepositoryRef(parseName("demo")).constructor.name).to.equal("PartialRepositoryRef");
@@ -651,7 +708,11 @@ describe("OciRepository provenance", () => {
     }
     const repository = new OciRepository(
       context,
-      new Registry(context, server.url, new RegistrySignIn(server.url, () => Computable.resolve(undefined))),
+      new Registry(
+        context,
+        SecureString.of(server.url),
+        new RegistrySignIn(SecureString.of(server.url), () => Computable.resolve(undefined))
+      ),
       undefined,
       undefined,
       options.provenance ?? true,

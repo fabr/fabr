@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "../core/SecureString";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -29,11 +30,16 @@ import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { hashString } from "../core/FSWrapper";
 import { hostFiles } from "../model/ExecutionContext";
 import { RepositoryRef } from "../core/Repository";
-import { manifestArguments, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
+import { manifestArguments, RunnableArgument, RunnableFileSet, toArgv } from "../core/RunnableFileSet";
 import { HostLink } from "../core/SymlinkFile";
 import { parseName } from "../model/Parser";
 import { toPosix } from "../support/Paths";
 import { HostSearchPathRepository } from "./HostSearchPath";
+
+/** @return the command line `args` are run as ({@link toArgv}), as text. */
+function argvText(args: readonly RunnableArgument[], anchor?: string): string[] {
+  return toArgv(args, anchor).map(arg => arg.toUnmaskedString());
+}
 
 function toPromise<T>(computable: ComputableSource<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
@@ -73,13 +79,13 @@ describe("HostSearchPathRepository", () => {
     expect((link as HostLink).location).to.equal(path.join(dir, "tool"));
     expect((link as HostLink).contentHash).to.equal(hashString("#!/bin/sh\necho tool\n"));
     expect(runnable.toCommandLine(["x"], { base: "tools" })).to.deep.equal([link, "x"]);
-    expect(toArgv(runnable.toCommandLine(["x"]))).to.deep.equal([path.join(dir, "tool"), "x"]);
+    expect(argvText(runnable.toCommandLine(["x"]))).to.deep.equal([path.join(dir, "tool"), "x"]);
   });
 
   it("resolves a program by its absolute path, named as its last part", async () => {
     const resolved = (await toPromise(repository.resolve(referenceTo(toPosix(path.join(dir, "tool")))))) as RunnableFileSet;
     expect((resolved.surface.getFile("tool") as HostLink).location).to.equal(path.join(dir, "tool"));
-    expect(toArgv(resolved.toCommandLine([]))).to.deep.equal([path.join(dir, "tool")]);
+    expect(argvText(resolved.toCommandLine([]))).to.deep.equal([path.join(dir, "tool")]);
   });
 
   it("keys a program by its content and command, not where it was found", async () => {
@@ -88,11 +94,11 @@ describe("HostSearchPathRepository", () => {
       fs.symlinkSync(dir, path.join(other, "linked"));
       const here = (await toPromise(repository.resolve(referenceTo("tool")))) as RunnableFileSet;
       const there = (await toPromise(repository.resolve(referenceTo(toPosix(path.join(other, "linked", "tool")))))) as RunnableFileSet;
-      expect(toArgv(there.toCommandLine())).to.deep.equal([path.join(other, "linked", "tool")]);
+      expect(argvText(there.toCommandLine())).to.deep.equal([path.join(other, "linked", "tool")]);
       expect(manifestArguments(there.toCommandLine(["-x"]))).to.equal(manifestArguments(here.toCommandLine(["-x"])));
       /* Run as a command, the program keys one action wherever it was found. */
       const actionOf = (runnable: RunnableFileSet): BuildAction => {
-        const { files, specs } = stagePipeline([[{ runnable, args: ["-x"], stdout: "out" }]], EMPTY_FILESET);
+        const { files, specs } = stagePipeline([[{ runnable, args: [SecureString.of("-x")], stdout: "out" }]], EMPTY_FILESET);
         return createPipelineAction(files, specs, [], undefined);
       };
       expect(actionOf(there).actionKey()).to.equal(actionOf(here).actionKey());

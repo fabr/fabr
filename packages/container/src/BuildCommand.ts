@@ -32,6 +32,8 @@ import {
   ITaskReport,
   MemoryFile,
   normalizeEntryName,
+  secure,
+  SecureString,
   TarExtract,
   TarPack,
   tarStream,
@@ -95,9 +97,9 @@ export interface IBuildCommand {
   readonly engine: string;
   readonly platform: IOciPlatform;
   /** The shell command, run as `/bin/sh -c`. */
-  readonly command: string;
+  readonly command: SecureString;
   /** Environment variables the command runs with, over the image's. */
-  readonly env: ReadonlyArray<readonly [string, string]>;
+  readonly env: ReadonlyArray<readonly [string, SecureString]>;
 }
 
 /**
@@ -141,7 +143,7 @@ export function runBuildCommand(
               name,
               "--platform",
               platformText(build.platform),
-              ...build.env.flatMap(([key, value]) => ["-e", `${key}=${value}`]),
+              ...build.env.flatMap(([key, value]) => ["-e", secure`${key}=${value}`]),
               "--entrypoint",
               "/bin/sh",
               tag,

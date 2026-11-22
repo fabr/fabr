@@ -23,14 +23,14 @@ import {
   ActionContext,
   BuildAction,
   BuildResult,
+  commandLineConfig,
   Computable,
   COVERAGE_REPORT_FILENAME,
   execute,
   ExecutionError,
-  commandLineConfig,
   FileSet,
   fileSetInput,
-  findExecutable,
+  findCommand,
   getResultFileSet,
   IBuildActionDefinition,
   ITaskReport,
@@ -42,6 +42,8 @@ import {
   parseLcov,
   retriedReport,
   RunnableArgument,
+  secure,
+  SecureString,
   stringListConfig,
   TEST_REPORT_FILENAME,
   testFailureOf,
@@ -88,7 +90,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
       ...(index > 0 && measured ? [`--coverage=${coverageOf(index)}`] : []),
       ...(files ?? []).map(file => `--select-file=${file}`),
     ];
-    return execute(ctx.processLimit, findExecutable(argv[0], ctx.workDir), invocation, ctx.workDir, env, {
+    return execute(ctx.processLimit, findCommand(argv[0], ctx.workDir), invocation, ctx.workDir, env, {
       ...report,
       output: undefined,
     })
@@ -230,7 +232,7 @@ function mergeRunCoverage(workDir: string, count: number): void {
 function judgeRun(
   workDir: string,
   reportName: string,
-  invocation: string[],
+  invocation: ReadonlyArray<string | SecureString>,
   error: Error | undefined
 ): { report: ITestReport } | { error: Error } {
   let report: ITestReport;
@@ -242,7 +244,7 @@ function judgeRun(
     }
     return {
       error: new ExecutionError(
-        `$ ${invocation.join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`
+        `$ ${invocation.map(arg => (typeof arg === "string" ? arg : arg.toDisplayString())).join(" ")}\nthe test runner exited successfully but its report is unusable: ${toError(readErr).message}`
       ),
     };
   }
@@ -264,7 +266,7 @@ export function createTestRunAction(
   staged: FileSet,
   argv: readonly RunnableArgument[],
   measured: boolean,
-  env: ReadonlyMap<string, string>,
+  env: ReadonlyMap<string, SecureString>,
   { retries, uncached }: ITestRunStability,
   selected?: readonly string[]
 ): BuildAction {
@@ -274,7 +276,7 @@ export function createTestRunAction(
     {
       argv,
       outputs: [TEST_REPORT_FILENAME, ...(measured ? [COVERAGE_REPORT_FILENAME] : [])],
-      ...(env.size > 0 ? { env: [...env].map(([name, value]) => `${name}=${value}`) } : {}),
+      ...(env.size > 0 ? { env: [...env].map(([name, value]) => secure`${name}=${value}`) } : {}),
       ...(retries > 0 ? { flake_retries: String(retries) } : {}),
       ...(selected === undefined ? {} : { select_files: [...selected] }),
     },

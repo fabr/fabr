@@ -29,6 +29,7 @@
 import { BUILD_OVERRIDE } from "../model/Constraints";
 import { FileSet } from "../core/FileSet";
 import { RunnableFileSet } from "../core/RunnableFileSet";
+import type { SecureString } from "../core/SecureString";
 import { defineRule } from "./Types";
 import { Property } from "../model/Property";
 import { FabrError } from "../core/Errors";
@@ -58,7 +59,7 @@ export default defineRule({
 const SHELL_GLOBAL = "SHELL";
 
 /** Make the runnable of the script `entry`, with `deps` beside it, run with `args`. */
-function runnableScript(deps: FileSet[], entry: FileSet[], args: string[]): RunnableFileSet {
+function runnableScript(deps: FileSet[], entry: FileSet[], args: readonly SecureString[]): RunnableFileSet {
   /* The entry must be exactly one file, the script itself. */
   const entrySet = FileSet.unionAll(...entry);
   const names = [...entrySet].map(([name]) => name);

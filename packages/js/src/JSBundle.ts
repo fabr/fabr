@@ -25,7 +25,7 @@
  * module: it runs without @fabr-build/core.
  */
 
-import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn } from "@fabr-build/core";
+import { dependencyName, FabrError, FileSet, PackageFileSet, RewriteFn, SecureString } from "@fabr-build/core";
 import type { IBundleEntry, IBundleOptions } from "@fabr-build/js-tools";
 import { JSTarget } from "./JSPackage";
 
@@ -210,12 +210,16 @@ function renamedPattern(rewrite: RewriteFn, pattern: string, extension: string, 
 export type BundleFormat = "iife" | "cjs" | "esm" | "esm-split";
 
 /** Convert a JS_BUNDLE_FORMAT value, refusing one that is not a bundle format. */
-export function toBundleFormat(value: string): BundleFormat {
-  if (value === "iife" || value === "cjs" || value === "esm" || value === "esm-split") {
-    return value;
+export function toBundleFormat(value: SecureString): BundleFormat {
+  const format = BUNDLE_FORMATS.find(each => value.equals(each));
+  if (format !== undefined) {
+    return format;
   }
-  throw new FabrError(`JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not '${value}'`);
+  throw new FabrError(`JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not '${value.toDisplayString()}'`);
 }
+
+/** Each bundle format. */
+const BUNDLE_FORMATS: readonly BundleFormat[] = ["iife", "cjs", "esm", "esm-split"];
 
 /**
  * Assemble the driver options from the target's JS_TARGET, bundle format and

@@ -27,6 +27,7 @@ import {
   MemoryFile,
   Property,
   RunnableFileSet,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import jsCompileRule, { jsxModeFor, makeTsConfig } from "./BuildJSCompile";
@@ -48,9 +49,10 @@ function stubContext(packageName?: string): TargetContext {
     TSC_DRIVER: tool(["node", ".tools/tsc/tscDriver/tsc-driver.js"]),
   };
   return {
-    getGlobalString: (name: string) => Computable.resolve(name === "JS_TARGET" ? "es2021-commonjs" : "debug"),
+    getGlobalString: (name: string) =>
+      Computable.resolve(SecureString.of(name === "JS_TARGET" ? "es2021-commonjs" : name === "COVERAGE" ? "off" : "debug")),
     getGlobalRunnable: (name: string) => Computable.resolve(tools[name]),
-    getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([packageName])),
+    getProperty: () => Computable.resolve(packageName === undefined ? undefined : new Property([SecureString.of(packageName)])),
     getRewrite: () => Computable.resolve(() => undefined),
     /* No rename rules: these fixtures have no stylesheets, so the compile
      * carries neither the rewrite documents nor the resource list. */

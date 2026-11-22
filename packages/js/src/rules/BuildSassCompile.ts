@@ -57,7 +57,7 @@ function buildSassCompile(context: TargetContext, collected: { srcs: FileSet[]; 
       /* Source maps follow BUILD_TYPE, as the JavaScript ones do. */
       const options = buildSassOptions(
         [...srcs].map(([name]) => name),
-        emitsSourceMap(buildType)
+        emitsSourceMap(buildType.toUnmaskedString())
       );
       if (options.sources.length === 0) {
         /* Nothing to compile: every source is a partial, or there are none. */

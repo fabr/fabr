@@ -185,7 +185,7 @@ export class DeclaredRule implements SelectableRule {
  * one whose members are not what a rule's are. */
 function toRuleImplementation(implementation: unknown, entry: INameValue): RuleImplementation {
   const refuse = (why: string): never => {
-    throw new FabrError(`'${entry.value.toString()}' is not a rule implementation (${why})`);
+    throw new FabrError(`'${entry.value.toDisplayString()}' is not a rule implementation (${why})`);
   };
   if (typeof implementation !== "object" || implementation === null) {
     return refuse("not an object");
@@ -207,7 +207,7 @@ function toRuleImplementation(implementation: unknown, entry: INameValue): RuleI
 
 /** @return a guard, as a rule's record of patterns. */
 function guardRecord(guard: NameConstraint[]): Record<string, string> {
-  return Object.fromEntries(guard.map(([key, pattern]) => [key, pattern.toString()]));
+  return Object.fromEntries(guard.map(([key, pattern]) => [key, pattern.toUnmaskedString()]));
 }
 
 /** Load the implementation `implementation` names, attributing a failure to it. */
@@ -218,7 +218,7 @@ function loadedImplementation(load: LoadImplementation, implementation: INameVal
       throw err;
     }
     throw new FabrError(
-      `The ${what} implementation '${implementation.value.toString()}' could not be loaded: ${toError(err).message}`
+      `The ${what} implementation '${implementation.value.toDisplayString()}' could not be loaded: ${toError(err).message}`
     );
   };
   try {
@@ -243,7 +243,9 @@ function declaredImplementation(decl: IRepositoryDecl, load: LoadImplementation)
     (loaded ??= loadedImplementation(load, decl.implementation, "repository").then(implementation => {
       const made = implementation as Partial<RepositoryImplementation> | undefined;
       if (typeof made?.provider !== "function" || (made.requirements !== undefined && typeof made.requirements !== "function")) {
-        throw new FabrError(`'${decl.implementation.value.toString()}' is not a repository implementation (no provider function)`);
+        throw new FabrError(
+          `'${decl.implementation.value.toDisplayString()}' is not a repository implementation (no provider function)`
+        );
       }
       return made as RepositoryImplementation;
     }));
@@ -357,8 +359,8 @@ export class ModelBuilder implements BuildModel {
         checkPluginFile(file, this.log);
       }
       for (const decl of file.plugins) {
-        if (!this.pluginDecls.has(decl.name.toString())) {
-          this.pluginDecls.set(decl.name.toString(), decl);
+        if (!this.pluginDecls.has(decl.name.toUnmaskedString())) {
+          this.pluginDecls.set(decl.name.toUnmaskedString(), decl);
         }
       }
       this.optionalLibIncludes.push(...file.includes.filter(include => optionalLibOf(include.name) !== undefined));
@@ -387,10 +389,13 @@ export class ModelBuilder implements BuildModel {
    * second plugin whose package has the same name.
    */
   public addPlugin(decl: IPluginDecl, resolved: PluginPackage | Error, reported = 0): void {
-    this.resolvedPlugins.add(decl.name.toString());
+    this.resolvedPlugins.add(decl.name.toUnmaskedString());
     this.reported += reported;
     if (isBuildFailure(resolved)) {
-      this.log.log(DIAG_PLUGIN_UNUSABLE, { detail: `Plugin '${decl.name.toString()}' could not be built`, loc: declPosn(decl) });
+      this.log.log(DIAG_PLUGIN_UNUSABLE, {
+        detail: `Plugin '${decl.name.toDisplayString()}' could not be built`,
+        loc: declPosn(decl),
+      });
       this.failedBuilds.push(resolved);
       this.unusablePlugins++;
     } else if (resolved instanceof Error) {
@@ -398,7 +403,7 @@ export class ModelBuilder implements BuildModel {
       this.unusablePlugins++;
     } else if (this.packages.has(resolved.name)) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, {
-        detail: `Plugin '${decl.name.toString()}' is a second plugin named '${resolved.name}'`,
+        detail: `Plugin '${decl.name.toDisplayString()}' is a second plugin named '${resolved.name}'`,
         loc: declPosn(decl),
       });
     } else {
@@ -460,7 +465,7 @@ export class ModelBuilder implements BuildModel {
     const pending = this.pendingPlugins();
     for (const decl of pending) {
       this.log.log(DIAG_PLUGIN_UNUSABLE, {
-        detail: `Plugin '${decl.name.toString()}' names nothing the project declares`,
+        detail: `Plugin '${decl.name.toDisplayString()}' names nothing the project declares`,
         loc: declPosn(decl),
       });
     }

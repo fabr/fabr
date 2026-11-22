@@ -42,6 +42,7 @@ import { MaterializedCommandList, TargetContext, toEnvironment } from "../contex
 import { Computable } from "../core/Computable";
 import { FileSet } from "../core/FileSet";
 import { Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { createPipelineAction, IKeptState, stagePipeline } from "../core/PipelineAction";
 import { defineRule, RuleResult } from "./Types";
 import { FabrError } from "../core/Errors";
@@ -65,13 +66,13 @@ function generate(context: TargetContext, srcSets: FileSet[]): Computable<RuleRe
       context.getProjection("incremental"),
       context.getString("changes"),
     ],
-    (output: Name | undefined, env, incremental: Name | undefined, changes: string | undefined) => {
+    (output: Name | undefined, env, incremental: Name | undefined, changes: SecureString | undefined) => {
       const srcs = FileSet.unionAll(...srcSets);
       return context.getCommandProperty("run", srcs).then(pipelines => {
         if (pipelines.length === 0) {
           return Computable.reject<RuleResult>(new FabrError("a 'generate' target requires a 'run' command"));
         }
-        return assemblePipeline(srcs, pipelines, output, env, { incremental, changes });
+        return assemblePipeline(srcs, pipelines, output, env, { incremental, changes: changes?.toUnmaskedString() });
       });
     }
   );
@@ -82,7 +83,7 @@ function assemblePipeline(
   srcs: FileSet,
   pipelines: MaterializedCommandList,
   output: Name | undefined,
-  env: ReadonlyMap<string, string>,
+  env: ReadonlyMap<string, SecureString>,
   kept: IKeptState
 ): RuleResult {
   const { files, specs } = stagePipeline(pipelines, srcs);

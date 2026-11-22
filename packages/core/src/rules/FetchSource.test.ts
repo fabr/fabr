@@ -24,6 +24,8 @@ import { IFetchContext, IFetchRequest } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { Name, NameBuilder } from "../core/Name";
+import { SecureString } from "../core/SecureString";
+import { Property } from "../model/Property";
 import { TargetContext } from "../context/index";
 import { FETCH_PROVENANCE, fetchSourceRegistration } from "./FetchSource";
 import { ResolvedRequirements } from "../context/Collection";
@@ -52,10 +54,18 @@ function fakeContext(members: Record<string, string>, log: FetchLog, body: strin
     name: "@dl",
     getWildcardProperties: () =>
       Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
-    getString: (name: string) => Computable.resolve(members[name]),
+    getProperty: (name: string) =>
+      Computable.resolve(
+        new Property(
+          members[name]
+            .split(/\s+/)
+            .filter(word => word !== "")
+            .map(word => SecureString.of(word))
+        )
+      ),
     fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
       request().then(({ url, process }) => {
-        log.urls.push(url);
+        log.urls.push(url.toUnmaskedString());
         const output = {
           stream: new Writable({ write: (_chunk, _enc, done): void => done() }),
           finalize: (name: string): Computable<IFile> => {
@@ -94,7 +104,15 @@ function cachedContext(members: Record<string, string>, log: FetchLog, cachedByt
     name: "@dl",
     getWildcardProperties: () =>
       Computable.resolve(Object.keys(members).map(name => ({ key: Name.fromLiteral(name), decl: { name: Name.fromLiteral(name) } }))),
-    getString: (name: string) => Computable.resolve(members[name]),
+    getProperty: (name: string) =>
+      Computable.resolve(
+        new Property(
+          members[name]
+            .split(/\s+/)
+            .filter(word => word !== "")
+            .map(word => SecureString.of(word))
+        )
+      ),
     fetch: (cacheKey: string): Computable<FileSet> => {
       log.urls.push(cacheKey);
       return Computable.resolve(new FileSet(new Map([["stored", storedFile("stored", cachedBytes)]])));

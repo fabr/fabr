@@ -21,11 +21,13 @@ import {
   Computable,
   FabrError,
   FileSet,
-  HostLink,
   hostEnvironment,
+  HostLink,
   IFile,
   RunnableArgument,
   RunnableFileSet,
+  secure,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import * as path from "path";
@@ -47,13 +49,13 @@ export interface IContainerRun {
   /** Ports published on the host (`8080:80`, `5353:53/udp`); where absent, each port the image exposes, on the same number. */
   readonly ports?: readonly string[];
   /** Environment variables, set over the image's. */
-  readonly env: ReadonlyArray<readonly [string, string]>;
+  readonly env: ReadonlyArray<readonly [string, SecureString]>;
   /** The network the container joins. */
   readonly network?: string;
   /** Names added to the container's hosts file, each with its address. */
-  readonly hosts: ReadonlyArray<readonly [string, string]>;
+  readonly hosts: ReadonlyArray<readonly [string, SecureString]>;
   /** Arguments the container runs with in place of the image's command, before any its caller gives. */
-  readonly args: readonly string[];
+  readonly args: readonly RunnableArgument[];
 }
 
 /** The run of an image named on its own: its exposed ports published, nothing else set. */
@@ -127,13 +129,13 @@ function launcherOf(context: TargetContext): Computable<ILauncher> {
 }
 
 /** @return the engine's options for running `image` as `run` says. */
-function runOptions(image: ImageFileSet, run: IContainerRun): string[] {
+function runOptions(image: ImageFileSet, run: IContainerRun): Array<string | SecureString> {
   const published = run.ports ?? exposedPorts(image).map(port => `${port.substring(0, port.indexOf("/"))}:${port}`);
   return [
     ...published.flatMap(port => ["-p", port]),
-    ...run.env.flatMap(([variable, value]) => ["-e", `${variable}=${value}`]),
+    ...run.env.flatMap(([variable, value]) => ["-e", secure`${variable}=${value}`]),
     ...(run.network === undefined ? [] : ["--network", run.network]),
-    ...run.hosts.flatMap(([host, address]) => ["--add-host", `${host}:${address}`]),
+    ...run.hosts.flatMap(([host, address]) => ["--add-host", secure`${host}:${address}`]),
   ];
 }
 

@@ -22,7 +22,16 @@ import * as crypto from "node:crypto";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
-import { Computable, FabrError, FileSet, IntegrityError, MemoryFile, verifiedStream, versionToString } from "@fabr-build/core";
+import {
+  Computable,
+  FabrError,
+  FileSet,
+  IntegrityError,
+  MemoryFile,
+  SecureString,
+  verifiedStream,
+  versionToString,
+} from "@fabr-build/core";
 import {
   expectedTarballDigest,
   NPM_FORMAT,
@@ -206,7 +215,7 @@ describe("publishToRegistry access", () => {
   it("defaults the envelope's access to null (the registry decides)", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, {});
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {});
       expect(JSON.parse(server.seen[0].body).access).to.equal(null);
     } finally {
       server.close();
@@ -216,7 +225,7 @@ describe("publishToRegistry access", () => {
   it("requests the repository's declared access level", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, {}, "public");
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {}, "public");
       expect(JSON.parse(server.seen[0].body).access).to.equal("public");
     } finally {
       server.close();
@@ -227,7 +236,7 @@ describe("publishToRegistry access", () => {
     const server = await scriptedServer(() => ({ status: 402, body: `{"error":"You must sign up for private packages"}` }));
     try {
       let thrown: unknown;
-      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/failed \(402\)/);
       expect((thrown as FabrError).help.join("\n")).to.match(/access = public/);
     } finally {
@@ -238,14 +247,14 @@ describe("publishToRegistry access", () => {
 
 describe("toPublishAccess", () => {
   it("accepts the two access levels and treats absence as the registry default", () => {
-    expect(toPublishAccess("public")).to.equal("public");
-    expect(toPublishAccess("private")).to.equal("restricted");
-    expect(toPublishAccess("restricted")).to.equal("restricted"); /* npm's wire synonym */
+    expect(toPublishAccess(SecureString.of("public"))).to.equal("public");
+    expect(toPublishAccess(SecureString.of("private"))).to.equal("restricted");
+    expect(toPublishAccess(SecureString.of("restricted"))).to.equal("restricted"); /* npm's wire synonym */
     expect(toPublishAccess(undefined)).to.equal(null);
   });
 
   it("rejects anything else", () => {
-    expect(() => toPublishAccess("sekrit")).to.throw(/invalid access value/);
+    expect(() => toPublishAccess(SecureString.of("sekrit"))).to.throw(/invalid access value/);
   });
 });
 
@@ -257,7 +266,7 @@ describe("publishToRegistry second factor", () => {
   it("advertises web-auth capability on the publish request", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      expect(await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH)).to.equal("published");
+      expect(await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH)).to.equal("published");
       /* The registry only offers the passkey ceremony to a client sending both. */
       expect(server.seen[0].headers["npm-auth-type"]).to.equal("web");
       expect(server.seen[0].headers["npm-command"]).to.equal("publish");
@@ -272,7 +281,7 @@ describe("publishToRegistry second factor", () => {
     );
     const asked: Array<{ challenge: OtpChallenge; rejected?: string }> = [];
     try {
-      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
+      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
         asked.push({ challenge, rejected });
         return Computable.resolve("123456");
       });
@@ -296,7 +305,7 @@ describe("publishToRegistry second factor", () => {
       request.headers["npm-otp"] === "ceremony-tok" ? { status: 201, body: "{}" } : webChallenge
     );
     try {
-      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, null, challenge => {
+      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, challenge => {
         expect(challenge.authUrl).to.equal("https://www.npmjs.com/auth/cli/x");
         expect(challenge.doneUrl).to.equal("https://registry.npmjs.org/-/v1/done?authId=x");
         return Computable.resolve("ceremony-tok");
@@ -313,7 +322,7 @@ describe("publishToRegistry second factor", () => {
     );
     const asked: Array<string | undefined> = [];
     try {
-      const status = await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
+      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
         asked.push(rejected);
         return Computable.resolve(rejected === undefined ? "stale" : "fresh");
       });
@@ -330,7 +339,7 @@ describe("publishToRegistry second factor", () => {
     const asked: Array<string | undefined> = [];
     try {
       let thrown: unknown;
-      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
         asked.push(rejected);
         return Computable.resolve("refused");
       }).catch(err => (thrown = err));
@@ -345,7 +354,7 @@ describe("publishToRegistry second factor", () => {
     const server = await scriptedServer(() => EOTP_REPLY);
     try {
       let thrown: unknown;
-      await publishToRegistry(server.url, IDENTITY, TARBALL, {}, AUTH).catch(err => (thrown = err));
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/one-time pass/);
       expect(server.seen.length).to.equal(1);
     } finally {

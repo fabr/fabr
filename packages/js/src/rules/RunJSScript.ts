@@ -42,20 +42,21 @@ import {
   BUILD_OVERRIDE,
   Computable,
   Constraints,
+  ContainedSources,
+  defineRule,
+  EMPTY_FILESET,
   FabrError,
   FileSet,
   FileSetRef,
   Flag,
+  NoRequirements,
   PackageFileSet,
+  PackageSources,
+  ResolutionSpec,
   RuleResult,
   RunnableFileSet,
+  SecureString,
   TargetContext,
-  defineRule,
-  ContainedSources,
-  EMPTY_FILESET,
-  PackageSources,
-  NoRequirements,
-  ResolutionSpec,
   toEnvironment,
 } from "@fabr-build/core";
 import { layoutProgram } from "../Layout";
@@ -99,7 +100,7 @@ export default defineRule({
   evaluateMaterialized(context, inputs) {
     return Computable.forAll(
       [defineJsRunnable(context, inputs), context.getMap("env").then(toEnvironment)] as const,
-      (runnable: RuleResult, env: ReadonlyMap<string, string>): RuleResult =>
+      (runnable: RuleResult, env: ReadonlyMap<string, SecureString>): RuleResult =>
         runnable instanceof RunnableFileSet ? runnable.withEnvironment(env) : runnable
     );
   },
@@ -150,7 +151,7 @@ function defineJsRunnable(
          * root package.json states the module `type` JS_TARGET emits (ESM by
          * default), so node loads the output in that mode. */
         if (classifySourceByExt(entryName) === "ts") {
-          const jsTarget = parseJSTarget(target);
+          const jsTarget = parseJSTarget(target.toUnmaskedString());
           const launchName = compiledEntryName(entryName);
           /* Loose files in `deps` the compile does not emit (.json, templates,
            * assets) are added to the install at the root, beside the compiled
@@ -202,7 +203,7 @@ function defineJsRunnable(
         if (typescript.isEmpty()) {
           return launch(EMPTY_FILESET);
         }
-        const jsTarget = parseJSTarget(target);
+        const jsTarget = parseJSTarget(target.toUnmaskedString());
         const faceTarget = Constraints.of({ JS_TARGET: formatJSTarget({ ...jsTarget, module: soleModuleFormat(jsTarget.module) }) });
         return compileContents(context, typescript, rest, { constraints: faceTarget }).then(built =>
           launch(built.compiled.minus(built.depOutputs))

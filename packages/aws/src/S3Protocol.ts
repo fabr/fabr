@@ -24,15 +24,15 @@
  */
 
 import * as sax from "sax";
-import { FabrError, Name } from "@fabr-build/core";
-import { IServiceRequest, uriEncode } from "./Signing";
+import { FabrError, Name, SecureString, urlJoin, urlRoot } from "@fabr-build/core";
+import { getServiceUrl, IServiceRequest, uriEncode } from "./Signing";
 
 /** Where a bucket's requests go: AWS's S3 in the bucket's region, or an S3-compatible store. */
 export interface IBucketLocation {
   readonly bucket: string;
   readonly region: string;
   /** The store's URL, where it is not AWS. */
-  readonly endpoint?: URL;
+  readonly endpoint?: SecureString;
 }
 
 /**
@@ -57,7 +57,7 @@ export function selectObjects(pattern: Name): IObjectSelection {
   const literal = pattern.getLiteralPrefix();
   const whole = pattern.isSimpleName();
   if (!whole && pattern.getSubstitutions().length > 0) {
-    throw new FabrError(`'${pattern.toString()}' has a substitution left in it`);
+    throw new FabrError(`'${pattern.toDisplayString()}' has a substitution left in it`);
   }
   const head = whole ? `${literal}:` : literal.substring(0, literal.lastIndexOf(":") + 1);
   const objects: string[] = [];
@@ -82,8 +82,7 @@ export function isFileKey(key: string): boolean {
 
 /** Make the request for the object `key` in a bucket. */
 export function objectRequest(location: IBucketLocation, key: string): IServiceRequest {
-  const base = bucketBase(location);
-  return { ...base, method: "GET", path: `${base.path}/${key.split("/").map(uriEncode).join("/")}`, query: new Map() };
+  return { method: "GET", url: urlRoot(bucketUrl(location)).concat(`/${encodeKey(key)}`), query: new Map() };
 }
 
 /** Make the request that stores `key` (`PutObject`), sent with `headers` and signed with them. */
@@ -98,13 +97,11 @@ export function headRequest(location: IBucketLocation, key: string): IServiceReq
 
 /** Make the request whose answer says whether a bucket exists (`HeadBucket`). */
 export function bucketRequest(location: IBucketLocation): IServiceRequest {
-  const base = bucketBase(location);
-  return { ...base, method: "HEAD", path: base.path === "" ? "/" : base.path, query: new Map() };
+  return { method: "HEAD", url: bucketUrl(location), query: new Map() };
 }
 
 /** Make the request for one page of a bucket's keys under `prefix`, from `token` where it is not the first, and grouped at `delimiter` where one is given. */
 export function listRequest(location: IBucketLocation, prefix: string, token?: string, delimiter?: string): IServiceRequest {
-  const base = bucketBase(location);
   const query = new Map([
     ["list-type", "2"],
     ["prefix", prefix],
@@ -115,7 +112,7 @@ export function listRequest(location: IBucketLocation, prefix: string, token?: s
   if (delimiter !== undefined) {
     query.set("delimiter", delimiter);
   }
-  return { ...base, method: "GET", path: base.path === "" ? "/" : base.path, query };
+  return { method: "GET", url: bucketUrl(location), query };
 }
 
 /**
@@ -124,47 +121,41 @@ export function listRequest(location: IBucketLocation, prefix: string, token?: s
  * AWS in `region`, whose answer is every bucket of the account, whatever its
  * region.
  */
-export function bucketsRequest(region: string, endpoint: URL | undefined, token?: string): IServiceRequest {
+export function bucketsRequest(region: string, endpoint: SecureString | undefined, token?: string): IServiceRequest {
   const query = new Map([["max-buckets", String(BUCKETS_PAGE)]]);
   if (token !== undefined) {
     query.set("continuation-token", token);
   }
-  if (endpoint !== undefined) {
-    return {
-      method: "GET",
-      protocol: endpoint.protocol,
-      hostname: endpoint.hostname,
-      port: endpoint.port === "" ? undefined : Number(endpoint.port),
-      path: `${endpoint.pathname.replace(/\/+$/, "")}/`,
-      query,
-    };
-  }
-  return { method: "GET", protocol: "https:", hostname: `s3.${region}.amazonaws.com`, path: "/", query };
+  const url = endpoint === undefined ? getServiceUrl(S3_HOST, region) : urlJoin(endpoint, "");
+  return { method: "GET", url, query };
 }
 
 /** The most buckets a `ListBuckets` page asks for (S3's own limit). */
 const BUCKETS_PAGE = 10000;
 
 /** Make the URL whose response says the region of `bucket` in AWS (its `x-amz-bucket-region` header), asked for without credentials. */
-export function regionProbeUrl(bucket: string): string {
-  return isVirtualHostable(bucket) ? `https://${bucket}.s3.amazonaws.com/` : `https://s3.amazonaws.com/${uriEncode(bucket)}`;
+export function regionProbeUrl(bucket: string): SecureString {
+  return SecureString.of(
+    isVirtualHostable(bucket) ? `https://${bucket}.s3.amazonaws.com/` : `https://s3.amazonaws.com/${uriEncode(bucket)}`
+  );
 }
 
-/** Make the parts of a request to a bucket other than its method, the key's path and the query: the bucket in the hostname where it can be, else in the path. */
-function bucketBase(location: IBucketLocation): Pick<IServiceRequest, "protocol" | "hostname" | "port" | "path"> {
+/** Make the URL of a bucket: the bucket in the hostname where it can be, else in the path. */
+function bucketUrl(location: IBucketLocation): SecureString {
   const { bucket, region, endpoint } = location;
+  const encoded = uriEncode(bucket);
   if (endpoint !== undefined) {
-    const root = endpoint.pathname.replace(/\/+$/, "");
-    return {
-      protocol: endpoint.protocol,
-      hostname: endpoint.hostname,
-      port: endpoint.port === "" ? undefined : Number(endpoint.port),
-      path: `${root}/${uriEncode(bucket)}`,
-    };
+    return urlRoot(endpoint).concat(`/${encoded}`);
   }
-  return isVirtualHostable(bucket)
-    ? { protocol: "https:", hostname: `${bucket}.s3.${region}.amazonaws.com`, path: "" }
-    : { protocol: "https:", hostname: `s3.${region}.amazonaws.com`, path: `/${uriEncode(bucket)}` };
+  return isVirtualHostable(bucket) ? getServiceUrl(`${bucket}.s3`, region) : getServiceUrl(S3_HOST, region, encoded);
+}
+
+/** The host name of S3's API within a region. */
+const S3_HOST = "s3";
+
+/** @return `key` URI-encoded a path segment at a time. */
+function encodeKey(key: string): string {
+  return key.split("/").map(uriEncode).join("/");
 }
 
 /** @return true if `bucket` can be named in a hostname (a name with `.` in it would not match S3's certificate), otherwise false. */

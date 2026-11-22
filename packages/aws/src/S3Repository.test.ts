@@ -33,12 +33,13 @@ import {
   MemoryFile,
   Name,
   NamespaceRef,
-  PartialRepositoryRef,
   openUrlStream,
   parseName,
+  PartialRepositoryRef,
   PublishStatus,
   RepositoryPublishRef,
   RepositoryRef,
+  SecureString,
   TargetContext,
   TaskProgress,
 } from "@fabr-build/core";
@@ -221,7 +222,7 @@ function accountAt(store: IFakeStore, options: Array<FetchOptions | undefined> =
     signer: new RequestSigner(undefined),
     credentials: "profile:default",
     region: "us-east-1",
-    endpoint: new URL(store.url),
+    endpoint: SecureString.of(store.url),
     repositoryTypes: new Map(),
   });
 }
@@ -345,8 +346,10 @@ describe("the S3 service of an AWS account", () => {
     const slash = (await refOf(account, "s3:acme/v3/model.bin")) as RepositoryRef;
     expect(colon.name).to.equal("acme");
     expect(colon.repositoryName).to.equal("@aws:s3");
-    expect(colon.projections.map(({ pattern, prefix }) => [pattern.toString(), prefix])).to.deep.equal([["v3/model.bin", ""]]);
-    expect(slash.projections.map(({ pattern, prefix }) => [pattern.toString(), prefix])).to.deep.equal([["v3/model.bin", "acme/"]]);
+    expect(colon.projections.map(({ pattern, prefix }) => [pattern.toUnmaskedString(), prefix])).to.deep.equal([["v3/model.bin", ""]]);
+    expect(slash.projections.map(({ pattern, prefix }) => [pattern.toUnmaskedString(), prefix])).to.deep.equal([
+      ["v3/model.bin", "acme/"],
+    ]);
   });
 
   it("lists the bucket from a pattern's literal head, a page at a time, leaving folder markers out", async () => {

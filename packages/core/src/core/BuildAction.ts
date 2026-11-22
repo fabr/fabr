@@ -30,6 +30,7 @@ import { hashString, symlink } from "./FSWrapper";
 import { PackageFileSet } from "./PackageFileSet";
 import { ABSENT_PREFIX, DiscoveredDeps, encodeName } from "./Manifest";
 import { Name } from "./Name";
+import { SecureString } from "./SecureString";
 import type { ActionContext } from "./BuildCache";
 import type { ITargetDecl } from "../model/AST";
 import type { ITaskReport, StageSpec } from "../support/Execute";
@@ -50,7 +51,7 @@ import { manifestArguments, type RunnableArgument } from "./RunnableFileSet";
  * part of the recorded base. Put content in `inputs`: a config member that
  * varies with source content makes every edit a new target key.
  */
-export type ActionConfigValue = string | readonly RunnableArgument[] | Name | FileSet;
+export type ActionConfigValue = string | SecureString | readonly RunnableArgument[] | Name | FileSet;
 export type ActionConfig = Record<string, ActionConfigValue>;
 
 /** What a build step's `run`, and so a cache `create` callback, returns. */
@@ -109,7 +110,7 @@ export interface IStagedStep {
   /** The commands, each a pipeline of one or more stages. */
   commands: IStagedCommand[];
   /** The environment the commands run with: their whole environment. */
-  env: ReadonlyMap<string, string>;
+  env: ReadonlyMap<string, SecureString>;
 }
 
 /** The optional parts of a {@link BuildAction}. */
@@ -327,7 +328,7 @@ export function configFiles(action: BuildAction): FileSet {
  * name plus the file it was written in, as the loader named that file.
  */
 export function declIdentity(decl: ITargetDecl): string {
-  return `${decl.name.toString()}@${decl.source.file}`;
+  return [decl.name.toUnmaskedString(), decl.source.file].join("@");
 }
 
 /**
@@ -355,6 +356,9 @@ export function manifestConfig(config: ActionConfig): string {
 function manifestConfigValue(value: ActionConfigValue): string {
   if (typeof value === "string") {
     return JSON.stringify(value);
+  }
+  if (value instanceof SecureString) {
+    return JSON.stringify(value.toUnmaskedString());
   }
   if (value instanceof FileSet) {
     return manifestFileInput(value, false);

@@ -46,7 +46,10 @@ import {
   SemverConstraint,
   SemverVersion,
   markerOnProjection,
+  SecureString,
   sendRequest,
+  shownUrl,
+  urlJoin,
   toJsonObject,
   ILicense,
   IVersionMetadata,
@@ -251,15 +254,15 @@ export type PublishAccess = "public" | "restricted" | null;
 
 /** Convert a declared `access` property value: absent is null, and `private`
  * is a synonym for npm's `restricted`. Throws for any other value. */
-export function toPublishAccess(value: string | undefined): PublishAccess {
+export function toPublishAccess(value: SecureString | undefined): PublishAccess {
   if (value === undefined) {
     return null;
-  } else if (value === "private" || value === "restricted") {
+  } else if (value.equals("private") || value.equals("restricted")) {
     return "restricted";
-  } else if (value === "public") {
-    return value;
+  } else if (value.equals("public")) {
+    return "public";
   }
-  throw new FabrError(`invalid access value ${JSON.stringify(value)} (expected "public" or "private"/"restricted")`);
+  throw new FabrError(`invalid access value '${value.toDisplayString()}' (expected "public" or "private"/"restricted")`);
 }
 
 /** The outcome of offering a CI identity for a package's publish: the registry's
@@ -278,22 +281,25 @@ export type TrustedPublishing = { token: string } | { refused: string };
  * identity token cannot be had, the registry cannot be reached, or it answers
  * 429 or 5xx.
  */
-export function exchangeIdentity(registryUrl: string, name: string, provider: IdentityProvider): Computable<TrustedPublishing> {
+export function exchangeIdentity(registryUrl: SecureString, name: string, provider: IdentityProvider): Computable<TrustedPublishing> {
   const escapedName = name.replace(/\//g, "%2f");
+  const hostname = new URL(registryUrl.toUnmaskedString()).hostname;
   return provider
-    .token(`npm:${new URL(registryUrl).hostname}`)
+    .token(`npm:${hostname}`)
     .then(idToken =>
-      sendRequest(`${registryUrl}/-/npm/v1/oidc/token/exchange/package/${escapedName}`, {
+      sendRequest(urlJoin(registryUrl, `-/npm/v1/oidc/token/exchange/package/${escapedName}`), {
         method: "POST",
         headers: { authorization: `Bearer ${idToken}`, accept: "application/json" },
       })
     )
     .then(({ statusCode, body }): TrustedPublishing => {
       if (statusCode >= 200 && statusCode < 300) {
-        return { token: parseJson(body, `trusted publishing response for ${name} from ${registryUrl}`, toExchangedToken) };
+        return { token: parseJson(body, `trusted publishing response for ${name} from ${shownUrl(registryUrl)}`, toExchangedToken) };
       }
       if (statusCode === 429 || statusCode >= 500) {
-        throw new FabrError(`trusted publishing for ${name} at ${registryUrl} failed (${statusCode}): ${registryMessage(body)}`);
+        throw new FabrError(
+          `trusted publishing for ${name} at ${shownUrl(registryUrl)} failed (${statusCode}): ${registryMessage(body)}`
+        );
       }
       return { refused: `${registryMessage(body)} (${statusCode})` };
     });
@@ -311,11 +317,11 @@ function provenanceAttachment(bundle: SerializedBundle): { content_type: string;
  * registry answers 404, and rejects on any other non-2xx answer.
  */
 export function packageVisibility(
-  registryUrl: string,
+  registryUrl: SecureString,
   name: string,
   headers: Record<string, string>
 ): Computable<boolean | undefined> {
-  return sendRequest(`${registryUrl}/-/package/${name.replace(/\//g, "%2f")}/visibility`, {
+  return sendRequest(urlJoin(registryUrl, `-/package/${name.replace(/\//g, "%2f")}/visibility`), {
     method: "GET",
     headers: { ...headers, accept: "application/json" },
   }).then(({ statusCode, body }) => {
@@ -323,9 +329,11 @@ export function packageVisibility(
       return undefined;
     }
     if (statusCode < 200 || statusCode >= 300) {
-      throw new FabrError(`reading the visibility of ${name} at ${registryUrl} failed (${statusCode}): ${registryMessage(body)}`);
+      throw new FabrError(
+        `reading the visibility of ${name} at ${shownUrl(registryUrl)} failed (${statusCode}): ${registryMessage(body)}`
+      );
     }
-    return parseJson(body, `visibility of ${name} from ${registryUrl}`, json => toJsonObject(json).public === true);
+    return parseJson(body, `visibility of ${name} from ${shownUrl(registryUrl)}`, json => toJsonObject(json).public === true);
   });
 }
 
@@ -377,7 +385,7 @@ function registryMessage(body: Buffer): string {
  *   `access = public`.
  */
 export function publishToRegistry(
-  registryUrl: string,
+  registryUrl: SecureString,
   coordinate: NpmPublishIdentity,
   tarball: Buffer,
   manifest: Record<string, unknown>,
@@ -395,7 +403,7 @@ export function publishToRegistry(
     dist: {
       integrity: `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}`,
       shasum: crypto.createHash("sha1").update(bytes).digest("hex"),
-      tarball: new URL(`${name}/-/${tarballName}`, registryUrl + "/").href.replace(/^https:\/\//, "http://"),
+      tarball: new URL(`${name}/-/${tarballName}`, registryUrl.concat("/").toUnmaskedString()).href.replace(/^https:\/\//, "http://"),
     },
   };
   const envelope = {
@@ -427,7 +435,7 @@ export function publishToRegistry(
   };
   const body = JSON.stringify(envelope);
   const attempt = (password?: string): Computable<HttpResponse> =>
-    sendRequest(`${registryUrl}/${escapedName}`, {
+    sendRequest(urlJoin(registryUrl, escapedName), {
       method: "PUT",
       headers: password === undefined ? headers : { ...headers, "npm-otp": password },
       body,
@@ -443,7 +451,9 @@ export function publishToRegistry(
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const detail = response.body.toString("utf8");
-      const error = new FabrError(`publishing ${name}@${version} to ${registryUrl} failed (${response.statusCode}): ${detail}`);
+      const error = new FabrError(
+        `publishing ${name}@${version} to ${shownUrl(registryUrl)} failed (${response.statusCode}): ${detail}`
+      );
       /* npmjs's refusal of a restricted scoped publish: "You must sign up for
        * private packages". */
       if (detail.includes("private packages")) {
@@ -712,7 +722,7 @@ function readNpmContentPackage(files: FileSet): Computable<IContentPackage<Semve
 export function parseNpmPublishCoordinate(ref: Name): NpmPublishIdentity {
   const split = splitWrittenNameVersion(ref.toBaseString());
   if (!split) {
-    const literal = ref.toString();
+    const literal = ref.toDisplayString();
     throw new FabrError(`publish coordinate '${literal}' must name a version (e.g. ${literal}:1.0.0)`);
   }
   const { identifier: name, version } = split;

@@ -123,7 +123,7 @@ export function vendPackageRef<V, C>(
   }
   const split = override === undefined ? written : format.splitReference(name.withoutMarker());
   const identity = override === undefined ? split : { ...split, override };
-  return new RepositoryRef(source, { ...identity, renameTo: name.getRenameTo()?.toString() });
+  return new RepositoryRef(source, { ...identity, renameTo: name.getRenameTo()?.toUnmaskedString() });
 }
 
 /** @return true if `written` states only a package name, which `format`
@@ -171,7 +171,7 @@ export function versionChildren<V, C>(
 /** Make the error for an override marker written on a reference that selects
  * a package's files. */
 export function markerOnProjection(name: Name): Error {
-  return new FabrError(`'${name.toString()}' selects files, so an override marker means nothing on it`).withHelp(
+  return new FabrError(`'${name.toDisplayString()}' selects files, so an override marker means nothing on it`).withHelp(
     "write the marker on a reference to the package itself (`@npm:pkg:1.2.3!`)"
   );
 }

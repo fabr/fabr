@@ -50,6 +50,7 @@ import { SecretFile } from "./SecretFile";
 import { SymlinkFile } from "./SymlinkFile";
 import { Log } from "../support/Log";
 import { expect } from "chai";
+import { SecureString } from "./SecureString";
 import { dependenciesOn } from "./Repository";
 import { ISourcePathStep, SOURCE_PATH_PROVENANCE } from "./Provenance";
 import { deleteTree, deleteTreeSync } from "./FSWrapper";
@@ -60,7 +61,7 @@ const UNTRACKED: TaskTracker<FileSet> = run => run(SILENT_REPORT);
 
 /** A request for `url`, processed by `process`, as {@link BuildCache.getOrFetch} takes one. */
 function requestOf(url: string, process: IFetchRequest["process"]): () => Computable<IFetchRequest> {
-  return () => Computable.resolve({ url, process });
+  return () => Computable.resolve({ url: SecureString.of(url), process });
 }
 
 function toPromise<T>(computable: Computable<T>): Promise<T> {

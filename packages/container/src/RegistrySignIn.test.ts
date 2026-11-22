@@ -20,7 +20,7 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { Computable } from "@fabr-build/core";
+import { Computable, SecureString } from "@fabr-build/core";
 import { parseChallenge, RegistrySignIn, scopesOf } from "./RegistrySignIn";
 
 const REGISTRY = "https://registry.example";
@@ -103,7 +103,7 @@ describe("signing in to a registry", () => {
 
   afterEach(() => new Promise<void>(resolve => server.close(() => resolve())));
 
-  const anonymous = (): RegistrySignIn => new RegistrySignIn(REGISTRY, () => Computable.resolve(undefined));
+  const anonymous = (): RegistrySignIn => new RegistrySignIn(SecureString.of(REGISTRY), () => Computable.resolve(undefined));
   const head = (url: string): { method: string; url: string; headers: Map<string, string> } => ({
     method: "GET",
     url,
@@ -167,7 +167,7 @@ describe("signing in to a registry", () => {
     const manifest = (registry: string): { method: string; url: string; headers: Map<string, string> } =>
       head(`${registry}/v2/library/node/manifests/22`);
     /* The fixture's realm is http: refused for an https registry... */
-    const secure = new RegistrySignIn(REGISTRY, credential);
+    const secure = new RegistrySignIn(SecureString.of(REGISTRY), credential);
     const refused = await Promise.resolve(secure.authorize(manifest(REGISTRY), challenge())).then(
       () => undefined,
       (err: Error) => err.message
@@ -175,14 +175,14 @@ describe("signing in to a registry", () => {
     expect(refused).to.match(/which is not https, so its credential is not sent/);
     expect(issued).to.deep.equal([]);
     /* ...and sent for an http one. */
-    const plain = new RegistrySignIn("http://registry.example", credential);
+    const plain = new RegistrySignIn(SecureString.of("http://registry.example"), credential);
     expect(await plain.authorize(manifest("http://registry.example"), challenge())).to.deep.equal(
       new Map([["authorization", "Bearer token for repository:library/node:pull"]])
     );
   });
 
   it("answers a Basic challenge with the registry's credential, and gives up without one", async () => {
-    const signedIn = new RegistrySignIn(REGISTRY, () => Computable.resolve({ username: "u", password: "p" }));
+    const signedIn = new RegistrySignIn(SecureString.of(REGISTRY), () => Computable.resolve({ username: "u", password: "p" }));
     const basic = { challenges: ['Basic realm="registry"'] };
     expect(await signedIn.authorize(head(`${REGISTRY}/v2/`), basic)).to.deep.equal(
       new Map([["authorization", `Basic ${Buffer.from("u:p").toString("base64")}`]])

@@ -23,6 +23,8 @@ import { FabrError, IntegrityError } from "../core/Errors";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
 import { HASH_ALGORITHM } from "../core/FSWrapper";
 import { Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
+import { shownUrl } from "../core/Fetch";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { ExpectedDigest, isIntegrity, parseIntegrity } from "../support/Integrity";
 import { fetchFile } from "../support/FetchDocument";
@@ -107,13 +109,13 @@ class FetchSource implements FileSource {
 
   /** Make a FileSet of one downloaded member, named `as`, with its `fetch` provenance. */
   private delivered(as: string, file: IFile, path: string, member: FetchMember): FileSet {
-    const origin: IFetchOrigin = { kind: FETCH_PROVENANCE, source: this.declaredName, member: path, url: member.url };
+    const origin: IFetchOrigin = { kind: FETCH_PROVENANCE, source: this.declaredName, member: path, url: shownUrl(member.url) };
     return new FileSet(new Map([[as, file]]), origin);
   }
 
   /** Make the error for a pattern naming no member, listing the members there are. */
   private unknownDownload(name: Name): Error {
-    return new FabrError(`${this.declaredName} has no download matching '${name.toString()}'`).withHelp(
+    return new FabrError(`${this.declaredName} has no download matching '${name.toDisplayString()}'`).withHelp(
       this.members.size > 0 ? `it declares: ${[...this.members.keys()].sort().join(", ")}` : "it declares no downloads"
     );
   }
@@ -126,7 +128,7 @@ class FetchSource implements FileSource {
    */
   private download(path: string, member: FetchMember): Computable<IFile> {
     return fetchFile(this.context, {
-      key: member.url,
+      key: member.url.toUnmaskedString(),
       tag: FETCH_TAG,
       report: { resource: path, role: "content" },
       name: path,
@@ -138,7 +140,7 @@ class FetchSource implements FileSource {
       if (!file) {
         throw new FabrError(`download '${path}' in ${this.declaredName} did not produce a file`);
       }
-      return verifiedAgainst(file, member.digest, member.url);
+      return verifiedAgainst(file, member.digest, shownUrl(member.url));
     });
   }
 }
@@ -167,7 +169,8 @@ registerProvenanceDescriber<IFetchOrigin>(FETCH_PROVENANCE, fetch => {
 
 /** One declared download: where it comes from and what it must hash to. */
 interface FetchMember {
-  readonly url: string;
+  /** Where it is fetched from. */
+  readonly url: SecureString;
   readonly digest: ExpectedDigest;
 }
 
@@ -219,10 +222,10 @@ function readMembers(context: TargetContext): Computable<Map<string, FetchMember
     Computable.forAll(
       wildcards.map(member =>
         context
-          .getString(member.decl.name.toBaseString())
-          .then(value => [member.key.toGlobString().replaceAll(":", "/"), value ?? ""] as const)
+          .getProperty(member.decl.name.toBaseString())
+          .then(value => [member.key.toGlobString().replaceAll(":", "/"), value?.getValues() ?? []] as const)
       ),
-      (...entries: (readonly [string, string])[]) => {
+      (...entries: (readonly [string, SecureString[]])[]) => {
         const members = new Map<string, FetchMember>();
         for (const [name, value] of entries) {
           members.set(name, readMember(context.name, name, value));
@@ -251,13 +254,10 @@ function rejectShadowedMembers(declaredName: string, paths: string[]): void {
 }
 
 /** Read one member's value, its URL and digest. Throws where it has other than one of each. */
-function readMember(declaredName: string, memberName: string, value: string): FetchMember {
-  const values = value
-    .trim()
-    .split(/\s+/)
-    .filter(entry => entry !== "");
-  const integrity = values.filter(isIntegrity);
-  const urls = values.filter(entry => !isIntegrity(entry));
+function readMember(declaredName: string, memberName: string, value: SecureString[]): FetchMember {
+  const words = value.flatMap(word => word.trim().split(/\s+/)).filter(word => word.length > 0);
+  const integrity = words.filter(word => isIntegrity(word.toUnmaskedString()));
+  const urls = words.filter(word => !isIntegrity(word.toUnmaskedString()));
   const where = `download '${memberName}' in ${declaredName}`;
   if (urls.length !== 1) {
     throw new FabrError(`${where} names ${urls.length === 0 ? "no URL" : `${urls.length} URLs`}`).withHelp(
@@ -269,10 +269,10 @@ function readMember(declaredName: string, memberName: string, value: string): Fe
       'a URL is not immutable on its own, so every download must state one digest, e.g. "sha256-<base64>"'
     );
   }
-  const digest = parseIntegrity(integrity[0]);
+  const digest = parseIntegrity(integrity[0].toUnmaskedString());
   if (!digest) {
     /* Reached only where isIntegrity and parseIntegrity disagree. */
-    throw new FabrError(`${where} has an unreadable integrity digest '${integrity[0]}'`);
+    throw new FabrError(`${where} has an unreadable integrity digest '${integrity[0].toDisplayString()}'`);
   }
   return { url: urls[0], digest };
 }

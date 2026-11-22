@@ -22,26 +22,17 @@
  * `GetCallerIdentity`, which any credentials may call.
  */
 
-import { FabrError } from "@fabr-build/core";
+import { FabrError, SecureString, urlJoin } from "@fabr-build/core";
 import { readDocument } from "./S3Protocol";
-import { IServiceRequest } from "./Signing";
+import { getServiceUrl, IServiceRequest } from "./Signing";
 
 /** The name STS's requests are signed for. */
 export const STS_SERVICE = "sts";
 
 /** Make the `GetCallerIdentity` request: to `endpoint` where there is one, else to STS in `region`. */
-export function identityRequest(region: string, endpoint?: URL): IServiceRequest & { readonly body: string } {
-  const base =
-    endpoint === undefined
-      ? { protocol: "https:", hostname: `sts.${region}.amazonaws.com`, path: "/" }
-      : {
-          protocol: endpoint.protocol,
-          hostname: endpoint.hostname,
-          ...(endpoint.port === "" ? {} : { port: Number(endpoint.port) }),
-          path: `${endpoint.pathname.replace(/\/+$/, "")}/`,
-        };
+export function identityRequest(region: string, endpoint?: SecureString): IServiceRequest & { readonly body: string } {
   return {
-    ...base,
+    url: endpoint === undefined ? getServiceUrl("sts", region) : urlJoin(endpoint, ""),
     method: "POST",
     query: new Map(),
     headers: new Map([["content-type", "application/x-www-form-urlencoded; charset=utf-8"]]),

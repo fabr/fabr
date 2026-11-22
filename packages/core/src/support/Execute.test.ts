@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "../core/SecureString";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -144,8 +145,9 @@ describe("findExecutable", () => {
 
 describe("variableEntry", () => {
   it("splits a variable at its first '='", () => {
-    expect(variableEntry("A=b=c")).to.deep.equal(["A", "b=c"]);
-    expect(variableEntry("EMPTY=")).to.deep.equal(["EMPTY", ""]);
+    const plain = ([name, value]: [string, SecureString]): [string, string] => [name, value.toUnmaskedString()];
+    expect(plain(variableEntry("A=b=c"))).to.deep.equal(["A", "b=c"]);
+    expect(plain(variableEntry("EMPTY="))).to.deep.equal(["EMPTY", ""]);
   });
 
   it("refuses an entry with no '=', naming it", () => {

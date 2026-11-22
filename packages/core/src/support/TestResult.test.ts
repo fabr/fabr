@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "../core/SecureString";
 import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile } from "../core/MemoryFS";
 import {
@@ -178,19 +179,23 @@ describe("retriedReport", () => {
 
 describe("toTestStability", () => {
   it("accepts the stabilities there are", () => {
-    expect(["stable", "flaky", "unstable"].map(toTestStability)).to.deep.equal(["stable", "flaky", "unstable"]);
+    expect(["stable", "flaky", "unstable"].map(value => toTestStability(SecureString.of(value)))).to.deep.equal([
+      "stable",
+      "flaky",
+      "unstable",
+    ]);
   });
 
   it("refuses any other value, naming those there are", () => {
-    expect(() => toTestStability("shaky")).to.throw("'shaky' is not a test stability (stable, flaky, unstable)");
+    expect(() => toTestStability(SecureString.of("shaky"))).to.throw("'shaky' is not a test stability (stable, flaky, unstable)");
   });
 });
 
 describe("toFlakeRetries", () => {
   it("reads a count, and refuses anything else", () => {
-    expect(toFlakeRetries("0")).to.equal(0);
-    expect(toFlakeRetries("3")).to.equal(3);
-    expect(() => toFlakeRetries("-1")).to.throw("TEST_FLAKE_RETRIES must be a number of retries, not '-1'");
+    expect(toFlakeRetries(SecureString.of("0"))).to.equal(0);
+    expect(toFlakeRetries(SecureString.of("3"))).to.equal(3);
+    expect(() => toFlakeRetries(SecureString.of("-1"))).to.throw("TEST_FLAKE_RETRIES must be a number of retries, not '-1'");
   });
 });
 
@@ -203,9 +208,9 @@ describe("selectTestFiles", () => {
   );
 
   it("keeps the files whose source path (here, with none, their name) the glob matches, and all of them for an empty pattern", () => {
-    expect([...selectTestFiles(tests, "dates/**")].map(([name]) => name)).to.deep.equal(["dates/a.test.ts"]);
-    expect([...selectTestFiles(tests, "**/b.test.ts")].map(([name]) => name)).to.deep.equal(["b.test.ts"]);
-    expect(selectTestFiles(tests, "")).to.equal(tests);
+    expect([...selectTestFiles(tests, SecureString.of("dates/**"))].map(([name]) => name)).to.deep.equal(["dates/a.test.ts"]);
+    expect([...selectTestFiles(tests, SecureString.of("**/b.test.ts"))].map(([name]) => name)).to.deep.equal(["b.test.ts"]);
+    expect(selectTestFiles(tests, SecureString.of(""))).to.equal(tests);
   });
 });
 

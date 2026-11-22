@@ -25,7 +25,8 @@ import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "./Constants";
 import { Computable, ComputableHandle } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
-import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress } from "./Fetch";
+import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress, shownUrl } from "./Fetch";
+import type { SecureString } from "./SecureString";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
 import {
@@ -92,7 +93,7 @@ import { parseJson, toJsonObject } from "../support/Json";
 
 /** A download request, made only where the cache holds no answer. */
 export interface IFetchRequest {
-  url: string;
+  url: SecureString;
   /** Request headers, such as authentication; not part of the key. */
   headers?: Record<string, string>;
   /** The credential that signs the request, asked again where the server answers 401; not part of the key. */
@@ -799,7 +800,7 @@ export class BuildCache {
         if (this.refresh) {
           this.refreshed.add(key);
         }
-        return request().then(made => this.fetch(key, made, track(made.url), entry, options));
+        return request().then(made => this.fetch(key, made, track(shownUrl(made.url)), entry, options));
       })
     );
   }
@@ -945,7 +946,7 @@ export class BuildCache {
       if (entry && isTransientFetchError(err)) {
         /* Stale-if-error (RFC 9111), with a warning. Touch the copy as served,
          * so it does not age out while the origin cannot replace it. */
-        this.log.log(DIAG_SERVING_STALE, { url, reason: err instanceof Error ? err.message : String(err) });
+        this.log.log(DIAG_SERVING_STALE, { url: shownUrl(url), reason: err instanceof Error ? err.message : String(err) });
         this.noteEntryServed(key);
         return entry.files;
       }

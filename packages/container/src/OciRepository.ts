@@ -25,31 +25,35 @@ import {
   FileSet,
   IProvenanceStep,
   ISigstoreInstance,
+  ITaskReport,
   MemoryCache,
   Name,
   onlyTo,
-  PackageFileSet,
-  PartialRepositoryRef,
-  PUBLIC_SIGSTORE,
-  Property,
-  registerProvenanceDescriber,
-  registerProvenanceRenderer,
-  Repository,
-  RepositoryLookup,
-  PackagePublishRef,
   packageCoordinateOf,
+  PackageFileSet,
+  PackagePublishRef,
+  PartialRepositoryRef,
+  Property,
+  PUBLIC_SIGSTORE,
   PublishableFileSet,
   PublishMember,
   PublishStatus,
   Reference,
+  registerProvenanceDescriber,
+  registerProvenanceRenderer,
+  Repository,
+  RepositoryImplementation,
+  RepositoryLookup,
   RepositoryPublishRef,
   RepositoryRef,
   RepositoryWriter,
   ResolvedNode,
   RunnableFileSet,
+  secure,
+  SecureString,
+  shownUrl,
   TargetContext,
-  RepositoryImplementation,
-  ITaskReport,
+  urlRoot,
 } from "@fabr-build/core";
 import { ImageFileSet, ILayerRecord } from "./ImageFileSet";
 import { imageRunnable } from "./ImageRunnable";
@@ -156,7 +160,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   ) {}
 
   public getRepositoryRef(name: Name): RepositoryRef | PartialRepositoryRef {
-    const written = name.toString();
+    const written = name.toDisplayString();
     if (name.getMarker() !== undefined) {
       throw new FabrError(`'${written}' is an image, not resolved, so an override marker means nothing on it`).withHelp(
         "write the reference without the marker"
@@ -190,7 +194,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
     }
     return this.registry.tags(this.repositoryOf(name)).then(tags => {
       if (tags === undefined) {
-        throw new FabrError(`${this.registry.url} has no image ${name}`);
+        throw new FabrError(`${shownUrl(this.registry.url)} has no image ${name}`);
       }
       return new Map(
         [...tags].sort(compareText).map((tag): [string, Reference] => [tag, new RepositoryRef(this, { name, versionConstraint: tag })])
@@ -200,7 +204,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
 
   /** Vend the publish coordinate `name` names: an image's name and the tag it is published under. */
   public getRepositoryPublishRef(name: Name): RepositoryPublishRef {
-    const written = name.toString();
+    const written = name.toDisplayString();
     const { name: image, version, rest } = splitImageReference(name.getLiteralPrefix(), written);
     if (!name.isSimpleName() || version === undefined || isDigest(version) || rest !== undefined) {
       throw new FabrError(`'${written}' is no image and tag to publish to`).withHelp(
@@ -258,7 +262,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
       const request: IImageRequest = {
         repository: this.repositoryOf(reference.name),
         written: `${this.context.name}:${reference.name}:${version}`,
-        wanted: ociPlatformOf(triple),
+        wanted: ociPlatformOf(triple.toUnmaskedString()),
       };
       return this.manifestFor(request, version).then(manifest => {
         const origin: IImageOrigin = {
@@ -267,7 +271,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
           digest: manifest.digest,
           platform: platformText(request.wanted),
         };
-        const key = `${this.registry.url} ${request.repository}@${manifest.digest}`;
+        const key = secure`${this.registry.url} ${request.repository}@${manifest.digest}`.toUnmaskedString();
         const image = (): Computable<ImageFileSet> =>
           this.images.getOrCreate(key, () => this.image(request, manifest, reference.name, origin));
         /* Under `run`, the image is a program the container engine runs. */
@@ -298,7 +302,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
   private manifestFor({ repository, written, wanted }: IImageRequest, version: string): Computable<IDigested<IImageManifest>> {
     return this.registry.manifest(repository, version).then(served => {
       if (served === undefined) {
-        throw new FabrError(`${this.registry.url} has no image ${written}`);
+        throw new FabrError(`${shownUrl(this.registry.url)} has no image ${written}`);
       }
       const { document } = served;
       if (document.kind === "manifest") {
@@ -314,7 +318,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
       return this.registry.manifest(repository, entry.digest).then(chosen => {
         const found = chosen === undefined ? undefined : imageManifestOf(chosen);
         if (found === undefined) {
-          throw new FabrError(`${this.registry.url} has no image manifest ${entry.digest} for ${written}`);
+          throw new FabrError(`${shownUrl(this.registry.url)} has no image manifest ${entry.digest} for ${written}`);
         }
         return found;
       });
@@ -345,7 +349,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
               digest: layer.digest,
               mediaType: layer.mediaType,
               size: layer.size,
-              registry: this.registry.url,
+              registry: this.registry.url.toUnmaskedString(),
               repository,
               ...(this.loginUrl === undefined ? {} : { loginUrl: this.loginUrl }),
             },
@@ -358,7 +362,8 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
 
   /** @return the name an image is published as here, `host/repository`. */
   private publishedName(image: string): string {
-    return `${new URL(this.registry.url).host}/${this.repositoryOf(image)}`;
+    const host = new URL(this.registry.url.toUnmaskedString()).host;
+    return `${host}/${this.repositoryOf(image)}`;
   }
 
   /** @return the repository an image's name is in at the registry: a single-segment name's in the default namespace. */
@@ -373,7 +378,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
  * given, and a `credential` in place of signing in with the auth files' (see
  * {@link authFileSignIn}).
  */
-function createRepository(context: TargetContext, url?: string, credential?: Credential): Computable<Repository> {
+function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
     [
       context.getProperty("url"),
@@ -385,22 +390,24 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
       declared: Property | undefined,
       defaultNamespace: Property | undefined,
       loginUrl: Property | undefined,
-      provenance: string | undefined
+      provenanceSetting: SecureString | undefined
     ) => {
+      const provenance = provenanceSetting?.toUnmaskedString();
       const written = declared?.toString() ?? url;
       if (written === undefined) {
         throw new FabrError("Missing required property url");
       }
       if (provenance !== undefined && provenance !== "on" && provenance !== "off") {
-        throw new FabrError(`invalid provenance value ${JSON.stringify(provenance)} (expected "on" or "off")`);
+        throw new FabrError(`invalid provenance value '${provenance}' (expected "on" or "off")`);
       }
-      const base = written.replace(/\/+$/, "");
-      const signIn = registrySignIn(context, base, loginUrl?.toString(), credential);
+      const base = urlRoot(written);
+      const login = loginUrl?.toString().toUnmaskedString();
+      const signIn = registrySignIn(context, base, login, credential);
       return new OciRepository(
         context,
         new Registry(context, base, signIn),
-        defaultNamespace?.toString(),
-        credential === undefined ? loginUrl?.toString() : undefined,
+        defaultNamespace?.toString().toUnmaskedString(),
+        credential === undefined ? login : undefined,
         provenance !== "off"
       );
     }
@@ -413,8 +420,8 @@ function createRepository(context: TargetContext, url?: string, credential?: Cre
  * only; a request to any other origin (a blob or upload elsewhere) is sent
  * without it.
  */
-export function registrySignIn(context: TargetContext, base: string, loginUrl?: string, credential?: Credential): Credential {
-  return onlyTo(new URL(base).origin, credential ?? authFileSignIn(context, base, loginUrl));
+export function registrySignIn(context: TargetContext, base: SecureString, loginUrl?: string, credential?: Credential): Credential {
+  return onlyTo(new URL(base.toUnmaskedString()).origin, credential ?? authFileSignIn(context, base, loginUrl));
 }
 
 /** The implementation CONTAINER.fabr's `repository` declaration names. */

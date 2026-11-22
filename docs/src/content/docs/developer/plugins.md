@@ -263,10 +263,10 @@ A declaration names the target type, a name for the target, its guards, and its 
 A rule that only combines targets of existing types can instead be written in `.fabr`, with no
 code at all; see [Writing your own rules](/guides/rules/).
 
-| Part | Meaning |
-|---|---|
-| `<BUILD_OPERATION=test>` | A guard on the build configuration: a property and a glob pattern its value must match. |
-| `<t.framework=mocha>` | A guard on the target's own properties, through its name. Each must be a string property of the type's `targetdef`. |
+| Part                             | Meaning                                                                                                                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<BUILD_OPERATION=test>`         | A guard on the build configuration: a property and a glob pattern its value must match.                                                                                                                      |
+| `<t.framework=mocha>`            | A guard on the target's own properties, through its name. Each must be a string property of the type's `targetdef`.                                                                                          |
 | `@example/mocha:rules/TestMocha` | The implementation: an entry of a package, the module `rules/TestMocha` that `@example/mocha` exports. The package is a plugin the project uses, or `@fabr-build/core`; the name means the copy fabr loaded. |
 
 The implementation is the module's default export. Write it with `defineRule`, which types what
@@ -283,14 +283,14 @@ export default defineRule({
 });
 ```
 
-| Field | Meaning |
-|---|---|
-| `requirements` | Returns what resolution needs to know of the target (what it requires, and what it builds), or a `Computable` of it: see [Requirements](#requirements). |
-| `evaluateMaterialized` | Builds the target from its requirements, each given its content first: see [Evaluate](#evaluate). |
-| `evaluateResolved` | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both. |
-| `describe` | Describes the target for an editor, as the rule would build it, without building it: see [Describe](#describe). Optional. |
-| `value` | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target. |
-| `action` | Gets the build action that building the target performs, without performing it, where that is another target's action rather than one `evaluate` yields. `fabr shell` opens that action's directory, and `fabr build` of a target whose type only tests builds what it reads. Optional: without it, `evaluate` is asked, and its result is the action where it is one. |
+| Field                  | Meaning                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `requirements`         | Returns what resolution needs to know of the target (what it requires, and what it builds), or a `Computable` of it: see [Requirements](#requirements).                                                                                                                                                                                                                |
+| `evaluateMaterialized` | Builds the target from its requirements, each given its content first: see [Evaluate](#evaluate).                                                                                                                                                                                                                                                                      |
+| `evaluateResolved`     | Builds the target from its requirements as resolved, giving them content when it asks. A rule has this or `evaluateMaterialized`, not both.                                                                                                                                                                                                                            |
+| `describe`             | Describes the target for an editor, as the rule would build it, without building it: see [Describe](#describe). Optional.                                                                                                                                                                                                                                              |
+| `value`                | `true` for a target that is a value with nothing to build, such as a flag: the rule is evaluated where the target is read, and its result stands for the target.                                                                                                                                                                                                       |
+| `action`               | Gets the build action that building the target performs, without performing it, where that is another target's action rather than one `evaluate` yields. `fabr shell` opens that action's directory, and `fabr build` of a target whose type only tests builds what it reads. Optional: without it, `evaluate` is asked, and its result is the action where it is one. |
 
 Fabr loads an implementation the first time its rule builds a target, so a rule that builds nothing
 in a run loads nothing.
@@ -376,15 +376,18 @@ as Gradle's compile and runtime classpaths may.
 Only `FILES` and `PACKAGES` properties are requirements. A string, map or command property has
 nothing to resolve: it has one form, its value, which the evaluation reads directly from `context`
 (`getString`, `getProperty`, `getMap`). The types enforce this: a value read that way does not
-type-check as a requirement.
+type-check as a requirement. A string value is a `SecureString`, text that may hold a secret: read
+`toDisplayString()` for a message and `toUnmaskedString()` where the text is used, or build text
+from it with the `secure` template tag. It is never made a string implicitly, so a plain template
+string over one throws; `FabrError` and a command line take one as it is.
 
 How a property is read says what its sources are for:
 
-| Read with | What a target named there is | What a registry package (`@npm:foo:1.0.0`) is |
-|---|---|---|
-| `getFileProperty(name)` | Built, and its files used | That package's own files, nothing it requires |
-| `getPackageProperty(name)` | The package it builds | A requirement, resolved with the target's others: one version of each package |
-| `getLooseFileProperty(name)`, from `evaluate` | Left out, unbuilt | Left out |
+| Read with                                     | What a target named there is | What a registry package (`@npm:foo:1.0.0`) is                                 |
+| --------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
+| `getFileProperty(name)`                       | Built, and its files used    | That package's own files, nothing it requires                                 |
+| `getPackageProperty(name)`                    | The package it builds        | A requirement, resolved with the target's others: one version of each package |
+| `getLooseFileProperty(name)`, from `evaluate` | Left out, unbuilt            | Left out                                                                      |
 
 `getLooseFileProperty` gives only the files in hand, and is for `evaluate`: what a rule reads
 there is no requirement of its target, so a target the property names may itself depend on this
@@ -586,12 +589,12 @@ A `Repository` makes references from what is written (`getRepositoryRef`, and
 `getRepositoryPublishRef` for [`sync`](/reference/js/publishing/)). Each reference carries the
 interface that answers it:
 
-| Interface | Answers | Example |
-|---|---|---|
-| `RepositoryReader` | A registry. The references to it that a target makes are resolved together, one version of each package. It supplies each version's requirements (`getRequirements`), the package (`fetch`), a package's own files (`fetchFiles`), and states the operation of the configuration it was made in (`operation`), which decides whether a reference to it is answered with the package, its files alone, or the program it is. | `npm_repository` |
-| `RepositoryLookup` | Each reference on its own (`resolve`, optionally `resolveFiles`). | `fabr_home` |
-| `RepositoryCollection` | A set the repository resolved itself (`member`). | `catalog` |
-| `RepositoryWriter` | A destination [`sync`](/reference/js/publishing/) publishes to: it packages each member's content (`package`) and uploads it (`publish`). | `npm_repository`, an S3 bucket |
+| Interface              | Answers                                                                                                                                                                                                                                                                                                                                                                                                                     | Example                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `RepositoryReader`     | A registry. The references to it that a target makes are resolved together, one version of each package. It supplies each version's requirements (`getRequirements`), the package (`fetch`), a package's own files (`fetchFiles`), and states the operation of the configuration it was made in (`operation`), which decides whether a reference to it is answered with the package, its files alone, or the program it is. | `npm_repository`               |
+| `RepositoryLookup`     | Each reference on its own (`resolve`, optionally `resolveFiles`).                                                                                                                                                                                                                                                                                                                                                           | `fabr_home`                    |
+| `RepositoryCollection` | A set the repository resolved itself (`member`).                                                                                                                                                                                                                                                                                                                                                                            | `catalog`                      |
+| `RepositoryWriter`     | A destination [`sync`](/reference/js/publishing/) publishes to: it packages each member's content (`package`) and uploads it (`publish`).                                                                                                                                                                                                                                                                                   | `npm_repository`, an S3 bucket |
 
 A repository named on its own, or with a scope of its names (`@fabr-home:@fabr-build`), is
 not a package: `getRepositoryRef` may return a `PartialRepositoryRef` for a scope, from which a name

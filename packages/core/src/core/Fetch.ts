@@ -25,6 +25,7 @@ import type { Credential, IRequestHead } from "./Credential";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
+import { SecureString } from "./SecureString";
 import { Semaphore } from "../support/Semaphore";
 
 /** The most redirects a request follows. */
@@ -115,10 +116,77 @@ function unsupportedProtocol(urlstring: string): Error | undefined {
   return protocol === "https:" || protocol === "http:" ? undefined : new FabrError("Unsupported protocol: " + protocol);
 }
 
-/** Send a GET for `urlstring` and return its body. Rejects as {@link openUrlStream} does. */
-export function fetchUrl(urlstring: string): Computable<Buffer> {
+/**
+ * @return `url` as output shows it: its text from a masked source as written
+ * ({@link SecureString.toDisplayString}), and any `user:password@` left out.
+ */
+export function shownUrl(url: SecureString): string {
+  return url.toDisplayString().replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, "$1");
+}
+
+/** @return `url` without its trailing `/`s. */
+export function urlRoot(url: SecureString): SecureString {
+  return url.slice(0, url.toUnmaskedString().replace(/\/+$/, "").length);
+}
+
+/** @return the URL of `path` under `base`: `base` without its trailing `/`s, then `/`, then `path`. */
+export function urlJoin(base: SecureString, path: string): SecureString {
+  return urlRoot(base).concat(`/${path}`);
+}
+
+/**
+ * @return `ref`, a URL as a server gave it, resolved against `base`, the URL
+ * it was had from: where it lies under `base`'s text (at a `/`, `?` or `#`, or
+ * `base` ends with `/`), `base` followed by the rest; where it lies under
+ * `base`'s text up to its path, which holds any `user:password@` it is
+ * written with, that text followed by the rest; where it is of `base`'s origin
+ * otherwise (its host written in other capitals), `base` up to its path
+ * followed by its own path, where `base` holds no `user:password@`; otherwise
+ * as it resolves.
+ */
+export function urlResolved(base: SecureString, ref: string): SecureString {
+  const text = base.toUnmaskedString();
+  const resolved = new URL(ref, text);
+  const href = resolved.href;
+  const under = (prefix: string): boolean =>
+    href.startsWith(prefix) && (prefix.endsWith("/") || href.length === prefix.length || "/?#".includes(href[prefix.length]));
+  if (under(text)) {
+    return base.concat(href.slice(text.length));
+  }
+  const authority = text.indexOf("//") + 2;
+  const authorityEnd = text.slice(authority).search(/[/?#]/);
+  const originEnd = authorityEnd === -1 ? text.length : authority + authorityEnd;
+  if (under(text.slice(0, originEnd))) {
+    return base.slice(0, originEnd).concat(href.slice(originEnd));
+  }
+  return resolved.origin === new URL(text).origin && !text.slice(authority, originEnd).includes("@")
+    ? base.slice(0, originEnd).concat(resolved.pathname + resolved.search + resolved.hash)
+    : SecureString.of(href);
+}
+
+/**
+ * @return the host name of `url`, as `URL.hostname` reads it, its text from a
+ * masked source kept: where the host is written otherwise (in capitals, or
+ * encoded), the name is masked whole, shown as written.
+ */
+export function urlHostname(url: SecureString): SecureString {
+  const text = url.toUnmaskedString();
+  const hostname = new URL(text).hostname;
+  const authority = text.indexOf("//") + 2;
+  const authorityEnd = text.slice(authority).search(/[/?#]/);
+  const hostStart = text.lastIndexOf("@", authorityEnd === -1 ? text.length : authority + authorityEnd) + 1 || authority;
+  const start = Math.max(hostStart, authority);
+  if (text.startsWith(hostname, start)) {
+    return url.slice(start, start + hostname.length);
+  }
+  const written = url.slice(start, authorityEnd === -1 ? text.length : authority + authorityEnd);
+  return written.isMasked() ? SecureString.masked(hostname, written.toDisplayString()) : SecureString.of(hostname);
+}
+
+/** Send a GET for `url` and return its body. Rejects as {@link openUrlStream} does. */
+export function fetchUrl(url: SecureString): Computable<Buffer> {
   /* No validators are sent, so a resolved response carries a stream. */
-  return openUrlStream(urlstring).then(response => readStream(response.stream!));
+  return openUrlStream(url).then(response => readStream(response.stream!));
 }
 
 /** A request for {@link sendRequest}. */
@@ -141,7 +209,8 @@ export interface HttpResponse {
 }
 
 /**
- * Send one HTTP(S) request and return its response, whatever its status: the
+ * Send one HTTP(S) request to `written`, a URL (its masked text kept out of
+ * what output shows), and return its response, whatever its status: the
  * caller reads `statusCode` and the body (where a registry's publish states
  * its error detail). The whole response is read into memory, so this is for
  * small exchanges such as a publish or a dist-tag; {@link openUrlStream}
@@ -151,16 +220,56 @@ export interface HttpResponse {
  * Rejects where the URL's protocol is not http or https, or the request fails
  * in transport.
  */
-export function sendRequest(urlstring: string, request: HttpRequest): Computable<HttpResponse> {
+export function sendRequest(written: string | SecureString, request: HttpRequest): Computable<HttpResponse> {
   const { credential, method, headers, body } = request;
-  return withCredential(
-    credential,
-    method,
-    urlstring,
-    headers,
-    signed => send(urlstring, method, signed, body),
-    response => (body instanceof Readable ? undefined : challengesOf(response.statusCode, response.headers))
+  const url = typeof written === "string" ? SecureString.of(written) : written;
+  const urlstring = url.toUnmaskedString();
+  return maskingFailures(
+    url,
+    withCredential(
+      credential,
+      method,
+      urlstring,
+      headers,
+      signed => send(urlstring, method, signed, body),
+      response => (body instanceof Readable ? undefined : challengesOf(response.statusCode, response.headers))
+    )
   );
+}
+
+/** @return `request`, a request to `url`: where `url` holds masked text, failing as {@link maskedFailure} shows its failure. */
+function maskingFailures<T>(url: SecureString, request: Computable<T>): Computable<T> {
+  return url.isMasked()
+    ? request.catch(err => {
+        throw maskedFailure(err, url);
+      })
+    : request;
+}
+
+/**
+ * @return `err`, a request to `url` failing, as output may show it: where
+ * `url`'s host is masked and the message of a failure in transport names it
+ * (a host the connection could not reach), a FabrError whose message shows the
+ * host as written, `err` its cause; where
+ * `url` is no URL, a FabrError saying so, without `err`, which holds its text;
+ * else `err` as it is.
+ */
+function maskedFailure(err: unknown, url: SecureString): unknown {
+  const message = (err as { message?: unknown } | undefined)?.message;
+  if (!url.isMasked() || err instanceof HttpStatusError || typeof message !== "string") {
+    return err;
+  }
+  let hostname: SecureString;
+  try {
+    hostname = urlHostname(url);
+  } catch {
+    return new FabrError(`'${shownUrl(url)}' is not a URL`);
+  }
+  if (!hostname.isMasked() || hostname.length === 0) {
+    return err;
+  }
+  const shown = SecureString.of(message).replaceAll(hostname.toUnmaskedString(), hostname).toDisplayString();
+  return shown === message ? err : new FabrError(shown, err as Error);
 }
 
 /** Send {@link sendRequest}'s request with `headers`, as they stand. */
@@ -257,7 +366,7 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
 }
 
 /**
- * Send a GET for `urlstring` and return its response with the body as a
+ * Send a GET for `url` and return its response with the body as a
  * stream. The request holds its slot under `role` until the body is read
  * through or closed.
  *
@@ -270,7 +379,7 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
  * the caching facts' `expires` counts from.
  */
 export function openUrlStream(
-  urlstring: string,
+  url: SecureString,
   headers?: Record<string, string>,
   now: () => number = Date.now,
   role: FetchRole = "content",
@@ -279,24 +388,28 @@ export function openUrlStream(
   /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
   credential?: Credential
 ): Computable<UrlStreamResponse> {
-  return withCredential(
-    credential,
-    "GET",
-    urlstring,
-    headers,
-    signed => streamUrl(urlstring, signed, now, role, digestHeader),
-    () => undefined
+  return maskingFailures(
+    url,
+    withCredential(
+      credential,
+      "GET",
+      url.toUnmaskedString(),
+      headers,
+      signed => streamUrl(url, signed, now, role, digestHeader),
+      () => undefined
+    )
   );
 }
 
 /** Send {@link openUrlStream}'s GET with `headers`, as they stand. */
 function streamUrl(
-  urlstring: string,
+  url: SecureString,
   headers: Record<string, string> | undefined,
   now: () => number,
   role: FetchRole,
   digestHeader: string | undefined
 ): Computable<UrlStreamResponse> {
+  const urlstring = url.toUnmaskedString();
   const conditional = headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
   return Computable.from<UrlStreamResponse>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
@@ -322,7 +435,7 @@ function streamUrl(
             resolve({ cacheControl: parseCacheControl(resHeaders, now(), digestHeader) });
           } else {
             void response.body.dump().finally(release);
-            reject(new HttpStatusError(response.statusCode, urlstring, challengesOf(response.statusCode, resHeaders)));
+            reject(new HttpStatusError(response.statusCode, shownUrl(url), challengesOf(response.statusCode, resHeaders)));
           }
         },
         err => {
@@ -387,14 +500,14 @@ function challengesOf(statusCode: number, headers: http.IncomingHttpHeaders): re
 }
 
 /**
- * Send a `HEAD` for `urlstring` and return the response's caching facts, with
+ * Send a `HEAD` for `url` and return the response's caching facts, with
  * the digest the `digestHeader` response header states, for a caller
  * revalidating a held copy by comparing digests. Any status but 200 rejects
  * as an {@link HttpStatusError}, as does a 401 that `credential` cannot
  * answer.
  */
 export function headUrl(
-  urlstring: string,
+  url: SecureString,
   headers: Record<string, string> | undefined,
   digestHeader: string,
   now: () => number = Date.now,
@@ -402,24 +515,28 @@ export function headUrl(
   /** What signs the request in, asked again with the challenge where the server answers 401 (see {@link withCredential}). */
   credential?: Credential
 ): Computable<ICacheControl> {
-  return withCredential(
-    credential,
-    "HEAD",
-    urlstring,
-    headers,
-    signed => headOf(urlstring, signed, digestHeader, now, role),
-    () => undefined
+  return maskingFailures(
+    url,
+    withCredential(
+      credential,
+      "HEAD",
+      url.toUnmaskedString(),
+      headers,
+      signed => headOf(url, signed, digestHeader, now, role),
+      () => undefined
+    )
   );
 }
 
 /** Send {@link headUrl}'s HEAD with `headers`, as they stand. */
 function headOf(
-  urlstring: string,
+  url: SecureString,
   headers: Record<string, string> | undefined,
   digestHeader: string,
   now: () => number,
   role: FetchRole
 ): Computable<ICacheControl> {
+  const urlstring = url.toUnmaskedString();
   return Computable.from<ICacheControl>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
     if (unsupported) {
@@ -434,7 +551,7 @@ function headOf(
           if (response.statusCode === 200) {
             resolve(parseCacheControl(resHeaders, now(), digestHeader));
           } else {
-            reject(new HttpStatusError(response.statusCode, urlstring, challengesOf(response.statusCode, resHeaders)));
+            reject(new HttpStatusError(response.statusCode, shownUrl(url), challengesOf(response.statusCode, resHeaders)));
           }
         },
         err => {

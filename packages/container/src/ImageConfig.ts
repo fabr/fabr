@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { FabrError, isJsonObject, PropertyMap } from "@fabr-build/core";
+import { FabrError, isJsonObject, isWords, Property, PropertyMap, secure, SecureString } from "@fabr-build/core";
 import { IOciPlatform } from "./OciProtocol";
 
 /** The time stamped on everything fabr writes into an image's config: the epoch, so an image is a function of its inputs. */
@@ -32,13 +32,13 @@ export interface IImageSettings {
   readonly workdir?: string;
   readonly user?: string;
   /** Environment variables, by name, over the base's. */
-  readonly env: ReadonlyArray<readonly [string, string]>;
+  readonly env: ReadonlyArray<readonly [string, SecureString]>;
   /** Ports the image exposes: `8080` (TCP), or `53/udp`. */
   readonly ports: readonly string[];
   /** Facts about the image, by key, written as labels over the base's (see {@link labelKey}). */
   readonly metadata: ReadonlyArray<readonly [string, string]>;
   /** A shell command run in the base, whose changes are a layer of their own. */
-  readonly build?: string;
+  readonly build?: SecureString;
 }
 
 /** The keys of `metadata` OCI defines a label for, each written as `org.opencontainers.image.<key>`. */
@@ -84,7 +84,7 @@ export function imageConfig(
   if (settings.env.length > 0) {
     const env = new Map<string, string>(stringList(config.Env).map(entry => [entry.split("=", 1)[0], entry]));
     for (const [name, value] of settings.env) {
-      env.set(name, `${name}=${value}`);
+      env.set(name, secure`${name}=${value}`.toUnmaskedString());
     }
     config.Env = [...env.values()];
   }
@@ -139,12 +139,17 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+/** @return the words of `property`, a STRING property's value, as written; none where it is unwritten. */
+export function unmaskedWords(property: Property | undefined): string[] {
+  return (property?.getValues() ?? []).map(word => word.toUnmaskedString());
+}
+
 /** Read a MAP property whose every entry is a string, in the order written. */
-export function stringEntries(target: string, property: string, map: PropertyMap): Array<[string, string]> {
-  return [...map].map(([key, setting]): [string, string] => {
-    if (!Array.isArray(setting) || !setting.every(item => typeof item === "string")) {
+export function stringEntries(target: string, property: string, map: PropertyMap): Array<[string, SecureString]> {
+  return [...map].map(([key, setting]): [string, SecureString] => {
+    if (!isWords(setting)) {
       throw new FabrError(`${target}'s ${property} '${key}' is not a string`);
     }
-    return [key, (setting as string[]).join(" ")];
+    return [key, SecureString.join(setting, " ")];
   });
 }

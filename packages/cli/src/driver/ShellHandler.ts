@@ -29,6 +29,7 @@ import {
   IStagedStep,
   Log,
   variableEntry,
+  SecureString,
 } from "@fabr-build/core";
 import { withTerminalSuspended } from "./Terminal";
 
@@ -87,7 +88,7 @@ function describeCommands({ commands, env }: IStagedStep): string {
     lines.push(`  … and ${commands.length - SHOWN_COMMANDS} more like it`);
   }
   if (env.size > 0) {
-    lines.push(`  with ${[...env].map(([variable, value]) => `${variable}=${quote(value)}`).join(" ")}`);
+    lines.push(`  with ${[...env].map(([variable, value]) => `${variable}=${quote(value.toDisplayString())}`).join(" ")}`);
   }
   return lines.join("\n");
 }
@@ -95,12 +96,15 @@ function describeCommands({ commands, env }: IStagedStep): string {
 /** Write `command` as a shell writes it: each stage's own variables that `env`, the
  * step's, does not set, its argv and its redirections, the first stage's standard
  * input after its argv, the stages joined with `|`. */
-function commandText({ stages, stdin }: IStagedCommand, env: ReadonlyMap<string, string>): string {
+function commandText({ stages, stdin }: IStagedCommand, env: ReadonlyMap<string, SecureString>): string {
   return stages
     .map(({ argv, stdout, stderr, mergedTo, env: own = [] }, index) =>
       [
-        ...own.map(variableEntry).flatMap(([name, value]) => (env.has(name) ? [] : [`${name}=${quote(value)}`])),
-        ...argv.map(quote),
+        ...own.flatMap(entry => {
+          const [name, value] = variableEntry(entry);
+          return env.has(name) ? [] : [`${name}=${quote(value.toDisplayString())}`];
+        }),
+        ...argv.map(arg => quote(typeof arg === "string" ? arg : arg.toDisplayString())),
         ...(index === 0 && stdin !== undefined ? [`< ${quote(stdin)}`] : []),
         ...(stdout === undefined ? [] : [`> ${quote(stdout)}`]),
         ...(stderr === undefined ? [] : [`2> ${quote(stderr)}`]),

@@ -18,13 +18,16 @@
  */
 
 import { expect } from "chai";
+import { SecureString } from "@fabr-build/core";
 import { identityRequest, parseCallerAccount } from "./Sts";
 import { requestUrl } from "./Signing";
 
 describe("STS's GetCallerIdentity", () => {
   it("is asked of STS in the account's region, or at its endpoint", () => {
-    expect(requestUrl(identityRequest("eu-west-2"))).to.equal("https://sts.eu-west-2.amazonaws.com/");
-    expect(requestUrl(identityRequest("us-east-1", new URL("http://localhost:4566")))).to.equal("http://localhost:4566/");
+    expect(requestUrl(identityRequest("eu-west-2")).toUnmaskedString()).to.equal("https://sts.eu-west-2.amazonaws.com/");
+    expect(requestUrl(identityRequest("us-east-1", SecureString.of("http://localhost:4566"))).toUnmaskedString()).to.equal(
+      "http://localhost:4566/"
+    );
   });
 
   it("gives the account's ID", () => {

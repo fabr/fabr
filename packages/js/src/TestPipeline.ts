@@ -71,50 +71,52 @@
 import {
   BUILD_OVERRIDE,
   builtInProject,
-  formatOf,
   Computable,
   Constraints,
   COVERAGE,
   COVERAGE_ON,
   COVERAGE_REPORT_FILENAME,
+  describeTarget,
+  descriptionFile,
   EMPTY_FILESET,
   FabrError,
   FileSet,
   Flag,
+  formatOf,
   IFile,
-  mapComputable,
-  parseJson,
-  toJsonObject,
   IWriteBackCandidate,
+  mapComputable,
   MemoryFile,
   Name,
   PackageFileSet,
   PackageSources,
+  parseJson,
   parseName,
   PropertyMap,
   ResolutionSpec,
   RuleResult,
   RunnableArgument,
   RunnableFileSet,
+  secure,
+  SecureString,
+  selectTestFiles,
   SourceRef,
   TargetContext,
   TEST_EXPECTATIONS,
-  TEST_FLAKE_RETRIES,
   TEST_FILE_PATTERN,
+  TEST_FLAKE_RETRIES,
   TEST_NAME_PATTERN,
   TEST_REPORT_FILENAME,
-  type TestStability,
   toEnvironment,
   toFlakeRetries,
+  toJsonObject,
   toTestStability,
-  selectTestFiles,
   TREE_MOUNT,
-  UPDATE_EXPECTATIONS,
-  WriteBackFileSet,
-  describeTarget,
-  descriptionFile,
+  type TestStability,
   type Unmaterialized,
+  UPDATE_EXPECTATIONS,
   walkPackages,
+  WriteBackFileSet,
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { PNP_DATA_FILE, PNP_PRELOAD, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
@@ -405,8 +407,8 @@ export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
  */
 export function testFramework(context: TargetContext, property: string, browserTest = false): Computable<ITestFramework> {
   return context.getRequiredProperty(property).then(name => {
-    const written = name.toString();
-    const framework = TEST_FRAMEWORKS.get(written);
+    const written = name.toDisplayString();
+    const framework = TEST_FRAMEWORKS.get(name.toString().toUnmaskedString());
     const offered = [...TEST_FRAMEWORKS].filter(([, each]) => (each.browser ?? false) === browserTest).map(([key]) => key);
     if (framework?.browser === true && !browserTest) {
       throw new FabrError(`'${written}' tests drive a browser, which a browser_test supplies`).withHelp(
@@ -463,7 +465,7 @@ export interface ITestSettings {
    * standalone js_test has no package identity and leaves it unset. */
   packageName?: string;
   /** Environment variables the target sets over those `envProperty` declares. */
-  env?: ReadonlyMap<string, string>;
+  env?: ReadonlyMap<string, SecureString>;
   /** Options the target gives the runner before its own (a browser test's
    * browser), a path among them relative to the directory the runner starts
    * in: the compiled tests under `fabr test`, the install under `fabr run`. */
@@ -509,7 +511,7 @@ export function packageBuildOverrides(context: TargetContext, property: string):
   return Computable.forAll(
     [testFramework(context, property), context.getGlobalString("JS_TARGET", BUILD_OVERRIDE)],
     (framework, target) => {
-      const jsTarget = parseJSTarget(target);
+      const jsTarget = parseJSTarget(target.toUnmaskedString());
       const tested = testTargetOf(jsTarget, framework);
       return jsTarget.module === tested.module && jsTarget.version === tested.version
         ? BUILD_OVERRIDE
@@ -590,7 +592,7 @@ export function compileAndRunTests(
           .getMap(settings.envProperty)
           .then(
             declared =>
-              new Map([...declared, ...[...(settings.env ?? [])].map(([name, value]): [string, string[]] => [name, [value]])])
+              new Map([...declared, ...[...(settings.env ?? [])].map(([name, value]): [string, SecureString[]] => [name, [value]])])
           ),
         context.getGlobalString(COVERAGE),
         context.getGlobalString(TEST_NAME_PATTERN),
@@ -598,11 +600,11 @@ export function compileAndRunTests(
         context.getGlobalString(TEST_FLAKE_RETRIES),
       ],
       (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries): Computable<RuleResult> =>
-        (coverage === COVERAGE_ON && framework.scheduler === "fabr"
+        (coverage.equals(COVERAGE_ON) && framework.scheduler === "fabr"
           ? context.getGlobalRunnable("JS_COVERAGE_DRIVER")
           : Computable.resolve(undefined)
         ).then((coverageDriver): Computable<RuleResult> => {
-          const jsTarget = parseJSTarget(target);
+          const jsTarget = parseJSTarget(target.toUnmaskedString());
           /* In the installation the packages are laid out for the run, and the
            * loose resource files among the deps (`.json`, a template) are staged
            * beside the compiled tests, so a `./x.json` import resolves. Loose
@@ -652,8 +654,8 @@ export function compileAndRunTests(
                 packageName: settings.packageName,
                 runnerArgs: settings.runnerArgs ?? [],
                 links: settings.links,
-                update: expectations === UPDATE_EXPECTATIONS,
-                namePattern: namePattern === "" ? undefined : namePattern,
+                update: expectations.equals(UPDATE_EXPECTATIONS),
+                namePattern: namePattern.length === 0 ? undefined : namePattern,
                 stability: toTestStability(stability.toString()),
                 flakeRetries: toFlakeRetries(flakeRetries),
                 coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
@@ -762,7 +764,7 @@ export function describeTests(
             context,
             framework,
             settings,
-            { sources, deps, testDeps, runner, testTarget: testTargetOf(parseJSTarget(target), framework) },
+            { sources, deps, testDeps, runner, testTarget: testTargetOf(parseJSTarget(target.toUnmaskedString()), framework) },
             true
           ).then(built => {
             const laidOut = layOutUnits(new Map([["test", built.compiled]]));
@@ -853,7 +855,7 @@ interface ITestRun {
   /** Whether the runner rewrites recorded expectations (TEST_EXPECTATIONS=update). */
   update: boolean;
   /** The regular expression selecting the tests run by name, if any. */
-  namePattern?: string;
+  namePattern?: SecureString;
   /** How far the tests' results are trusted. */
   stability: TestStability;
   /** How many further runs a failed test file gets where `stability` is `flaky`. */
@@ -903,7 +905,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
         ...run.runnerArgs,
         ...runnerOptions(run, setupFile),
         ...(run.update ? ["--update-snapshots"] : []),
-        ...(run.namePattern === undefined ? [] : [`--name-pattern=${run.namePattern}`]),
+        ...(run.namePattern === undefined ? [] : [secure`--name-pattern=${run.namePattern}`]),
       ],
       /* The runner stays at the install root while the working directory is the
        * compiled tree, so its entry, and the pool its node is in, are reached one

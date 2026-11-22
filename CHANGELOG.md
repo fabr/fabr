@@ -18,6 +18,8 @@ together and share a version number.
   @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
 
 @fabr-build/core
+- A URL in fabr's output no longer shows a `user:password@` written into it.
+- Introduce internal secret string tracking.
 - New test stability options: `flaky` runs a failed test file again up to TEST_FLAKE_RETRIES (default 2); `unstable` runs every test file every time and never
   caches the run.
 

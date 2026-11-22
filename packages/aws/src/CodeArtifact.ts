@@ -31,9 +31,12 @@ import {
   isJsonObject,
   parseJson,
   RenewableToken,
+  SecureString,
   sendRequest,
+  shownUrl,
+  urlJoin,
 } from "@fabr-build/core";
-import { IServiceRequest, requestUrl } from "./Signing";
+import { getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
 /** The name of the CodeArtifact service under an account. */
@@ -46,11 +49,10 @@ export function endpointUrl(
   region: string,
   format: string,
   repository: string,
-  endpoint?: URL
-): string {
-  const base =
-    endpoint === undefined ? `https://${domain}-${owner}.d.codeartifact.${region}.amazonaws.com` : endpoint.href.replace(/\/+$/, "");
-  return `${base}/${format}/${repository}/`;
+  endpoint?: SecureString
+): SecureString {
+  const base = endpoint ?? SecureString.of(`https://${domain}-${owner}.d.codeartifact.${region}.amazonaws.com`);
+  return urlJoin(base, `${format}/${repository}/`);
 }
 
 /** Make the `GetAuthorizationToken` request for the domain `domain` that `owner` owns: to `endpoint` where there is one, else to CodeArtifact's API in `region`. */
@@ -58,19 +60,13 @@ export function tokenRequest(
   domain: string,
   owner: string,
   region: string,
-  endpoint?: URL
+  endpoint?: SecureString
 ): IServiceRequest & { readonly body: string } {
-  const base =
-    endpoint === undefined
-      ? { protocol: "https:", hostname: `codeartifact.${region}.amazonaws.com`, path: "/v1/authorization-token" }
-      : {
-          protocol: endpoint.protocol,
-          hostname: endpoint.hostname,
-          ...(endpoint.port === "" ? {} : { port: Number(endpoint.port) }),
-          path: `${endpoint.pathname.replace(/\/+$/, "")}/v1/authorization-token`,
-        };
   return {
-    ...base,
+    url:
+      endpoint === undefined
+        ? getServiceUrl("codeartifact", region, "v1/authorization-token")
+        : urlJoin(endpoint, "v1/authorization-token"),
     method: "POST",
     query: new Map([
       ["domain", domain],
@@ -105,7 +101,7 @@ export function codeArtifactToken(account: IServiceSettings, domain: string, own
             "signing in to CodeArtifact needs the codeartifact:GetAuthorizationToken and sts:GetServiceBearerToken permissions"
           );
         }
-        return parseJson(response.body, `token from ${url}`, toCodeArtifactToken);
+        return parseJson(response.body, `token from ${shownUrl(url)}`, toCodeArtifactToken);
       });
   });
 }

@@ -163,7 +163,7 @@ function validateMavenRequirement({ name, versionConstraint, override, variant }
  */
 export function parseMavenPublishCoordinate(name: Name): { name: string; version: string; variant?: string } {
   const { name: packageName, versionConstraint: version, projection, variant } = splitMavenReference(name);
-  const literal = name.toString();
+  const literal = name.toDisplayString();
   if (version === undefined || projection !== undefined) {
     /* A fourth part is a classifier in Maven's and Gradle's coordinates: say how fabr writes one. */
     const tail = projection?.prefix === "" ? projection.pattern.getSimpleName() : undefined;

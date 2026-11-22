@@ -59,6 +59,7 @@ import {
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { Property } from "../model/Property";
 import { writtenSeparator } from "../model/Namespace";
 import { IDependencyStack, requestingTargets, useSiteOf } from "./Stack";
@@ -312,12 +313,12 @@ export abstract class TargetContext {
   private materializeStage(stage: ICommandStageLookup, srcs: FileSet): Computable<MaterializedCommandStage> {
     return Computable.forAll(
       [this.materializeCommandRunnable(stage), this.materializeStdin(stage), this.expandArgs(stage.args, srcs)],
-      (runnable: RunnableFileSet, stdin: FileSet | undefined, args: string[]): MaterializedCommandStage => ({
+      (runnable: RunnableFileSet, stdin: FileSet | undefined, args: SecureString[]): MaterializedCommandStage => ({
         runnable,
         args,
         stdin,
-        stdout: stage.stdout?.name.toString(),
-        stderr: stage.stderr?.name.toString(),
+        stdout: stage.stdout?.name.toUnmaskedString(),
+        stderr: stage.stderr?.name.toUnmaskedString(),
         mergedTo: stage.mergedTo,
       })
     );
@@ -326,21 +327,24 @@ export abstract class TargetContext {
   /** Expand a stage's args over the staged `srcs`: a glob arg becomes the file
    * names in `srcs` it matches, sorted, and rejects with a positioned error
    * where it matches none (bash's `failglob`); a literal arg passes through. */
-  private expandArgs(args: IPositionedName[], srcs: FileSet): Computable<string[]> {
+  private expandArgs(args: IPositionedName[], srcs: FileSet): Computable<SecureString[]> {
     return Computable.forAll(
       args.map(arg => {
         if (!arg.name.hasGlob()) {
           return Computable.resolve([arg.name.toString()]);
         }
         return srcs.find(arg.name).then(matched => {
-          const names = [...matched].map(([fileName]) => fileName).sort();
+          const names = [...matched]
+            .map(([fileName]) => fileName)
+            .sort()
+            .map(fileName => SecureString.of(fileName));
           if (names.length === 0) {
             throw new NameResolutionError(arg.name, declPosn(arg.ref), useSiteOf(this.stack), "no files in 'srcs' match this glob");
           }
           return names;
         });
       }),
-      (...expanded: string[][]) => expanded.flat()
+      (...expanded: SecureString[][]) => expanded.flat()
     );
   }
 
@@ -352,7 +356,7 @@ export abstract class TargetContext {
   private materializeCommandRunnable({ command, site }: ICommandStageLookup): Computable<RunnableFileSet> {
     return this.context
       .lookupFileValue(command.name, this.stack, { relativeTo: command.ref, callerOverrides: this.runOverrides() })
-      .then(sources => collectRunnable(this.context, this, sources, command.name.toString()))
+      .then(sources => collectRunnable(this.context, this, sources, command.name.toDisplayString()))
       .labelled(site && new ReferenceLabel({ value: command.ref, ...site }));
   }
 
@@ -409,7 +413,7 @@ export abstract class TargetContext {
   public lookupPublishRef(name: Name): Computable<RepositoryPublishRef> {
     const match = this.ownConfiguration.getPrefixTargetIfExists(name, this.stack);
     if (!match) {
-      return Computable.reject(new FabrError(`'${name.toString()}' does not name a repository`));
+      return Computable.reject(new FabrError(`'${name.toDisplayString()}' does not name a repository`));
     }
     return match.target.then(sources => publishRefIn(sources, match.rest, writtenSeparator(match.retainedPrefix), match.name, name));
   }
@@ -425,15 +429,15 @@ export abstract class TargetContext {
     });
   }
 
-  /** Get a STRING property's value as a string, its values joined by spaces.
+  /** Get a STRING property's value as text, its values joined by spaces.
    * Rejects where it is unwritten and has no default. */
-  public getRequiredString(name: string, overrides?: Constraints): Computable<string> {
+  public getRequiredString(name: string, overrides?: Constraints): Computable<SecureString> {
     return this.getRequiredProperty(name, overrides).then(prop => prop.toString());
   }
 
-  /** Get a STRING property's value as a string; undefined where it is unwritten
-   * and has no default. */
-  public getString(name: string, overrides?: Constraints): Computable<string | undefined> {
+  /** Get a STRING property's value as text, its values joined by spaces;
+   * undefined where it is unwritten and has no default. */
+  public getString(name: string, overrides?: Constraints): Computable<SecureString | undefined> {
     return this.getProperty(name, overrides).then(prop => prop?.toString());
   }
 
@@ -612,9 +616,9 @@ export abstract class TargetContext {
     return this.context.execution.runTask(task, run);
   }
 
-  /** Get the global STRING property `name`'s value as a string, its values
+  /** Get the global STRING property `name`'s value as text, its values
    * joined by spaces (see {@link getGlobalProperty}). */
-  public getGlobalString(name: string, overrides?: Constraints): Computable<string> {
+  public getGlobalString(name: string, overrides?: Constraints): Computable<SecureString> {
     return this.getGlobalProperty(name, overrides).then(prop => prop.toString());
   }
 
@@ -1072,7 +1076,8 @@ export class AnonymousTargetContext extends TargetContext {
       const decl = this.declaredDefault(name);
       return decl ? this.context.lookupStringProperty(decl, undefined, this.stack, overrides) : Computable.resolve(undefined);
     }
-    return Computable.resolve(new Property((Array.isArray(value) ? value : [value]) as string[]));
+    const words = (Array.isArray(value) ? value : [value]) as Array<string | SecureString>;
+    return Computable.resolve(new Property(words.map(word => (word instanceof SecureString ? word : SecureString.of(word)))));
   }
 
   public getFileProperty(name: string, overrides?: Constraints): Computable<SourceRef[]> {
@@ -1290,12 +1295,12 @@ function publishRefIn(
   }
   const namespace = sources.find((source): source is NamespaceRef => source instanceof NamespaceRef);
   if (namespace === undefined) {
-    throw new FabrError(`'${name.toString()}' does not name a repository`);
+    throw new FabrError(`'${name.toDisplayString()}' does not name a repository`);
   }
   const literal = rest.getLiteralPrefix();
   const end = literal.search(/[:/]/);
   if (end <= 0) {
-    throw new FabrError(`'${name.toString()}' names a namespace, not an address in a repository to publish to`);
+    throw new FabrError(`'${name.toDisplayString()}' names a namespace, not an address in a repository to publish to`);
   }
   const first = literal.substring(0, end);
   const next = literal[end] as ":" | "/";

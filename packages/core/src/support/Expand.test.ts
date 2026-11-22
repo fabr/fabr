@@ -65,7 +65,7 @@ describe("Expand", () => {
   });
 
   describe("descentPrefixes", () => {
-    const prefixes = (name: Name): string[] => descentPrefixes(name).map(prefix => prefix.toString());
+    const prefixes = (name: Name): string[] => descentPrefixes(name).map(prefix => prefix.toUnmaskedString());
 
     it("yields one slash-form prefix per separator with selector remaining", () => {
       /* `a.tgz:*:**` — one candidate before the `*` and one before the `**`,
@@ -122,7 +122,7 @@ describe("Expand", () => {
         .withConstraints([["K", Name.fromLiteral("v")]])
         .withRenameTo(Name.fromLiteral("bar"));
       const [probe] = descentPrefixes(name);
-      expect(probe.toString()).to.equal("x.tgz");
+      expect(probe.toUnmaskedString()).to.equal("x.tgz");
       expect(probe.hasConstraints()).to.equal(false);
       expect(probe.getRenameTo()).to.equal(undefined);
     });

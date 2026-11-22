@@ -20,7 +20,16 @@
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import { expect } from "chai";
-import { Computable, Credential, Name, NamespaceRef, PartialRepositoryRef, parseName, TargetContext } from "@fabr-build/core";
+import {
+  Computable,
+  Credential,
+  Name,
+  NamespaceRef,
+  parseName,
+  PartialRepositoryRef,
+  SecureString,
+  TargetContext,
+} from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
 import { codeArtifactToken, endpointUrl, formatCredential, tokenRequest, toCodeArtifactToken } from "./CodeArtifact";
 import { RequestSigner, requestUrl } from "./Signing";
@@ -39,8 +48,8 @@ function stubRef(
   return { name, repositoryName, withRepositoryName: (written: string) => stubRef(name, written) };
 }
 const STUB = {
-  getRepositoryRef: (name: { toString(): string }) => stubRef(name.toString()),
-  getRepositoryPublishRef: (name: { toString(): string }) => stubRef(name.toString()),
+  getRepositoryRef: (name: Name) => stubRef(name.toUnmaskedString()),
+  getRepositoryPublishRef: (name: Name) => stubRef(name.toUnmaskedString()),
 };
 
 /** A context recording each repository the account makes: its type, name, url and credential. */
@@ -51,8 +60,8 @@ function makingContext(
   return {
     name: "@aws",
     hasRepositoryType: () => defined,
-    makeRepository: (type: string, member: { name: string; url?: string; credential?: Credential }) => {
-      made.push({ type, name: member.name, url: member.url, credential: member.credential });
+    makeRepository: (type: string, member: { name: string; url?: Name; credential?: Credential }) => {
+      made.push({ type, name: member.name, url: member.url?.toUnmaskedString(), credential: member.credential });
       return Computable.resolve(STUB);
     },
   } as unknown as TargetContext;
@@ -85,16 +94,16 @@ const failureOf = (outcome: unknown): Promise<Error | undefined> =>
 
 describe("CodeArtifact's requests", () => {
   it("names a repository's endpoint for a format by its domain, owner and region", () => {
-    expect(endpointUrl("acme", "111122223333", "eu-west-2", "npm", "shared")).to.equal(
+    expect(endpointUrl("acme", "111122223333", "eu-west-2", "npm", "shared").toUnmaskedString()).to.equal(
       "https://acme-111122223333.d.codeartifact.eu-west-2.amazonaws.com/npm/shared/"
     );
-    expect(endpointUrl("acme", "111122223333", "us-east-1", "maven", "shared", new URL("http://localhost:4566"))).to.equal(
-      "http://localhost:4566/maven/shared/"
-    );
+    expect(
+      endpointUrl("acme", "111122223333", "us-east-1", "maven", "shared", SecureString.of("http://localhost:4566")).toUnmaskedString()
+    ).to.equal("http://localhost:4566/maven/shared/");
   });
 
   it("asks for a domain's token by its name and owner", () => {
-    expect(requestUrl(tokenRequest("acme", "111122223333", "eu-west-2"))).to.equal(
+    expect(requestUrl(tokenRequest("acme", "111122223333", "eu-west-2")).toUnmaskedString()).to.equal(
       "https://codeartifact.eu-west-2.amazonaws.com/v1/authorization-token?domain=acme&domain-owner=111122223333"
     );
   });
@@ -107,7 +116,7 @@ describe("CodeArtifact's requests", () => {
 
 describe("a CodeArtifact domain's token", () => {
   let server: http.Server;
-  let endpoint: URL;
+  let endpoint: SecureString;
   const asked: Array<{ url: string; authorization: string }> = [];
   /* How many token requests to refuse before answering. */
   let refusals = 0;
@@ -131,7 +140,7 @@ describe("a CodeArtifact domain's token", () => {
       });
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
-    endpoint = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    endpoint = SecureString.of(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
   });
 
   afterEach(async () => {
@@ -239,7 +248,7 @@ describe("an account's CodeArtifact repositories", () => {
 
   describe("where the account declares no ID", () => {
     let server: http.Server;
-    let endpoint: URL;
+    let endpoint: SecureString;
     let answer: { status: number; body: string };
     const asked: Array<{ body: string; authorization: string }> = [];
     const saved = { id: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY };
@@ -261,7 +270,7 @@ describe("an account's CodeArtifact repositories", () => {
         });
       });
       await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
-      endpoint = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      endpoint = SecureString.of(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
     });
 
     afterEach(async () => {

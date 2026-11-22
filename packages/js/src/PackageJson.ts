@@ -29,6 +29,7 @@ import {
   FabrError,
   FileSet,
   isJsonObject,
+  isWords,
   mapEntryError,
   MemoryFile,
   Name,
@@ -234,8 +235,9 @@ function rejectedMetadataKey(key: string, metadata: PropertyMap, reason: string)
  *  sub-map's string lists are always joined. */
 function encodeMetadataValue(value: PropertyMapValue, arrayField: boolean): unknown {
   if (Array.isArray(value)) {
-    if (value.every((entry): entry is string => typeof entry === "string")) {
-      return arrayField ? [...value] : value.join(" ");
+    if (isWords(value)) {
+      const words = value.map(word => word.toUnmaskedString());
+      return arrayField ? words : words.join(" ");
     }
     return (value as PropertyMap[]).map(encodeMap);
   }

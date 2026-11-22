@@ -29,6 +29,7 @@ import {
   parseName,
   RepositoryRef,
   SecretFile,
+  SecureString,
   TargetContext,
 } from "@fabr-build/core";
 import { AwsAccount } from "./AwsAccount";
@@ -106,14 +107,14 @@ function fetchingContext(keys: string[]): TargetContext {
   } as unknown as TargetContext;
 }
 
-function accountAt(ssm: IFakeSsm, keys: string[] = []): AwsAccount {
+function accountAt(ssm: IFakeSsm, keys: string[] = [], endpoint = SecureString.of(ssm.url)): AwsAccount {
   return new AwsAccount({
     name: "@aws",
     context: fetchingContext(keys),
     signer: new RequestSigner(undefined),
     credentials: "profile:default",
     region: "us-east-1",
-    endpoint: new URL(ssm.url),
+    endpoint,
     repositoryTypes: new Map(),
   });
 }
@@ -187,7 +188,7 @@ describe("the SSM parameters of an AWS account", () => {
     expect(ssm.requests[0].target).to.equal("AmazonSSM.GetParameter");
     expect(JSON.parse(ssm.requests[0].body)).to.deep.equal({ Name: "/app/ssl/ca.key", WithDecryption: true });
     expect(ssm.requests[0].authorization).to.match(/^AWS4-HMAC-SHA256 Credential=AKIDTEST\/\d{8}\/us-east-1\/ssm\/aws4_request, /);
-    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${ssm.url}/ /app/ssl/ca.key`]);
+    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${ssm.url} /app/ssl/ca.key`]);
   });
 
   it("reads a String as ordinary content", async () => {
@@ -208,6 +209,12 @@ describe("the SSM parameters of an AWS account", () => {
     expect((err as HttpStatusError).statusCode).to.equal(429);
   });
 
+  it("shows an endpoint written as an environment variable as written where a read fails", async () => {
+    const err = await failureOf(read(accountAt(ssm, [], SecureString.masked(ssm.url, "${ENV.SSM_ENDPOINT}")), THROTTLED));
+    expect((err as HttpStatusError).url).to.equal("${ENV.SSM_ENDPOINT}/");
+    expect(err?.message).not.to.contain(ssm.url);
+  });
+
   it("refuses a name that is a pattern", async () => {
     const err = await failureOf(refOf(accountAt(ssm), "/app/*"));
     expect(err?.message).to.equal("'@aws:ssm:/app/*' does not name an SSM parameter");
@@ -224,7 +231,7 @@ describe("the SSM parameters of an AWS account", () => {
 describe("SSM's GetParameter", () => {
   it("is a signed JSON POST to the region's SSM, decrypting", () => {
     const request = parameterRequest("/app/key", "eu-west-2");
-    expect(request.hostname).to.equal("ssm.eu-west-2.amazonaws.com");
+    expect(request.url.toUnmaskedString()).to.equal("https://ssm.eu-west-2.amazonaws.com/");
     expect(request.headers?.get("x-amz-target")).to.equal("AmazonSSM.GetParameter");
     expect(JSON.parse(request.body)).to.deep.equal({ Name: "/app/key", WithDecryption: true });
   });

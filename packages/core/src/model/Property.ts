@@ -18,24 +18,32 @@
  */
 
 import type { IPropertyDecl } from "./AST";
+import { SecureString } from "../core/SecureString";
 
 /** A property's value as read in one configuration: its words, and where
  *  they came from. */
 export class Property {
-  private values: string[];
+  private values: SecureString[];
   /** The declaration that gave the value, where one did (a value given as a
    *  constraint has none). Runtime-only, for provenance. */
   public readonly origin?: IPropertyDecl;
-  constructor(values: string[], origin?: IPropertyDecl) {
+  constructor(values: SecureString[], origin?: IPropertyDecl) {
     this.values = values;
     this.origin = origin;
   }
 
-  public toString(): string {
-    return this.values.join(" ");
+  /** @return the words joined by spaces, their masked runs kept. */
+  public toString(): SecureString {
+    return SecureString.join(this.values, " ");
   }
 
-  public getValues(): string[] {
+  /** @return the words as output shows them, joined by spaces. */
+  public toDisplayString(): string {
+    return this.toString().toDisplayString();
+  }
+
+  /** @return the words, their masked runs kept. */
+  public getValues(): SecureString[] {
     return this.values;
   }
 }

@@ -19,6 +19,7 @@
 
 import { FabrError } from "../core/Errors";
 import { Name } from "../core/Name";
+import { SecureString } from "../core/SecureString";
 import { declPosn, ISpliceDecl, INameValue, IPropertyDecl } from "../model/AST";
 import { NameResolutionError } from "../model/Errors";
 
@@ -28,7 +29,12 @@ import { NameResolutionError } from "../model/Errors";
  * maps (several blocks, `maintainers`-style), never a mix. The rule reading the
  * map decides how to encode each value.
  */
-export type PropertyMapValue = string[] | PropertyMap | PropertyMap[];
+export type PropertyMapValue = SecureString[] | PropertyMap | PropertyMap[];
+
+/** @return true if `value`, a map's entry, is its words, otherwise false (a nested map, or a list of them). */
+export function isWords(value: PropertyMapValue): value is SecureString[] {
+  return Array.isArray(value) && value.every(word => word instanceof SecureString);
+}
 
 /** A MAP property's value: its entries, by key, in the order written. */
 export type PropertyMap = Map<string, PropertyMapValue>;
@@ -65,27 +71,27 @@ export function mapEntryError(map: PropertyMap, key: string, message: string): E
   if (!origin) {
     return new FabrError(message);
   }
-  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toString()}')`).join("");
+  const via = origin.via.map(hop => ` (via '${("ref" in hop ? hop.ref : hop.value).toDisplayString()}')`).join("");
   return new NameResolutionError(Name.fromLiteral(key), declPosn(origin.entry), undefined, message + via);
 }
 
 /**
- * Convert a MAP property's value to environment variables, names to strings in
+ * Convert a MAP property's value to environment variables, names to values in
  * name order. A value is its words joined by a space (`NODE_OPTIONS = --a
  * --b;`). A name that could not be a variable, or a nested map for a value, is
  * refused at the entry that wrote it.
  */
-export function toEnvironment(map: PropertyMap): ReadonlyMap<string, string> {
-  const variables = new Map<string, string>();
+export function toEnvironment(map: PropertyMap): ReadonlyMap<string, SecureString> {
+  const variables = new Map<string, SecureString>();
   for (const name of [...map.keys()].sort()) {
     const value = map.get(name)!;
     if (name === "" || name.includes("=") || name.includes("\0")) {
       throw mapEntryError(map, name, `'${name}' is not a valid environment variable name`);
     }
-    if (!Array.isArray(value) || !value.every((word): word is string => typeof word === "string")) {
+    if (!isWords(value)) {
       throw mapEntryError(map, name, `environment variable '${name}' must be a string`);
     }
-    variables.set(name, value.join(" "));
+    variables.set(name, SecureString.join(value, " "));
   }
   return variables;
 }

@@ -118,7 +118,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
         type: decl.type,
         target: declName(decl),
       });
-    } else if (seen.has(prop.name.toString())) {
+    } else if (seen.has(prop.name.toUnmaskedString())) {
       isValid = false;
       log.log(DIAG_DUPLICATE_PROPERTY, {
         loc: declPosn(prop),
@@ -127,7 +127,7 @@ export function validateTarget(decl: ITargetDecl, targetDef: ITargetDefDecl, log
         target: declName(decl),
       });
     } else {
-      seen.add(prop.name.toString());
+      seen.add(prop.name.toUnmaskedString());
       declared.add(prop.name.toBaseString());
     }
   });
@@ -251,7 +251,7 @@ function validateMapProperty(prop: IPropertyDecl, log: Log): boolean {
 function spliceShapeError(splice: ISpliceDecl): string | undefined {
   const ref = splice.ref;
   return ref.hasLevelSeparator() || ref.hasConstraints() || ref.getRenameTo() || ref.hasGlob()
-    ? `a map reference is a plain property name ('${ref.toString()}')`
+    ? `a map reference is a plain property name ('${ref.toDisplayString()}')`
     : undefined;
 }
 
@@ -292,7 +292,7 @@ function validateBlock(entries: IMapItemDecl[], log: Log): boolean {
           isValid = false;
         }
       } else if (isNameValue(value) && value.value.getRenameTo()) {
-        isValid = fail(`a map value cannot carry a rename ('-> ') (key '${entry.name}')`, entry);
+        isValid = fail(`a map value cannot carry a rename ('-> ') (key '${entry.name.toDisplayString()}')`, entry);
       }
     });
   });

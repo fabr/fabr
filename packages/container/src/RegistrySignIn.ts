@@ -26,7 +26,9 @@ import {
   isJsonObject,
   parseJson,
   RenewableToken,
+  SecureString,
   sendRequest,
+  shownUrl,
   TargetContext,
 } from "@fabr-build/core";
 import { containerPluginContext, IRegistryCredential } from "./RegistryAuth";
@@ -54,14 +56,14 @@ export class RegistrySignIn implements Credential {
 
   constructor(
     /** The registry's base URL, the requests' scopes read from what follows it. */
-    private readonly registry: string,
+    private readonly registry: SecureString,
     /** Get the registry's credential, where it may need one: asked for only when it does. */
     private readonly credentialOf: () => Computable<IRegistryCredential | undefined>
   ) {}
 
   public authorize(request: IRequestHead, challenge?: IAuthChallenge): Computable<ReadonlyMap<string, string> | undefined> {
     if (challenge === undefined) {
-      const scopes = scopesOf(request, this.registry);
+      const scopes = scopesOf(request, this.registry.toUnmaskedString());
       if (this.tokens.has(scopes.join(" ")) || (this.realm !== undefined && scopes.length > 0)) {
         return bearer(this.tokenFor(scopes).current());
       }
@@ -70,7 +72,7 @@ export class RegistrySignIn implements Credential {
     const asked = challenge.challenges.map(parseChallenge).find(each => each !== undefined);
     if (asked === undefined) {
       return Computable.reject(
-        new FabrError(`${this.registry} asks for authentication fabr cannot give (${challenge.challenges.join(", ")})`)
+        new FabrError(`${shownUrl(this.registry)} asks for authentication fabr cannot give (${challenge.challenges.join(", ")})`)
       );
     }
     if (asked.scheme === "basic") {
@@ -83,7 +85,7 @@ export class RegistrySignIn implements Credential {
       });
     }
     this.realm = asked;
-    const scopes = asked.scope === undefined ? scopesOf(request, this.registry) : asked.scope.split(" ");
+    const scopes = asked.scope === undefined ? scopesOf(request, this.registry.toUnmaskedString()) : asked.scope.split(" ");
     return bearer(this.tokenFor(scopes).forRequest(challenge));
   }
 
@@ -109,25 +111,27 @@ export class RegistrySignIn implements Credential {
     if (
       credential !== undefined &&
       realm.protocol !== "https:" &&
-      !(realm.protocol === "http:" && new URL(this.registry).protocol === "http:")
+      !(realm.protocol === "http:" && new URL(this.registry.toUnmaskedString()).protocol === "http:")
     ) {
       return Computable.reject(
-        new FabrError(`${this.registry} asks to be signed in at ${challenge.realm}, which is not https, so its credential is not sent`)
+        new FabrError(
+          `${shownUrl(this.registry)} asks to be signed in at ${challenge.realm}, which is not https, so its credential is not sent`
+        )
       );
     }
     if (challenge.service !== undefined) {
       realm.searchParams.append("service", challenge.service);
     }
     scopes.forEach(scope => realm.searchParams.append("scope", scope));
-    const url = realm.toString();
-    return sendRequest(url, {
+    return sendRequest(realm.href, {
       method: "GET",
       headers: credential === undefined ? {} : { authorization: basicAuthorization(credential) },
     }).then(response => {
       if (response.statusCode !== 200) {
+        const host = new URL(this.registry.toUnmaskedString()).host;
         throw new FabrError(`${challenge.realm} refused a token for ${scopes.join(", ")} (${response.statusCode})`).withHelp(
           credential === undefined
-            ? `log in to ${new URL(this.registry).host} with \`docker login\` or \`podman login\``
+            ? `log in to ${host} with \`docker login\` or \`podman login\``
             : "check the credential is for this registry and allowed this access"
         );
       }
@@ -137,7 +141,11 @@ export class RegistrySignIn implements Credential {
 }
 
 /** Make the sign-in to the registry at `registry` with the credential podman's and Docker's auth files hold for `server` (by default, its host). */
-export function authFileSignIn(context: TargetContext, registry: string, server: string = new URL(registry).host): RegistrySignIn {
+export function authFileSignIn(
+  context: TargetContext,
+  registry: SecureString,
+  server: string = new URL(registry.toUnmaskedString()).host
+): RegistrySignIn {
   return new RegistrySignIn(registry, () =>
     containerPluginContext(context.execution)
       .registryAuth()

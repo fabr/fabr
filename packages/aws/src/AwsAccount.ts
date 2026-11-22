@@ -21,7 +21,9 @@ import {
   Computable,
   Credential,
   FabrError,
+  isWords,
   mapEntryError,
+  Namespace,
   NamespaceRef,
   onlyTo,
   Property,
@@ -29,10 +31,11 @@ import {
   Reference,
   RenewableToken,
   Repository,
-  Namespace,
-  sendRequest,
-  TargetContext,
   RepositoryImplementation,
+  SecureString,
+  sendRequest,
+  shownUrl,
+  TargetContext,
 } from "@fabr-build/core";
 import { CODEARTIFACT_SERVICE, codeArtifactToken, endpointUrl, formatCredential } from "./CodeArtifact";
 import { ECR_SERVICE, EcrSignIn, registryUrl } from "./Ecr";
@@ -99,8 +102,9 @@ export class AwsAccount extends Namespace {
     let made = this.registries.get(key);
     if (made === undefined) {
       const id = owner ?? this.settings.accountId;
-      const known = this.settings.endpoint?.href ?? (id === undefined ? undefined : registryUrl(id, this.settings.region));
-      const url = known === undefined ? this.ecrSignIn.current().then(token => token.proxyEndpoint) : Computable.resolve(known);
+      const known = this.settings.endpoint ?? (id === undefined ? undefined : registryUrl(id, this.settings.region));
+      const url =
+        known === undefined ? this.ecrSignIn.current().then(token => SecureString.of(token.proxyEndpoint)) : Computable.resolve(known);
       made = this.makeMember(ECR_SERVICE, owner === undefined ? ECR_SERVICE : `${owner}:${ECR_SERVICE}`, url, this.ecrSignIn);
       this.registries.set(key, made);
     }
@@ -129,7 +133,7 @@ export class AwsAccount extends Namespace {
                 `STS refused to say which account ${name}'s credentials sign in to (${response.statusCode})`
               ).withHelp(`declare the account's ID as \`account_id\` on ${name}`);
             }
-            return parseCallerAccount(response.body.toString("utf8"), `the answer from ${url}`);
+            return parseCallerAccount(response.body.toString("utf8"), `the answer from ${shownUrl(url)}`);
           });
       }
     }
@@ -154,7 +158,7 @@ export class AwsAccount extends Namespace {
    * {@link REPOSITORY_TYPES} names for `kind`. Refused where it names none, or
    * one no plugin in use defines.
    */
-  public makeMember(kind: string, member: string, url: Computable<string>, credential: Credential): Computable<Repository> {
+  public makeMember(kind: string, member: string, url: Computable<SecureString>, credential: Credential): Computable<Repository> {
     const { context, name, repositoryTypes } = this.settings;
     const type = repositoryTypes.get(kind);
     if (type === undefined) {
@@ -171,7 +175,13 @@ export class AwsAccount extends Namespace {
         )
       );
     }
-    return url.then(at => context.makeRepository(type, { name: member, url: at, credential: onlyTo(new URL(at).origin, credential) }));
+    return url.then(at =>
+      context.makeRepository(type, {
+        name: member,
+        url: at,
+        credential: onlyTo(new URL(at.toUnmaskedString()).origin, credential),
+      })
+    );
   }
 
   /** Get another account's resources, by its ID. */
@@ -319,7 +329,7 @@ class CodeArtifactDomains extends Namespace {
   private makeEndpoint(domain: string, repository: string, format: string): Computable<Repository> {
     const settings = this.account.account;
     const owner = this.owner === undefined ? this.account.id() : Computable.resolve(this.owner);
-    const member = `${this.owner === undefined ? "" : `${this.owner}:`}${CODEARTIFACT_SERVICE}:${domain}:${repository}:${format}`;
+    const member = [...(this.owner === undefined ? [] : [this.owner]), CODEARTIFACT_SERVICE, domain, repository, format].join(":");
     return owner.then(id => {
       let token = this.tokens.get(domain);
       if (token === undefined) {
@@ -352,9 +362,9 @@ function createAccount(context: TargetContext): Computable<Namespace> {
       new AwsAccount({
         name: context.name,
         context,
-        signer: new RequestSigner(profile?.toString()),
-        credentials: credentialsOf(profile?.toString()),
-        region: region?.toString() ?? DEFAULT_REGION,
+        signer: new RequestSigner(profile?.toString().toUnmaskedString()),
+        credentials: credentialsOf(profile?.toString().toUnmaskedString()),
+        region: region?.toString().toUnmaskedString() ?? DEFAULT_REGION,
         endpoint: endpoint === undefined ? undefined : endpointOf(endpoint.toString(), context.name),
         accountId: accountId === undefined ? undefined : accountIdOf(accountId.toString(), context.name),
         repositoryTypes: repositoryTypesOf(types),
@@ -372,36 +382,36 @@ function credentialsOf(profile: string | undefined): string {
 function repositoryTypesOf(map: PropertyMap): ReadonlyMap<string, string> {
   const types = new Map<string, string>();
   for (const [kind, value] of map) {
-    if (!Array.isArray(value) || value.length !== 1 || typeof value[0] !== "string") {
+    if (!isWords(value) || value.length !== 1) {
       throw mapEntryError(map, kind, `${REPOSITORY_TYPES}'s ${kind} must name one repository type`);
     }
-    types.set(kind, value[0]);
+    types.set(kind, value[0].toUnmaskedString());
   }
   return types;
 }
 
 /** Read an account's `account_id`, refusing anything but 12 digits. */
-function accountIdOf(text: string, account: string): string {
-  if (!/^\d{12}$/.test(text)) {
-    throw new FabrError(`${account}'s account_id '${text}' is not an AWS account ID`).withHelp(
+function accountIdOf(accountId: SecureString, account: string): string {
+  if (!/^\d{12}$/.test(accountId.toUnmaskedString())) {
+    throw new FabrError(`${account}'s account_id '${accountId.toDisplayString()}' is not an AWS account ID`).withHelp(
       "an account ID is 12 digits, as in 123456789012"
     );
   }
-  return text;
+  return accountId.toUnmaskedString();
 }
 
 /** Read an account's `endpoint`, refusing anything but an HTTP(S) URL. */
-function endpointOf(text: string, account: string): URL {
+function endpointOf(endpoint: SecureString, account: string): SecureString {
   let url: URL;
   try {
-    url = new URL(text);
+    url = new URL(endpoint.toUnmaskedString());
   } catch {
-    throw new FabrError(`${account}'s endpoint '${text}' is not a URL`);
+    throw new FabrError(`${account}'s endpoint '${shownUrl(endpoint)}' is not a URL`);
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new FabrError(`${account}'s endpoint '${text}' is not an HTTP or HTTPS URL`);
+    throw new FabrError(`${account}'s endpoint '${shownUrl(endpoint)}' is not an HTTP or HTTPS URL`);
   }
-  return url;
+  return endpoint;
 }
 
 /** The implementation AWS.fabr's `repository` declaration names. */

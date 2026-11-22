@@ -53,7 +53,7 @@ export interface IJavaUnit {
  */
 export function describeJava(context: TargetContext, resolved: ResolvedRequirements, unit: IJavaUnit): Computable<FileSet> {
   return context.getGlobalString("JVM_TARGET").then(jvmTarget => {
-    const release = String(javaRelease(jvmTarget, unit.deps));
+    const release = String(javaRelease(jvmTarget.toUnmaskedString(), unit.deps));
     const jars = classpathOf(unit.deps);
     return describeTarget(context, resolved, {
       sources: [unit.sources],

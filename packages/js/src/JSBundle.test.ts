@@ -19,6 +19,7 @@
 
 import { expect } from "chai";
 import {
+  dependenciesOn,
   IFile,
   makeRewrite,
   MemoryFile,
@@ -27,7 +28,7 @@ import {
   RefSource,
   RepositoryRef,
   RewriteFn,
-  dependenciesOn,
+  SecureString,
 } from "@fabr-build/core";
 import {
   buildBundleOptions,
@@ -239,9 +240,11 @@ describe("computeChunkNames", () => {
 describe("toBundleFormat", () => {
   it("takes the four bundle formats and refuses anything else", () => {
     for (const format of ["iife", "cjs", "esm", "esm-split"]) {
-      expect(toBundleFormat(format)).to.equal(format);
+      expect(toBundleFormat(SecureString.of(format))).to.equal(format);
     }
-    expect(() => toBundleFormat("commonjs")).to.throw("JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not 'commonjs'");
+    expect(() => toBundleFormat(SecureString.of("commonjs"))).to.throw(
+      "JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not 'commonjs'"
+    );
   });
 });
 
