@@ -114,7 +114,7 @@ import { BspServer } from "./BspServer";
 import { JsonRpcConnection } from "./JsonRpc";
 import { LanguageServer } from "./LanguageServer";
 import { completeCommandLine, Mode, Options, getVersion } from "./Command";
-import { getSourceRoot, getBuildCacheRoot, getHostProperties } from "./Environment";
+import { getSourceRoot, getBuildCacheRoot } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
 import { identityProviderOf } from "./Identity";
@@ -886,7 +886,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       cacheRoot: getBuildCacheRoot(),
       log: setup.log?.(log) ?? log,
       watch,
-      host: Constraints.of(getHostProperties()),
+      environment: new Map(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
       includeOptionalLibs: options.includeOptional,
       refresh: options.refresh,
     });
@@ -1074,13 +1074,9 @@ function runWatched(operation: Operation, fabr: Fabr, site: IInvocationSite, log
   return new Promise<void>(() => {});
 }
 
-/** Get the configuration for `operation`: the host's properties,
- *  `BUILD_OPERATION`, and the command line's properties, which take precedence. */
+/** Get the configuration for `operation`: `BUILD_OPERATION`, and the command line's properties, which take precedence. */
 function configFor(model: BuildModel, options: Options, execution: ExecutionContext, operation: string): BuildContext {
-  return model.getConfig(
-    Constraints.of({ ...getHostProperties(), [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }),
-    execution
-  );
+  return model.getConfig(Constraints.of({ [BUILD_OPERATION]: operation, ...Object.fromEntries(options.properties) }), execution);
 }
 
 /** Apply `-f`'s force marks for `names` (see core's {@link forceTargets}). */

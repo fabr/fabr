@@ -53,7 +53,6 @@ import { getCoreVersion, matchOptionalLibs, PluginPackage, PluginResolution, res
 import { PluginContribution } from "../rules/Types";
 import { computableWorkList } from "../core/WorkList";
 import { FabrError } from "../core/Errors";
-import { Constraints } from "./Constraints";
 
 /** An `include` naming a file that does not exist, reported against the include. */
 const DIAG_INCLUDE_NOT_FOUND = new Diagnostic<{ filename: string; loc: ISourceSpan }>(
@@ -271,7 +270,6 @@ class ProjectLoader {
     private readonly execution: ExecutionContext,
     private readonly startFile: string,
     private readonly core: PluginContribution,
-    private readonly host: Constraints,
     private readonly options: ILoadOptions
   ) {}
 
@@ -313,7 +311,6 @@ class ProjectLoader {
         ready.map(({ decl, match }) =>
           resolvePlugin(model, decl, match, {
             execution: this.execution,
-            host: this.host,
             libsOf: (target, property) => this.libsOf(target, property),
           })
         ),
@@ -422,6 +419,7 @@ class ProjectLoader {
   /** Make the model of `rounds`: each round's files, a file reached again added once, then the plugins it resolved, in name order. */
   private modelOf(rounds: Round[]): ModelBuilder {
     const model = new ModelBuilder(this.execution.log, [this.core]);
+    model.addFiles([...(this.core.contents ?? [])], { fromPlugin: false });
     const read = new Set<string>();
     for (const { files, fromPlugin, plugins, optionalLibs } of rounds) {
       const fresh = files.filter(file => !read.has(file.file) && read.add(file.file));
@@ -635,7 +633,7 @@ class ProjectLoader {
  *
  * A plugin's own files, its optional libs among them, may declare only
  * defaults, and no `fabr_plugin`. Loading builds nothing: a `fabr_plugin`'s
- * code is built, under `run` for `host`, the first time a rule or repository it
+ * code is built, under `run` for the host, the first time a rule or repository it
  * implements is used. Rejects as {@link ModelBuilder.finish} throws, where
  * anything read holds an error.
  */
@@ -645,10 +643,9 @@ export function loadProject(
   /* Core's contribution. A test passes a stub: under ts-jest the package
    * resolves to src/, beside which there is no lib/. */
   core: PluginContribution = coreContribution(),
-  host: Constraints = Constraints.of({}),
   options: ILoadOptions = {}
 ): Computable<BuildModel> {
-  return new ProjectLoader(execution, startFile, core, host, options).load();
+  return new ProjectLoader(execution, startFile, core, options).load();
 }
 
 /** How {@link loadProject} reads a project. */

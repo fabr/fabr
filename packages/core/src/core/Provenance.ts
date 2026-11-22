@@ -72,7 +72,7 @@ export interface IRenderContext {
   /** Index of the step being rendered among those that render something (0 = nearest) */
   stepIndex?: number;
   /** Constraint keys to omit from "with k=v" annotations: the caller's ambient
-   *  keys (the host facts the driver injects, and BUILD_OPERATION). */
+   *  keys (BUILD_OPERATION). */
   elideConstraintKeys?: ReadonlySet<string>;
 }
 

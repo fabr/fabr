@@ -107,17 +107,18 @@ import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } fro
 import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
+import { hostTriple } from "../support/Platform";
 import { Name, NAME_COMPONENT_SEPARATOR, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { SecureString } from "../core/SecureString";
 import { COMMAND_LINE_FILE } from "../core/Constants";
 import { globMatcher } from "../support/Glob";
-import { applyPatternEdit, PatternEdit } from "../support/PatternEdit";
+import { applyPatternEdit, isUnsetEdit, PatternEdit, UnsetEdit, unsetWord } from "../support/PatternEdit";
 import { parseName } from "../model/Parser";
 import { IPrefixMatch, IPropertyEntry, Namespace, writtenSeparator } from "../model/Namespace";
 import { Property } from "../model/Property";
 import { IModelStep, ISubstitution, MODEL_PROVENANCE } from "../model/ModelProvenance";
 import { BuildContext, InternalBuildContext, IRepositoryMember, ISplicedEntry } from "./BuildContext";
-import { mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./PropertyMap";
+import { isWords, mapEntryError, mapEntryOrigin, mergeMapInto, PropertyMap, PropertyMapValue, recordMapOrigin } from "./PropertyMap";
 import { IDependencyStack, IUseFrame, useFrameOf, useSiteOf } from "./Stack";
 import { NameLabel, ReferenceLabel } from "../model/Errors";
 import { IncompleteRef, isIncompleteRef, NamespaceRef, sourceOf } from "../core/NamespaceRef";
@@ -515,7 +516,7 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public runOverrides(extra?: Constraints): Constraints {
-    const host = this.getConstraint(HOST);
+    const host = this.getConstraint(HOST) ?? hostTriple();
     const measured = this.getConstraint(COVERAGE) !== undefined;
     return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(
       extra
@@ -686,6 +687,19 @@ export class BuildContextImpl implements InternalBuildContext {
       }
       return this.getContextWithOverrides(callerOverrides).getProperty(name, stack);
     }
+    const key = mapKeyOf(name);
+    if (key !== undefined) {
+      return this.mapEntry(key.map, key.key, stack).then(value => {
+        if (value === undefined) {
+          const reason =
+            this.lookupDecl(key.map) === undefined && !this.constrains(key.map)
+              ? `Unknown property '${key.map}'`
+              : `'${key.map}' has no key '${key.key}'`;
+          throw this.unresolvedNameError(name, stack, reason, []);
+        }
+        return value;
+      });
+    }
     const def = this.lookupDecl(name);
     const entry = def?.kind === DeclKind.Property ? def : undefined;
     if (!entry && !this.constrains(name)) {
@@ -713,12 +727,17 @@ export class BuildContextImpl implements InternalBuildContext {
   /**
    * Get the property `name` as {@link getProperty} does, but undefined where it
    * has no value in this configuration: nothing declares it as a property (and
-   * no constraint supplies it), or no declaration of it applies here.
+   * no constraint supplies it), or no declaration of it applies here. A name
+   * `M.key` is the entry `key` of the MAP property `M` ({@link mapEntry}).
    */
   public getOptionalProperty(name: string, stack?: IDependencyStack): Computable<Property | undefined> {
     const cached = this.propCache.get(name);
     if (cached) {
       return cached;
+    }
+    const key = mapKeyOf(name);
+    if (key !== undefined) {
+      return this.mapEntry(key.map, key.key, stack);
     }
     if (this.constrains(name)) {
       const supplied = Computable.resolve<Property | undefined>(new Property([SecureString.of(this.constraints.get(name)!)]));
@@ -737,6 +756,34 @@ export class BuildContextImpl implements InternalBuildContext {
     ).labelled(new NameLabel(name));
     this.propCache.set(name, result);
     return result;
+  }
+
+  /**
+   * Read the entry `key` of the MAP property `map` (`${map.key}`), as a
+   * property whose words are the entry's, declared where the entry is written;
+   * undefined where nothing declares `map`, or the map has no entry `key`.
+   * Rejects, at the use `stack` names, where `map` cannot be read as a map, or
+   * the entry is a map rather than words.
+   */
+  private mapEntry(map: string, key: string, stack: IDependencyStack | undefined): Computable<Property | undefined> {
+    if (this.lookupDecl(map) === undefined && !this.constrains(map)) {
+      return Computable.resolve(undefined);
+    }
+    return this.lookupGlobalMap(map, stack).then(
+      entries => {
+        const value = entries.get(key);
+        if (value === undefined) {
+          return undefined;
+        }
+        if (!isWords(value)) {
+          throw mapEntryError(entries, key, `'${map}.${key}' is a map, not a value to substitute`);
+        }
+        return new Property([...value], mapEntryOrigin(entries, key)?.entry);
+      },
+      err => {
+        throw this.unresolvedNameError(`${map}.${key}`, stack, `'${map}' cannot be read as a map: ${toError(err).message}`, []);
+      }
+    );
   }
 
   public resolveTarget(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<SourceRef[]> {
@@ -912,7 +959,7 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public lookupGlobalMap(name: string, stack?: IDependencyStack, callerOverrides?: Constraints): Computable<PropertyMap> {
-    return this.lookupMapReference(Name.fromLiteral(name), stack, stack, new Set(), callerOverrides);
+    return this.lookupMapReference(Name.fromLiteral(name), stack, stack, new Set(), false, callerOverrides);
   }
 
   /** Look up the MAP property `prop` as {@link lookupMap} does, `seen` holding
@@ -946,7 +993,7 @@ export class BuildContextImpl implements InternalBuildContext {
     return Computable.forAll(
       prop.values.filter(isNameValue).map(value =>
         this.inFile(value.source.file)
-          .lookupMapReference(value.value, { property: prop, target, value, next: stack }, stack, nextSeen, callerOverrides)
+          .lookupMapReference(value.value, { property: prop, target, value, next: stack }, stack, nextSeen, true, callerOverrides)
           .then((map): [PropertyMap, INameValue] => [map, value])
       ),
       (...maps: [PropertyMap, INameValue][]) => {
@@ -960,15 +1007,21 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Chase a map reference (a top-level bare value or an in-block splice) to
-   * the named block-valued property and look it up, `seen`-guarded. */
+   * the named block-valued property and look it up, `seen`-guarded. Where
+   * `written` (the reference is written in a build file), a property read only
+   * an entry at a time ({@link IPropertyDecl.entriesOnly}) is refused. */
   private lookupMapReference(
     name: Name,
     info: IDependencyStack | undefined,
     stack: IDependencyStack | undefined,
     seen: Set<IPropertyDecl>,
+    written: boolean,
     callerOverrides?: Constraints
   ): Computable<PropertyMap> {
     return this.referencedProperty(name, info).then(({ prop, property, name: substituted, context }) => {
+      if (written && prop?.entriesOnly) {
+        throw wholeMapError(substituted);
+      }
       if (!prop) {
         /* A property nothing sets here is an empty map. */
         if (property) {
@@ -997,7 +1050,7 @@ export class BuildContextImpl implements InternalBuildContext {
     return Computable.forAll(
       entries.map((item): Computable<PropertyMapValue | PropertyMap> => {
         if (item.kind === DeclKind.Splice) {
-          return this.inFile(item.source.file).lookupMapReference(item.ref, stack, stack, seen, callerOverrides);
+          return this.inFile(item.source.file).lookupMapReference(item.ref, stack, stack, seen, true, callerOverrides);
         }
         const blocks = item.values.filter(isMapValue);
         if (blocks.length === 0) {
@@ -1035,6 +1088,9 @@ export class BuildContextImpl implements InternalBuildContext {
   /** Look up the entries of the map property `name` names, as declarations, chasing references to other maps `seen`-guarded. */
   private splicedEntries(name: Name, stack: IDependencyStack | undefined, seen: Set<IPropertyDecl>): Computable<ISplicedEntry[]> {
     return this.referencedProperty(name, stack).then(({ prop, property, name: substituted, context }) => {
+      if (prop?.entriesOnly) {
+        throw wholeMapError(substituted);
+      }
       if (!prop) {
         /* A property nothing sets here supplies nothing. */
         if (property) {
@@ -1410,7 +1466,8 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /** Get one substituted part's text, with what it substituted: a property's
-   * value (with its pattern edit applied), or a command's stdout. Two
+   * value (with its pattern edit applied, or its unset edit, which reads a
+   * name with no value as unset), or a command's stdout. Two
    * identically-written commands are one action to the build cache, so run
    * once. */
   private substitutedText(
@@ -1423,10 +1480,20 @@ export class BuildContextImpl implements InternalBuildContext {
     }
     const edit = part.edit;
     const read = (context: BuildContextImpl): Computable<{ text: SecureString; substitution?: ISubstitution }> =>
-      context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => {
-        const text = edit === undefined ? prop.toString() : editedText(prop.toString(), edit, part);
-        return { text, substitution: { name: part.value, value: text.toDisplayString(), origin: prop.origin } };
-      });
+      edit !== undefined && isUnsetEdit(edit)
+        ? (part.constraints === undefined || callerOverrides === undefined
+            ? context
+            : context.getContextWithOverrides(callerOverrides)
+          )
+            .getOptionalProperty(part.value, stack)
+            .then(prop => {
+              const text = this.unsetEditedText(prop?.toString(), edit, part.value, stack);
+              return { text, substitution: { name: part.value, value: text.toDisplayString(), origin: prop?.origin } };
+            })
+        : context.getProperty(part.value, stack, part.constraints === undefined ? undefined : callerOverrides).then(prop => {
+            const text = edit === undefined ? prop.toString() : editedText(prop.toString(), edit, part);
+            return { text, substitution: { name: part.value, value: text.toDisplayString(), origin: prop.origin } };
+          });
     if (part.constraints === undefined) {
       return read(this);
     }
@@ -1437,6 +1504,33 @@ export class BuildContextImpl implements InternalBuildContext {
       constraints.map(([, value]) => this.substituteNameVars(value, stack, callerOverrides)),
       (...values: Name[]) => constraintsOf(constraints.map(([key], i): NameConstraint => [key, values[i]]))
     ).then(required => read(this.getContextWithOverrides(required)));
+  }
+
+  /**
+   * Apply `edit` to `value`, the value of `name`, or undefined where it has
+   * none: `:-` gives the word where it is unset or empty, `:+` the word where it
+   * is neither (else nothing), and `:?` throws, its word the message, where it
+   * is unset or empty.
+   */
+  private unsetEditedText(
+    value: SecureString | undefined,
+    edit: UnsetEdit,
+    name: string,
+    stack: IDependencyStack | undefined
+  ): SecureString {
+    const missing = value === undefined || value.length === 0;
+    switch (edit.operator) {
+      case ":-":
+        return missing ? SecureString.of(unsetWord(edit)) : value;
+      case ":+":
+        return SecureString.of(missing ? "" : unsetWord(edit));
+      case ":?":
+        if (missing) {
+          const word = unsetWord(edit);
+          throw this.unresolvedNameError(name, stack, word === "" ? `'${name}' is unset or empty` : word, []);
+        }
+        return value;
+    }
   }
 
   /**
@@ -2207,6 +2301,22 @@ interface ReferencedProperty {
   readonly context: BuildContextImpl;
 }
 
+/** Make the error for `name`, a MAP property read only an entry at a time ({@link IPropertyDecl.entriesOnly}), used as a whole map. */
+function wholeMapError(name: Name): FabrError {
+  const shown = name.toDisplayString();
+  return new FabrError(`'${shown}' is read only an entry at a time, so it cannot be used as a whole map`).withHelp(
+    `name each entry to pass on, as in '{ HOME = \${${shown}.HOME}; }'`
+  );
+}
+
+/** @return `name` as the MAP property and the key of its entry it names (`ENV.HOME`), where it names one: two names joined by a `.`. */
+function mapKeyOf(name: string): { map: string; key: string } | undefined {
+  const dot = name.indexOf(".");
+  return dot > 0 && dot < name.length - 1 && name.indexOf(".", dot + 1) === -1
+    ? { map: name.substring(0, dot), key: name.substring(dot + 1) }
+    : undefined;
+}
+
 /** @return the constraints a reference requires (`ref<k=v>`), if it requires any. */
 function requirementOf(name: Name): Constraints | undefined {
   return name.hasConstraints() ? constraintsOf(name.getConstraints()) : undefined;
@@ -2217,7 +2327,7 @@ function constraintsOf(constraints: readonly NameConstraint[]): Constraints {
   const required: Record<string, string> = Object.create(null);
   for (const [key, value] of constraints) {
     if (value.isMasked()) {
-      throw new FabrError(`'${key}=${value.toDisplayString()}' holds text shown masked, which cannot be a configuration value`);
+      throw new FabrError(`'${key}=${value.toDisplayString()}' may hold a secret, which cannot be a configuration value`);
     }
     required[key] = value.toUnmaskedString();
   }
@@ -2754,9 +2864,9 @@ abstract class ScopedConfiguration extends BuildContextImpl {
   /** @return the scope's own match for a prefix of `name`, or undefined where none of its names is one. */
   protected abstract ownPrefixMatch(name: Name): ScopedMatch | undefined;
 
-  /** @return true if the scope declares `name`, otherwise false. */
+  /** @return true if the scope declares `name`, or for `M.key`, `M`, which the key is read in (`${MAP.key}`), otherwise false. */
   protected owns(name: string): boolean {
-    return this.ownDecl(name) !== undefined;
+    return this.ownDecl(mapKeyOf(name)?.map ?? name) !== undefined;
   }
 
   public lookupDecl(name: string): IPropertyEntry | ITargetDecl | undefined {

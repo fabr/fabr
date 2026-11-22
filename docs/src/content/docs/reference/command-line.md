@@ -14,22 +14,22 @@ can be piped or redirected on its own.
 
 ## Commands at a glance
 
-| Command | What it does |
-|---|---|
-| [`build`](#build) | Build targets. |
-| [`test`](#test) | Build and run targets' tests. |
-| [An operation's name](#an-operations-name) | Build targets under an operation a rule declares, such as `lint`. |
-| [`run`](#run) | Build a program and run it. |
-| [`ls`](#ls), [`cat`](#cat), [`cp`](#cp) | List, print or copy the files a target produces. |
-| [`deps`](#deps) | Print the dependency tree of targets or packages. |
-| [`audit`](#audit) | Check the dependencies of targets or packages for known security advisories. |
-| [`sbom`](#sbom) | Write the software bill of materials of targets or packages. |
-| [`shell`](#shell) | Open a shell in the directory a build step runs in, for debugging. |
-| [`sync`](#sync) | Publish packages and files. |
-| [`build-server`](#build-server) | Serve the project's targets to an editor. |
-| [`cache purge`](#cache-purge) | Remove fabr's cache. |
-| [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain. |
-| `help [command]` | Print the commands, or one command's options. `fabr <command> --help` does the same. |
+| Command                                                                                                                                                                       | What it does                                                                         |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [`build`](#build)                                                                                                                                                             | Build targets.                                                                       |
+| [`test`](#test)                                                                                                                                                               | Build and run targets' tests.                                                        |
+| [An operation's name](#an-operations-name)                                                                                                                                    | Build targets under an operation a rule declares, such as `lint`.                    |
+| [`run`](#run)                                                                                                                                                                 | Build a program and run it.                                                          |
+| [`ls`](#ls), [`cat`](#cat), [`cp`](#cp)                                                                                                                                       | List, print or copy the files a target produces.                                     |
+| [`deps`](#deps)                                                                                                                                                               | Print the dependency tree of targets or packages.                                    |
+| [`audit`](#audit)                                                                                                                                                             | Check the dependencies of targets or packages for known security advisories.         |
+| [`sbom`](#sbom)                                                                                                                                                               | Write the software bill of materials of targets or packages.                         |
+| [`shell`](#shell)                                                                                                                                                             | Open a shell in the directory a build step runs in, for debugging.                   |
+| [`sync`](#sync)                                                                                                                                                               | Publish packages and files.                                                          |
+| [`build-server`](#build-server)                                                                                                                                               | Serve the project's targets to an editor.                                            |
+| [`cache purge`](#cache-purge)                                                                                                                                                 | Remove fabr's cache.                                                                 |
+| [`list-targets`](#list-targets), [`list-targetdefs`](#list-targetdefs), [`list-operations`](#list-operations), [`list-properties`](#list-properties), [`list-all`](#list-all) | Describe the project and what a build file can contain.                              |
+| `help [command]`                                                                                                                                                              | Print the commands, or one command's options. `fabr <command> --help` does the same. |
 
 ### Leaving the command out
 
@@ -103,14 +103,14 @@ changes: a failing run's failures are reported again, and the command fails agai
 `--retry-failed`, a target whose cached run failed runs its tests again; it can't be combined
 with `-w`.
 
-| Option | Effect |
-|---|---|
-| `-u` | New and changed snapshots are written back into your source tree, after a run in which no test failed. Each file is named as it is written. |
-| `-t <pattern>` | Only the tests whose names match the regular expression are run. If no test in any of the targets matches, the command fails with `No test's name matches the pattern '<pattern>'`. |
-| `-T <pattern>` | Only the test files whose paths in your project match the glob pattern are run. If no test file in any of the targets matches, the command fails with `No test file matches the pattern '<pattern>'`. See [Running tests](/reference/js/testing/#running-tests) and, for Java, [Running some of the tests](/reference/java/testing/#running-some-of-the-tests). |
-| `--coverage` | The tests are measured for code coverage: a summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info` with `--coverage=<dir>`. |
-| `--artifacts=<dir>` | The files the test runs kept of their tests, such as a [browser test's](/reference/js/browser-testing/#traces-and-screenshots) traces and screenshots, are copied into `<dir>/<target>/`, whether or not tests failed, replacing what that directory held. |
-| `--report <file>` | The results of every target tested are written to one file, as a [CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test results view. See [Continuous integration](/guides/ci/#test-results). |
+| Option              | Effect                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-u`                | New and changed snapshots are written back into your source tree, after a run in which no test failed. Each file is named as it is written.                                                                                                                                                                                                                     |
+| `-t <pattern>`      | Only the tests whose names match the regular expression are run. If no test in any of the targets matches, the command fails with `No test's name matches the pattern '<pattern>'`.                                                                                                                                                                             |
+| `-T <pattern>`      | Only the test files whose paths in your project match the glob pattern are run. If no test file in any of the targets matches, the command fails with `No test file matches the pattern '<pattern>'`. See [Running tests](/reference/js/testing/#running-tests) and, for Java, [Running some of the tests](/reference/java/testing/#running-some-of-the-tests). |
+| `--coverage`        | The tests are measured for code coverage: a summary is printed and an lcov report written to `coverage/lcov.info`, or to `<dir>/lcov.info` with `--coverage=<dir>`.                                                                                                                                                                                             |
+| `--artifacts=<dir>` | The files the test runs kept of their tests, such as a [browser test's](/reference/js/browser-testing/#traces-and-screenshots) traces and screenshots, are copied into `<dir>/<target>/`, whether or not tests failed, replacing what that directory held.                                                                                                      |
+| `--report <file>`   | The results of every target tested are written to one file, as a [CTRF](https://ctrf.io) report, or as JUnit XML with `--format junit`, for a CI system's test results view. See [Continuous integration](/guides/ci/#test-results).                                                                                                                            |
 
 Paths are relative to the current directory. The coverage report and `--report` file are written
 whether or not the tests pass, but not when a build error stops the run before the tests finish.
@@ -198,15 +198,15 @@ and `cp`.
 A reference to a package or image with no version, or to a repository, lists what it contains.
 Nothing is downloaded or built to list them, and `-l` makes no difference.
 
-| Reference | Lists |
-|---|---|
-| An npm or Maven package (`@npm:esbuild`, `@mvn:com.google.guava:guava`) | Its published versions, newest first. |
-| A container image (`@docker:alpine`) | Its tags, in name order. |
-| A Node.js or JDK distribution (`@node`, `@jdk`) | The releases published for the target platform, newest first. |
-| A catalog (`@pkg`) | Its members. |
-| A `repository_group`'s package | Its versions, as the repository it is routed to lists them. |
-| A scope of `@fabr-home` (`@fabr-home:@fabr-build`) | The packages installed in it. |
-| An AWS account, an S3 bucket, or a prefix in one | The account's services; the bucket's or prefix's objects and prefixes. See [Amazon S3](/reference/aws/s3/). |
+| Reference                                                               | Lists                                                                                                       |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| An npm or Maven package (`@npm:esbuild`, `@mvn:com.google.guava:guava`) | Its published versions, newest first.                                                                       |
+| A container image (`@docker:alpine`)                                    | Its tags, in name order.                                                                                    |
+| A Node.js or JDK distribution (`@node`, `@jdk`)                         | The releases published for the target platform, newest first.                                               |
+| A catalog (`@pkg`)                                                      | Its members.                                                                                                |
+| A `repository_group`'s package                                          | Its versions, as the repository it is routed to lists them.                                                 |
+| A scope of `@fabr-home` (`@fabr-home:@fabr-build`)                      | The packages installed in it.                                                                               |
+| An AWS account, an S3 bucket, or a prefix in one                        | The account's services; the bucket's or prefix's objects and prefixes. See [Amazon S3](/reference/aws/s3/). |
 
 ```sh
 fabr ls @npm:esbuild
@@ -278,11 +278,11 @@ version or range the package above it asks for and the version chosen for the wh
 with one version asked for exactly that, or, where its reference states none, shows the version chosen. A package built in your project is shown by name alone:
 it has no version until it is built.
 
-| Mark | Meaning |
-|---|---|
-| `(*)` | This package's dependencies are shown where it first appears. |
-| `(p)` | A provided requirement (an npm peer dependency): the package is supplied by whatever depends on the one requiring it. |
-| `(n)` | Nothing is installed for this requirement, for example an optional peer dependency that no package in the tree supplies. |
+| Mark  | Meaning                                                                                                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `(*)` | This package's dependencies are shown where it first appears.                                                                                                                                    |
+| `(p)` | A provided requirement (an npm peer dependency): the package is supplied by whatever depends on the one requiring it.                                                                            |
+| `(n)` | Nothing is installed for this requirement, for example an optional peer dependency that no package in the tree supplies.                                                                         |
 | `(!)` | A version that conflicts with another version of the same package in the tree, so building the target fails until you allow both or pin one. The conflicting versions are listed under the tree. |
 
 The tree is the one the target's own build resolves, so it depends on the configuration. A
@@ -513,12 +513,12 @@ fabr list-targets 'packages/**'
 
 A name that no target has is an error, but a glob that matches none lists nothing.
 
-| Option | Effect |
-|---|---|
-| `-l` | Adds where each target is declared. |
-| `--all` | Adds the targets fabr and its plugins declare themselves, which are normally hidden. A target you name is listed without it, but a glob matches these targets only with `--all`. |
-| `--operation OP` | Lists only the targets whose type has a rule for `OP`. Give it more than once to list the targets of any of them. |
-| `--json` | Output as JSON. |
+| Option           | Effect                                                                                                                                                                           |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-l`             | Adds where each target is declared.                                                                                                                                              |
+| `--all`          | Adds the targets fabr and its plugins declare themselves, which are normally hidden. A target you name is listed without it, but a glob matches these targets only with `--all`. |
+| `--operation OP` | Lists only the targets whose type has a rule for `OP`. Give it more than once to list the targets of any of them.                                                                |
+| `--json`         | Output as JSON.                                                                                                                                                                  |
 
 ### `list-targetdefs`
 
@@ -575,28 +575,28 @@ and the command fails, naming the processes; stop them and run it again.
 
 ## Options
 
-| Option | Applies to | Meaning |
-|---|---|---|
-| `-DNAME=VALUE` | all | Set a configuration property for this run, overriding the build file and any default. For `run`, put it before the target. |
-| `-w` | `build`, `test`, `run`, an operation's name | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/). |
-| `-u`, `--update` | `test` | Record new and changed snapshots, and write them into your source tree. |
-| `-t PATTERN` | `test` | Run only the tests whose names match the regular expression `PATTERN`: for [JavaScript](/reference/js/testing/#running-tests), suite and test names joined by spaces; for [Java](/reference/java/testing/#running-some-of-the-tests), `Class#method`. Sets `TEST_NAME_PATTERN`. |
-| `--coverage[=DIR]` | `test` | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default). |
-| `--retry-failed` | `test` | Run again the tests of a target whose cached run failed, rather than report the cached failure. Can't be combined with `-w`. |
-| `--report FILE` | `test` | Write the results of every target tested to `FILE`, failures included, as CTRF (the default) or as `--format` says. |
-| `-q`, `--quiet` | all but the `list-` commands | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error. |
-| `--no-progress` | all but `build-server` and the `list-` commands | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal. |
-| `--trace[=FILE]` | `build`, `test`, `run` | Write a trace of the run's work to `FILE` (`fabr-trace.json` by default). See [Tracing a run](#tracing-a-run). |
-| `--refresh` | all but `build-server` and the `list-` commands | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day. |
-| `-l` | `ls`, `list-targets`, `list-targetdefs`, `list-properties` | Long listing: hash and size for `ls`, source location for the `list-` commands. |
-| `--json` | `list-*` | Output as JSON. |
-| `--format FORMAT` | `audit`, `test` | The report's format: `sarif` for `audit`, instead of text; `ctrf` or `junit` for `test`, which needs `--report` with it. |
-| `--all` | `list-targets` | Include the targets fabr and its plugins declare. |
-| `--operation OP` | `list-targets` | List only the targets whose type has a rule for the operation `OP`. Give it more than once for any of several operations. |
-| `--include-optional` | `list-all` | Also read the optional `.fabr` files of the plugins the project uses. |
-| `--` | all | End of options. What follows is a target, even if it starts with `-` or is the name of a command. |
-| `-v`, `--version` | | Print fabr's version. |
-| `-h`, `--help` | | Print the commands, or with a command (`fabr test --help`), that command's options. |
+| Option               | Applies to                                                 | Meaning                                                                                                                                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-DNAME=VALUE`       | all                                                        | Set a configuration property for this run, overriding the build file and any default. `NAME` is a property's name (`BUILD_TYPE`, `my-prop`). For `run`, put it before the target.                                                                                               |
+| `-w`                 | `build`, `test`, `run`, an operation's name                | Keep running, and rebuild, retest or restart when sources change. See [Watch mode](/guides/watch/).                                                                                                                                                                             |
+| `-u`, `--update`     | `test`                                                     | Record new and changed snapshots, and write them into your source tree.                                                                                                                                                                                                         |
+| `-t PATTERN`         | `test`                                                     | Run only the tests whose names match the regular expression `PATTERN`: for [JavaScript](/reference/js/testing/#running-tests), suite and test names joined by spaces; for [Java](/reference/java/testing/#running-some-of-the-tests), `Class#method`. Sets `TEST_NAME_PATTERN`. |
+| `--coverage[=DIR]`   | `test`                                                     | Measure code coverage, print a summary and write `DIR/lcov.info` (`coverage/` by default).                                                                                                                                                                                      |
+| `--retry-failed`     | `test`                                                     | Run again the tests of a target whose cached run failed, rather than report the cached failure. Can't be combined with `-w`.                                                                                                                                                    |
+| `--report FILE`      | `test`                                                     | Write the results of every target tested to `FILE`, failures included, as CTRF (the default) or as `--format` says.                                                                                                                                                             |
+| `-q`, `--quiet`      | all but the `list-` commands                               | Don't show the progress display or the output of build steps. A step that fails still shows its output in the error.                                                                                                                                                            |
+| `--no-progress`      | all but `build-server` and the `list-` commands            | Don't show the progress display. Output from build steps is then printed as it arrives, as it is when stderr isn't a terminal.                                                                                                                                                  |
+| `--trace[=FILE]`     | `build`, `test`, `run`                                     | Write a trace of the run's work to `FILE` (`fabr-trace.json` by default). See [Tracing a run](#tracing-a-run).                                                                                                                                                                  |
+| `--refresh`          | all but `build-server` and the `list-` commands            | Check again for anything a server can change under the same address, such as a registry's version lists or an S3 object, however recently fabr last checked. Without it, fabr checks each at most once a day.                                                                   |
+| `-l`                 | `ls`, `list-targets`, `list-targetdefs`, `list-properties` | Long listing: hash and size for `ls`, source location for the `list-` commands.                                                                                                                                                                                                 |
+| `--json`             | `list-*`                                                   | Output as JSON.                                                                                                                                                                                                                                                                 |
+| `--format FORMAT`    | `audit`, `test`                                            | The report's format: `sarif` for `audit`, instead of text; `ctrf` or `junit` for `test`, which needs `--report` with it.                                                                                                                                                        |
+| `--all`              | `list-targets`                                             | Include the targets fabr and its plugins declare.                                                                                                                                                                                                                               |
+| `--operation OP`     | `list-targets`                                             | List only the targets whose type has a rule for the operation `OP`. Give it more than once for any of several operations.                                                                                                                                                       |
+| `--include-optional` | `list-all`                                                 | Also read the optional `.fabr` files of the plugins the project uses.                                                                                                                                                                                                           |
+| `--`                 | all                                                        | End of options. What follows is a target, even if it starts with `-` or is the name of a command.                                                                                                                                                                               |
+| `-v`, `--version`    |                                                            | Print fabr's version.                                                                                                                                                                                                                                                           |
+| `-h`, `--help`       |                                                            | Print the commands, or with a command (`fabr test --help`), that command's options.                                                                                                                                                                                             |
 
 When fabr can't read a command line, such as one with an option the command doesn't take or with
 no target, it says why and prints the command's help, both to stderr, and exits with status 1.
@@ -607,12 +607,12 @@ together.
 
 ## Exit status
 
-| Status | Meaning |
-|---|---|
-| 0 | Everything named was built, all tests passed, and `audit` found no advisory. |
-| 1 | Anything else: a build error, a failing test, an advisory found by `audit`, a dependency that couldn't be resolved, an unknown target or option, a command with no target, a failed `sync`. |
-| 2 | An internal error in fabr. |
-| 130, 143, 129 | Interrupted by `SIGINT`, `SIGTERM` or `SIGHUP`. Running steps are stopped first. |
+| Status        | Meaning                                                                                                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0             | Everything named was built, all tests passed, and `audit` found no advisory.                                                                                                                |
+| 1             | Anything else: a build error, a failing test, an advisory found by `audit`, a dependency that couldn't be resolved, an unknown target or option, a command with no target, a failed `sync`. |
+| 2             | An internal error in fabr.                                                                                                                                                                  |
+| 130, 143, 129 | Interrupted by `SIGINT`, `SIGTERM` or `SIGHUP`. Running steps are stopped first.                                                                                                            |
 
 `fabr run` exits with the status of the program it ran, and `fabr shell` with the status of the
 shell. The output says what failed.

@@ -143,10 +143,10 @@ export interface BuildContext {
 
   /**
    * Get the constraint overrides for resolving a target to run it:
-   * BUILD_OPERATION=run, with TARGET pinned to HOST so that a tool is its host
-   * build even in a cross-build, and COVERAGE pinned off so that a tool is
-   * never measured, and then `extra`. Where HOST is unset, TARGET is left as it
-   * is; where COVERAGE is unconstrained, it is left to its default.
+   * BUILD_OPERATION=run, with TARGET pinned to the host (a HOST constraint,
+   * else the machine fabr runs on) so that a tool is its host build even in a
+   * cross-build, and COVERAGE pinned off so that a tool is never measured, and
+   * then `extra`. Where COVERAGE is unconstrained, it is left to its default.
    */
   runOverrides(extra?: Constraints): Constraints;
 }

@@ -18,7 +18,7 @@
  */
 
 import { expect } from "chai";
-import { HOST_NODE, runFabr } from "./harness";
+import { FabrResult, HOST_NODE, runFabr } from "./harness";
 
 /* `generate` as a command pipeline: commands are fabr runnables,
  * streams are wired with `|`, and `>`/`2>`/`&>` capture output as content. Two
@@ -501,5 +501,75 @@ describe("e2e: patched with a command", () => {
     expect(listed.status, listed.stderr).to.equal(0);
     expect(listed.stdout.split("\n").filter(line => line !== "")).to.deep.equal(["a.txt", "c.txt", "loud.txt", "seen.txt"]);
     expect(runFabr(files, ["cat", "changed:loud.txt"]).stdout).to.equal("A.TXT C.TXT");
+  });
+});
+
+describe("e2e: environment variables in a command", () => {
+  const SECRET = "s3cret-value";
+  const FILES = {
+    "src/fail.js": "process.exit(3);\n",
+    "src/echoarg.js": "process.stdout.write(process.argv.slice(2).join('|'));\n",
+  };
+  const project = (body: string): Record<string, string> => ({
+    "PROJECT.fabr":
+      "plugin @fabr-build/js;\njs_script fail { entry = src:fail.js; }\njs_script echoarg { entry = src:echoarg.js; }\n" + body,
+    ...FILES,
+  });
+  const run = (body: string, args: string[]): FabrResult => runFabr(project(body), args, undefined, undefined, { TOKEN: SECRET });
+
+  it("runs the command with the variable's value", () => {
+    const result = run("generate g { run = echoarg --token=${ENV.TOKEN} > out.txt; }\n", ["cat", "g:out.txt"]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal(`--token=${SECRET}`);
+  });
+
+  it("shows the variable as written where the command fails, through another property too", () => {
+    const direct = run("generate g { run = fail --token=${ENV.TOKEN} > out.txt; }\n", ["build", "g"]);
+    expect(direct.status).to.equal(1);
+    expect(direct.stderr).to.contain("--token=${ENV.TOKEN}");
+    expect(direct.stderr).not.to.contain(SECRET);
+    const through = run("TOKEN = ${ENV.TOKEN};\ngenerate g { run = fail --token=${TOKEN} > out.txt; }\n", ["build", "g"]);
+    expect(through.status).to.equal(1);
+    expect(through.stderr).to.contain("--token=${ENV.TOKEN}");
+    expect(through.stderr).not.to.contain(SECRET);
+  });
+
+  it("runs the command again where the variable's value changed", () => {
+    const body = "generate g { run = echoarg ${ENV.TOKEN} > out.txt; }\n";
+    const unique = `${process.pid}-${Date.now()}`;
+    const first = runFabr(project(body), ["cat", "g:out.txt"], undefined, undefined, { TOKEN: `one-${unique}` });
+    const second = runFabr(project(body), ["cat", "g:out.txt"], undefined, undefined, { TOKEN: `two-${unique}` });
+    expect([first.stdout, second.stdout]).to.deep.equal([`one-${unique}`, `two-${unique}`]);
+  });
+
+  it("substitutes a default for a variable that is not set", () => {
+    const result = run("generate g { run = echoarg ${ENV.UNSET_VARIABLE:-fallback} ${ENV.TOKEN:+set} > out.txt; }\n", [
+      "cat",
+      "g:out.txt",
+    ]);
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal("fallback|set");
+  });
+
+  it("refuses the environment spliced whole, into a target or a map", () => {
+    for (const body of ["ENV; run = echoarg > out.txt;", "run = echoarg > out.txt; env = { ENV; };"]) {
+      const result = run(`generate g { ${body} }\n`, ["build", "g"]);
+      expect(result.status).to.equal(1);
+      expect(result.stderr).to.contain("'ENV' is read only an entry at a time, so it cannot be used as a whole map");
+      expect(result.stderr).not.to.contain(SECRET);
+    }
+  });
+
+  it("refuses a variable that is not set", () => {
+    const result = run("generate g { run = echoarg ${ENV.UNSET_VARIABLE} > out.txt; }\n", ["build", "g"]);
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.contain("'ENV' has no key 'UNSET_VARIABLE'");
+  });
+
+  it("refuses a variable as a constraint's value", () => {
+    const result = run("generate g { run = echoarg > out.txt; }\nG = g<MODE=${ENV.TOKEN}>;\n", ["ls", "G"]);
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.contain("'MODE=${ENV.TOKEN}' may hold a secret");
+    expect(result.stderr).not.to.contain(SECRET);
   });
 });

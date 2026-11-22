@@ -25,7 +25,7 @@ import { SecureString } from "../core/SecureString";
 import { Name } from "../core/Name";
 import { Repository } from "../core/Repository";
 import type { Namespace } from "../core/NamespaceRef";
-import type { IPropertyDecl, IRuleBlock, IRuleDecl, ITargetDecl } from "../model/AST";
+import type { IBuildFileContents, IPropertyDecl, IRuleBlock, IRuleDecl, ITargetDecl } from "../model/AST";
 import type { IPropertyEntry } from "../model/Namespace";
 import type { FileSet } from "../core/FileSet";
 import {
@@ -361,4 +361,6 @@ export interface PluginContribution {
    * reported as), with the files of its package by their paths within it, the
    * file at `<path>` among them. */
   includes?: ReadonlyArray<{ name: string; files: FileSet }>;
+  /** Declarations made in code, read with the project's files as though written in a file of their own. */
+  contents?: ReadonlyArray<IBuildFileContents>;
 }

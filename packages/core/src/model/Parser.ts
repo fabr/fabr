@@ -18,7 +18,7 @@
  */
 
 import { StringReader } from "../support/StringReader";
-import { isReplacing, PatternEdit, PatternOperator } from "../support/PatternEdit";
+import { isReplacing, PatternOperator, SubstitutionEdit } from "../support/PatternEdit";
 import { isWhiteSpace as isWhiteSpaceChar, isAlphabetic, isDigit } from "unicode-properties";
 import {
   DeclKind,
@@ -371,7 +371,8 @@ function* codepoints(text: string): Generator<number> {
   }
 }
 
-function isIdentifier(text?: string): text is string {
+/** @return true if `text` is an identifier, as a property is named (`VERSION`, `my-prop`, `@fabr-build`), otherwise false. */
+export function isIdentifier(text?: string): text is string {
   if (!text) {
     return false;
   }
@@ -778,7 +779,7 @@ export class BuildParser {
         constraints = this.parseConstraintList(undefined, "requirement", false);
       }
       this.reader.skipUntil(ch => !isWhitespace(ch));
-      const edit = this.reader.current() === CHAR_RBRACE || this.reader.eof() ? undefined : this.readPatternEdit();
+      const edit = this.reader.current() === CHAR_RBRACE || this.reader.eof() ? undefined : this.readEdit();
       if (this.reader.current() !== CHAR_RBRACE) {
         this.unexpectedCharacterError("'}'", this.reader.currentOffset());
       }
@@ -794,12 +795,22 @@ export class BuildParser {
 
   /** Read the edit after a substitution's name, bash's `#pattern`, `##pattern`,
    * `%pattern`, `%%pattern`, and `/pattern/replacement` with `/`, `//`, `/#` or
-   * `/%`, leaving the reader at the closing `}`. A pattern runs to the `}`, or a
-   * replacing edit's to the `/` before its replacement; a backslash quotes the
-   * next character. A `$` or backtick in either is reported as an error. */
-  private readPatternEdit(): PatternEdit {
+   * `/%`, or `:-word`, `:+word` or `:?message`, leaving the reader at the
+   * closing `}`. A pattern or word runs to the `}`, or a replacing edit's
+   * pattern to the `/` before its replacement; a backslash quotes the next
+   * character. A `$` or backtick in any of them is reported as an error. */
+  private readEdit(): SubstitutionEdit {
     const start = this.reader.currentOffset();
     const first = this.reader.current();
+    if (first === CHAR_COLON) {
+      const kind = this.reader.next();
+      if (kind !== CHAR_DASH && kind !== CHAR_PLUS && kind !== CHAR_QUESTION) {
+        this.unexpectedCharacterError("':-', ':+' or ':?'", start);
+      }
+      this.reader.next();
+      const operator = kind === CHAR_DASH ? ":-" : kind === CHAR_PLUS ? ":+" : ":?";
+      return { operator, word: this.readEditText([CHAR_RBRACE]) };
+    }
     let operator: PatternOperator;
     if (first === CHAR_HASH || first === CHAR_PERCENT) {
       const single = first === CHAR_HASH ? "#" : "%";
@@ -815,7 +826,7 @@ export class BuildParser {
         this.reader.next();
       }
     } else {
-      this.unexpectedCharacterError("'}' or an edit ('#', '%' or '/')", start);
+      this.unexpectedCharacterError("'}' or an edit ('#', '%', '/', ':-', ':+' or ':?')", start);
     }
     const replacing = isReplacing(operator);
     const pattern = this.readEditText(replacing ? [CHAR_SLASH, CHAR_RBRACE] : [CHAR_RBRACE]);
@@ -840,7 +851,7 @@ export class BuildParser {
         return false;
       }
       if (ch === CHAR_DOLLAR || ch === CHAR_BACKTICK) {
-        this.invalidSubstitution("a substitution inside a pattern or replacement is not supported", this.reader.currentOffset());
+        this.invalidSubstitution("a substitution inside a pattern, replacement or word is not supported", this.reader.currentOffset());
       }
       quoted = ch === CHAR_BACKSLASH;
       return ends.includes(ch);

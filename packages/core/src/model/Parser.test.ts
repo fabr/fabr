@@ -432,7 +432,16 @@ describe("Parser Tests", () => {
   });
 
   it("renders an edited substitution as written", () => {
-    for (const text of ["x${B%%-*}y", "${TARGET/-*/-unknown-linux}", "${B<K=v>/a/}", "${B#a\\}b}"]) {
+    for (const text of [
+      "x${B%%-*}y",
+      "${TARGET/-*/-unknown-linux}",
+      "${B<K=v>/a/}",
+      "${B#a\\}b}",
+      "${B:-x\\}y}",
+      "${ENV.HOME:+set}",
+      "${B:?B is required}",
+      "${B:-}",
+    ]) {
       expect(nameOf(parseValid(`A = ${text};`).properties[0].values[0]).toUnmaskedString()).to.equal(text);
     }
   });
@@ -442,10 +451,12 @@ describe("Parser Tests", () => {
       ["A = ${};", 7, "Read '}' but expected a property name"],
       ["A = ${a.b.c};", 7, "Read Name but expected a property name"],
       ["A = ${B<>};", 9, "Read '>' but expected a constraint key"],
-      ["A = ${B <K=v>};", 9, "Read '<' but expected '}' or an edit ('#', '%' or '/')"],
+      ["A = ${B <K=v>};", 9, "Read '<' but expected '}' or an edit ('#', '%', '/', ':-', ':+' or ':?')"],
+      ["A = ${B:=x};", 8, "Read '=' but expected ':-', ':+' or ':?'"],
+      ["A = ${B:-$C};", 10, "Invalid substitution: a substitution inside a pattern, replacement or word is not supported"],
       ["A = ${B<K=v>", 13, "Read EOF but expected '}'"],
       ["A = ${B/a", 10, "Read EOF but expected '}'"],
-      ["A = ${B/$C/d};", 9, "Invalid substitution: a substitution inside a pattern or replacement is not supported"],
+      ["A = ${B/$C/d};", 9, "Invalid substitution: a substitution inside a pattern, replacement or word is not supported"],
     ];
     for (const [text, column, message] of cases) {
       expect(parseInvalid(text)).to.deep.equal([diagnosticBlock(1, column, message, text)]);

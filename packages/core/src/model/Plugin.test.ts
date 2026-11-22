@@ -39,7 +39,6 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { DeclKind, IPluginDecl } from "./AST";
 import type { BuildModel } from "./BuildModel";
-import { Constraints } from "./Constraints";
 import { ExecutionContext } from "./ExecutionContext";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { INameValue, syntheticValue } from "./AST";
@@ -277,7 +276,6 @@ describe("a plugin made as a program", () => {
     const resolution = await new Promise<Awaited<ReturnType<typeof resolvePlugin>>>((resolve, reject) =>
       resolvePlugin(model, decl, match as never, {
         execution,
-        host: Constraints.of({}),
         libsOf: () => Computable.reject(new Error("not a fabr_plugin")),
       }).then(resolve, reject)
     );

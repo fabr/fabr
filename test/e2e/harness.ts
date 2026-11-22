@@ -173,9 +173,16 @@ export interface FabrResult {
  *
  * `subdir` runs the command from that project-relative directory instead of the
  * root — fabr finds the project by walking up, so this exercises what the
- * invocation directory (rather than the project root) governs.
+ * invocation directory (rather than the project root) governs. `env` adds to
+ * fabr's (otherwise minimal) environment.
  */
-export function runFabr(files: Record<string, string>, args: string[], readback?: string[], subdir?: string): FabrResult {
+export function runFabr(
+  files: Record<string, string>,
+  args: string[],
+  readback?: string[],
+  subdir?: string,
+  env?: Record<string, string>
+): FabrResult {
   if (!fs.existsSync(FABR)) {
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
   }
@@ -184,7 +191,7 @@ export function runFabr(files: Record<string, string>, args: string[], readback?
     writeFixture(dir, files);
     const result = spawnSync(NODE, [FABR, ...args], {
       cwd: subdir ? path.join(dir, subdir) : dir,
-      env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR },
+      env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR, ...env },
       encoding: "utf8",
       /* stdin from /dev/null: these runs are non-interactive, so a fabr verb that
        * spawns a stdin-reading child with inherited stdio (`fabr shell`'s shell)

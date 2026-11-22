@@ -22,6 +22,7 @@ import { EMPTY_FILESET } from "../core/FileSet";
 import { LogFormatter, LogLevel } from "../support/Log";
 import { completionsAt, type IDocumentation, namedAt, symbolsOf, writtenAt } from "./Language";
 import { toBuildModel } from "../model/ModelBuilder";
+import { hostDeclarations } from "../model/HostDeclarations";
 import { parseBuildString } from "../model/Parser";
 
 const TEXT = [
@@ -314,6 +315,30 @@ describe("build file language", () => {
       expect(offered("holder x { srcs = ${LIBS#l}; }\nholder y {\n  ")).to.deep.equal(["srcs"]);
       expect(offered("holder x { srcs = ${LI")).to.deep.equal(["LIBS"]);
       expect(offered("holder x { srcs = ${LIBS#")).to.deep.equal([]);
+    });
+  });
+
+  describe("a map entry a substitution reads", () => {
+    const text = "targetdef holder { srcs = FILES; }\nM = { a = one; };\nholder x { srcs = ${M.a} ${ENV.TOKEN:-none}; }\n";
+    const parsed = parseBuildString(EMPTY_FILESET, "MAP.fabr", text, log);
+    const model = toBuildModel([...hostDeclarations("x86_64-linux-gnu", new Map([["TOKEN", "s3cret"]])), parsed], log, []);
+
+    it("names the entry, and shows an environment variable's value as it is shown everywhere", () => {
+      const at = (needle: string): number => text.indexOf(needle) + 1;
+      const entry = namedAt(model, writtenAt(parsed, at("M.a"))!, at("M.a"))!;
+      expect(entry.declarations.map(span => text.slice(span.offset, span.endOffset ?? span.offset))).to.deep.equal(["a"]);
+      expect(entry.documentation?.source).to.equal("M.a = one;");
+      const variable = namedAt(model, writtenAt(parsed, at("ENV.TOKEN"))!, at("ENV.TOKEN"))!;
+      expect(variable.declarations.map(span => span.file)).to.deep.equal(["<environment>"]);
+      expect(variable.documentation?.source).to.equal("ENV.TOKEN = ${ENV.TOKEN};");
+    });
+
+    it("offers a map's keys after its name and a '.'", () => {
+      const offered = (typed: string): string[] => completionsAt(model, typed, typed.length).map(completion => completion.label);
+      expect(offered("holder y { srcs = ${M.")).to.deep.equal(["M.a"]);
+      expect(offered("holder y { srcs = ${ENV.T")).to.deep.equal(["ENV.TOKEN"]);
+      expect(offered("holder y { srcs = ${M")).to.include.members(["M", "ENV", "HOST"]);
+      expect(offered("holder y { srcs = ${M.a:-")).to.deep.equal([]);
     });
   });
 

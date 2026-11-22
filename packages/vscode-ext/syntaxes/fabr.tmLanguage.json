@@ -179,13 +179,25 @@
       "match": "\\b(REQUIRED|FILES|PACKAGES|STRING|MAP|COMMAND|REWRITE)\\b"
     },
     "substitution": {
-      "match": "(\\$\\{)([^}<]*)(<[^>]*>)?(\\})",
+      "match": "(\\$\\{)([^}<#%/:]*)(<[^>]*>)?((?:[#%/:])(?:\\\\.|[^}\\\\])*)?(\\})",
       "captures": {
         "1": {
           "name": "punctuation.definition.variable.begin.fabr"
         },
         "2": {
-          "name": "variable.other.substitution.fabr"
+          "name": "variable.other.substitution.fabr",
+          "patterns": [
+            {
+              "match": "\\G\\s*(ENV|HOST)\\b",
+              "captures": {
+                "1": { "name": "support.variable.fabr" }
+              }
+            },
+            {
+              "match": "\\.",
+              "name": "punctuation.accessor.fabr"
+            }
+          ]
         },
         "3": {
           "patterns": [
@@ -195,6 +207,16 @@
           ]
         },
         "4": {
+          "patterns": [
+            {
+              "match": "\\G(:[-+?]|/[/#%]?|##?|%%?)",
+              "captures": {
+                "1": { "name": "keyword.operator.expansion.fabr" }
+              }
+            }
+          ]
+        },
+        "5": {
           "name": "punctuation.definition.variable.end.fabr"
         }
       }

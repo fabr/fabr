@@ -96,9 +96,18 @@ export interface NpmPlatform {
  * `HOST`), from `process.arch` and `process.platform`, the Darwin kernel
  * version and the linux libc, without starting a process: such as
  * `aarch64-apple-macosx15.0`, `x86_64-linux-gnu` or `x86_64-pc-windows-msvc`.
- * Any other platform is `<process.arch>-<process.platform>`.
+ * Any other platform is `<process.arch>-<process.platform>`. It is worked out
+ * once per process.
  */
 export function hostTriple(): string {
+  return (theHostTriple ??= findHostTriple());
+}
+
+/** The triple {@link hostTriple} worked out, once it has. */
+let theHostTriple: string | undefined;
+
+/** Work out {@link hostTriple}'s triple. */
+function findHostTriple(): string {
   const arch = process.arch;
   switch (process.platform) {
     case "darwin":

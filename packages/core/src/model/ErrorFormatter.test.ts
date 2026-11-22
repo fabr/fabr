@@ -44,9 +44,6 @@ import {
 } from "./Errors";
 import { DiagnosticErrorFormatter, errorSummary } from "./ErrorFormatter";
 
-/** A stand-in for the driver-injected host facts, and the keys a report elides. */
-const HOST_TRIPLE = "arm64-apple-macosx15.0";
-
 /* The AST decl types, taken from the error constructors' parameters.
  * The formatter only reads name/offset/source, so partial stubs suffice (spans
  * aren't asserted — we inspect the raw notes), hence the `as unknown` casts. */
@@ -399,10 +396,7 @@ describe("DiagnosticErrorFormatter", () => {
   it("names the operation's verb and the target type when no rule matched", () => {
     /* `fabr build` on a run-only targetdef (js_script) — the habitual first
      * mistake, so its wording is worth pinning. */
-    const err = new NoRuleFoundError(
-      targetDecl("tool", "js_script"),
-      Constraints.of({ [BUILD_OPERATION]: "build", HOST: HOST_TRIPLE })
-    );
+    const err = new NoRuleFoundError(targetDecl("tool", "js_script"), Constraints.of({ [BUILD_OPERATION]: "build" }));
     const [diag] = capture(err);
     expect(diag.message).to.equal("Cannot build 'tool': no rule matches target type 'js_script'");
   });
@@ -455,9 +449,9 @@ describe("DiagnosticErrorFormatter", () => {
   });
 
   it("annotates a no-rule failure with the explicit constraints only", () => {
-    /* The constraint set carries the run's ambient facts too; only the explicit
+    /* The constraint set carries the operation too; only the explicit
      * overrides are worth showing. */
-    const constraints = Constraints.of({ [BUILD_OPERATION]: "test", HOST: HOST_TRIPLE, BUILD_TYPE: "release" });
+    const constraints = Constraints.of({ [BUILD_OPERATION]: "test", BUILD_TYPE: "release" });
     const [diag] = capture(new NoRuleFoundError(targetDecl("lib"), constraints));
     expect(diag.message).to.equal("Cannot test 'lib': no rule matches target type 'js_package' (BUILD_TYPE=release)");
   });

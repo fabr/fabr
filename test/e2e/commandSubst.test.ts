@@ -166,4 +166,16 @@ describe("e2e: command substitution", () => {
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("xy");
   });
+
+  it("shows a substitution over a variable as written, where its output is used", () => {
+    const files = {
+      "PROJECT.fabr": TOOLS + "js_script fail { entry = src:fail.js; }\ngenerate g { run = fail `echoarg ${ENV.TOKEN}` > out.txt; }\n",
+      ...TOOL_FILES,
+      "src/fail.js": "process.exit(3);\n",
+    };
+    const result = runFabr(files, ["build", "g"], undefined, undefined, { TOKEN: "s3cret-value" });
+    expect(result.status).to.equal(1);
+    expect(result.stderr).to.contain("`echoarg ${ENV.TOKEN}`");
+    expect(result.stderr).not.to.contain("s3cret-value");
+  });
 });

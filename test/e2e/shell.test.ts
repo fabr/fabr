@@ -73,6 +73,19 @@ describe("e2e: fabr shell", () => {
     expect(result.stderr).to.match(/--report=\S+ --reads=\S+ a\.test\.js/);
   });
 
+  withShell("shows a variable in the command as written", () => {
+    const result = runFabr(
+      { ...project, "PROJECT.fabr": project["PROJECT.fabr"].replace("run = gen <", "run = gen --token=${ENV.TOKEN} <") },
+      ["shell", "g"],
+      undefined,
+      undefined,
+      { TOKEN: "s3cret-value" }
+    );
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stderr).to.contain("gen.js '--token=${ENV.TOKEN}' <");
+    expect(result.stderr).not.to.contain("s3cret-value");
+  });
+
   withShell("errors on a target that yields content, not a build command", () => {
     const result = runFabr(project, ["shell", "ff"]);
     expect(result.status).to.equal(1);

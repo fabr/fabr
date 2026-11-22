@@ -23,8 +23,6 @@ import {
   Computable,
   Constraints,
   Fabr,
-  HOST,
-  hostTriple,
   LogFormatter,
   LogLevel,
   MultiError,
@@ -113,7 +111,7 @@ function evaluate<T>(
       name.length
     );
   const evaluation = fabr.evaluate(model =>
-    operation(model.getConfig(Constraints.of({ [HOST]: hostTriple(), [BUILD_OPERATION]: buildOperation }), fabr.execution), reference)
+    operation(model.getConfig(Constraints.of({ [BUILD_OPERATION]: buildOperation }), fabr.execution), reference)
   );
   return new Promise((resolve, reject) => evaluation.then(resolve, reject));
 }

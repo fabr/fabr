@@ -19,22 +19,26 @@
 
 import { expect } from "chai";
 import { BUILD_OPERATION, Constraints, COVERAGE, HOST, shownConstraints, TARGET } from "./Constraints";
+import { hostTriple } from "../support/Platform";
 
 describe("shownConstraints", () => {
-  const host = "arm64-apple-macosx15.0";
+  const other = "riscv64-unknown-linux-gnu";
 
   it("leaves out the ambient keys", () => {
-    const constraints = Constraints.of({ [BUILD_OPERATION]: "run", [HOST]: host, BUILD_TYPE: "release" });
+    const constraints = Constraints.of({ [BUILD_OPERATION]: "run", BUILD_TYPE: "release" });
     expect(shownConstraints(constraints)).to.deep.equal([["BUILD_TYPE", "release"]]);
   });
 
   it("leaves out a TARGET that is the host, as running a tool pins it", () => {
-    expect(shownConstraints(Constraints.of({ [HOST]: host, [TARGET]: host }))).to.deep.equal([]);
+    expect(shownConstraints(Constraints.of({ [TARGET]: hostTriple() }))).to.deep.equal([]);
+  });
+
+  it("takes a HOST constraint as the host, and shows it, since it overrides the machine's", () => {
+    expect(shownConstraints(Constraints.of({ [HOST]: other, [TARGET]: other }))).to.deep.equal([[HOST, other]]);
   });
 
   it("shows a TARGET other than the host — a cross build is a choice", () => {
-    const constraints = Constraints.of({ [HOST]: host, [TARGET]: "x86_64-linux-gnu" });
-    expect(shownConstraints(constraints)).to.deep.equal([[TARGET, "x86_64-linux-gnu"]]);
+    expect(shownConstraints(Constraints.of({ [TARGET]: other }))).to.deep.equal([[TARGET, other]]);
   });
 
   it("leaves out COVERAGE off, as running a tool pins it, and shows it on", () => {

@@ -202,6 +202,22 @@ describe("Command", () => {
     expect(out).to.deep.equal([]);
   });
 
+  it("rejects a -D whose key is not a property name", () => {
+    for (const option of ["-DENV.HOME=x", "-Da/b=x", "-D1X=x"]) {
+      const { exit, err } = capture([option]);
+      expect(exit).to.equal(1);
+      expect(err.join("\n")).to.contain(
+        `Malformed option '${option}': '${option.slice(2, option.indexOf("="))}' is not a property name`
+      );
+    }
+    expect(parseCommandLine(["node", "fabr", "-Dmy-prop=x", "-D@fabr-build=y", "foo"]).properties).to.deep.equal(
+      new Map([
+        ["my-prop", "x"],
+        ["@fabr-build", "y"],
+      ])
+    );
+  });
+
   it("sends an unrecognized-option error and the help to stderr, not stdout", () => {
     const { exit, out, err } = capture(["--bogus"]);
     expect(exit).to.equal(1);

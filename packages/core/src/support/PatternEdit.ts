@@ -43,14 +43,49 @@ export interface PatternEdit {
   readonly replacement?: string;
 }
 
+/**
+ * The operator of an {@link UnsetEdit}, as bash writes it after the name in a
+ * `${NAME…}`: `:-` gives the word where the value is unset or empty, `:+` the
+ * word where it is neither (and nothing otherwise), and `:?` fails, with the
+ * word as its message, where it is unset or empty.
+ */
+export type UnsetOperator = ":-" | ":+" | ":?";
+
+/**
+ * An edit of a substituted value by whether it is unset or empty, bash's
+ * `${NAME:-word}`, `${NAME:+word}` and `${NAME:?message}`. A name has no value
+ * where nothing declares it, no declaration of it applies, or it names a MAP
+ * entry the map does not have (`${ENV.HOME}`). `word` is kept as written,
+ * backslash escapes included.
+ */
+export interface UnsetEdit {
+  readonly operator: UnsetOperator;
+  readonly word: string;
+}
+
+/** An edit written after a substitution's name: a {@link PatternEdit} or an {@link UnsetEdit}. */
+export type SubstitutionEdit = PatternEdit | UnsetEdit;
+
+/** @return true if `edit` is an {@link UnsetEdit}, otherwise false. */
+export function isUnsetEdit(edit: SubstitutionEdit): edit is UnsetEdit {
+  return edit.operator.startsWith(":");
+}
+
+/** @return an unset edit's word as text, its backslash escapes removed. */
+export function unsetWord(edit: UnsetEdit): string {
+  return unescape(edit.word);
+}
+
 /** @return true if `operator` replaces what it matches, otherwise false. */
 export function isReplacing(operator: PatternOperator): boolean {
   return REPLACING.has(operator);
 }
 
 /** @return the edit as written after the name in a `${NAME…}`. */
-export function renderPatternEdit(edit: PatternEdit): string {
-  return edit.operator + edit.pattern + (edit.replacement === undefined ? "" : "/" + edit.replacement);
+export function renderEdit(edit: SubstitutionEdit): string {
+  return isUnsetEdit(edit)
+    ? edit.operator + edit.word
+    : edit.operator + edit.pattern + (edit.replacement === undefined ? "" : "/" + edit.replacement);
 }
 
 /**

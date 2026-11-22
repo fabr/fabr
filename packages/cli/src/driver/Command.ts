@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from "fs";
 import {
   COVERAGE,
   COVERAGE_ON,
+  isIdentifier,
   parseJson,
   preferredOperation,
   TEST_EXPECTATIONS,
@@ -715,13 +716,17 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     process.exit(0);
   } else if (arg.startsWith("-D")) {
     /* -DKEY=VALUE: split at the *first* `=` so the value may contain more
-     * (e.g. -DTSC=@npm:x:1); no `=` (or an empty key) is malformed. */
+     * (e.g. -DTSC=@npm:x:1); no `=`, or a key that is no property name, is malformed. */
     const def = arg.substring(2);
     const eq = def.indexOf("=");
     if (eq <= 0) {
       usageError(`Malformed option '${arg}' (expected -DKEY=VALUE)`, command);
     }
-    options.properties.set(def.slice(0, eq).trim(), def.slice(eq + 1).trim());
+    const key = def.slice(0, eq).trim();
+    if (!isIdentifier(key)) {
+      usageError(`Malformed option '${arg}': '${key}' is not a property name`, command);
+    }
+    options.properties.set(key, def.slice(eq + 1).trim());
   } else {
     usageError(`Unrecognized command-line option '${arg}'`, command);
   }

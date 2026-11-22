@@ -192,6 +192,10 @@ export interface IPropertyDecl extends IBaseDecl {
   /** The doc comment written above this property, its markers stripped, or
    * undefined if none. */
   docComment?: string;
+  /** Whether its map is read only an entry at a time (`${NAME.key}`), never
+   * whole: a splice of it (`{ NAME; }`) or a map property naming it is
+   * refused. Set on fabr's own `ENV`. */
+  entriesOnly?: true;
 }
 
 /** A `NAME;` splice: in a `{ … }` block, the entries of the map `NAME` names;

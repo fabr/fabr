@@ -421,15 +421,9 @@ describe("Loader", () => {
       "p/extra/b.fabr": "default from_b = yes;\n",
     });
     const errors: string[] = [];
-    const model = await loadProject(
-      exec(project, new LogFormatter(LogLevel.Info, msg => errors.push(msg))),
-      "PROJECT.fabr",
-      NO_BASE,
-      undefined,
-      {
-        includeOptionalLibs: true,
-      }
-    );
+    const model = await loadProject(exec(project, new LogFormatter(LogLevel.Info, msg => errors.push(msg))), "PROJECT.fabr", NO_BASE, {
+      includeOptionalLibs: true,
+    });
     expect(errors).to.deep.equal([]);
     expect(propertyValue(model, "from_a")).to.equal("yes");
     expect(propertyValue(model, "from_b")).to.equal("yes");

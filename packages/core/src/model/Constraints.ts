@@ -17,6 +17,8 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { hostTriple } from "../support/Platform";
+
 /**
  * The constraint naming the build operation ('build', 'test', 'run', 'files',
  * ...): `fabr test foo` builds `foo<BUILD_OPERATION=test>`. A rule is selected
@@ -27,15 +29,19 @@
 export const BUILD_OPERATION = "BUILD_OPERATION";
 
 /**
- * The constraint naming the platform fabr runs on, as a clang/LLVM triple
- * (`aarch64-apple-macosx15.0`, `x86_64-linux-gnu`). Set by the driver, and not
- * meant to be overridden.
+ * The property naming the platform fabr runs on, as a clang/LLVM triple
+ * (`aarch64-apple-macosx15.0`, `x86_64-linux-gnu`), declared in `<host>`
+ * (model/HostDeclarations.ts). A `-D HOST=` constraint answers for it instead.
  */
 export const HOST = "HOST";
 
+/** The MAP property of the environment fabr was started with, each variable's
+ *  value masked, declared in `<environment>` (model/HostDeclarations.ts). */
+export const ENV = "ENV";
+
 /** The constraint keys the driver sets on every configuration, left out where
  *  constraints are displayed. */
-export const AMBIENT_CONSTRAINT_KEYS: ReadonlySet<string> = new Set([BUILD_OPERATION, HOST]);
+export const AMBIENT_CONSTRAINT_KEYS: ReadonlySet<string> = new Set([BUILD_OPERATION]);
 
 /** The operations {@link preferredOperation} suggests, most preferred first. */
 const OPERATION_PREFERENCE = ["build", "test", "run"];
@@ -63,7 +69,8 @@ export const TARGET = "TARGET";
 
 /**
  * Select the entries of `constraints` to display: all but the `ambient` keys, a
- * TARGET equal to HOST, and COVERAGE off (the values a tool's run pins).
+ * TARGET equal to HOST (as a constraint sets it, else the machine's), and
+ * COVERAGE off (the values a tool's run pins).
  */
 export function shownConstraints(
   constraints: Iterable<[string, string]> & { get(key: string): string | undefined },
@@ -71,7 +78,9 @@ export function shownConstraints(
 ): Array<[string, string]> {
   return [...constraints].filter(
     ([key, value]) =>
-      !ambient.has(key) && !(key === TARGET && value === constraints.get(HOST)) && !(key === COVERAGE && value === "off")
+      !ambient.has(key) &&
+      !(key === TARGET && value === (constraints.get(HOST) ?? hostTriple())) &&
+      !(key === COVERAGE && value === "off")
   );
 }
 

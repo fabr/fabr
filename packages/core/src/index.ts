@@ -67,7 +67,7 @@ export * from "./model/ErrorFormatter";
 export * from "./model/ExecutionContext";
 export * from "./model/Loader";
 export * from "./model/Errors";
-export { parseBuildString, parseName } from "./model/Parser";
+export { isIdentifier, parseBuildString, parseName } from "./model/Parser";
 export * from "./editor/Language";
 export * from "./core/Name";
 export * from "./core/SecureString";

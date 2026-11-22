@@ -21,7 +21,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as fsPromises from "fs/promises";
-import { FabrError, HOST, hostTriple, PROJECT_FILENAME } from "@fabr-build/core";
+import { FabrError, PROJECT_FILENAME } from "@fabr-build/core";
 
 export const BUILD_CACHE_ENV = "FABR_CACHE_DIR";
 
@@ -79,14 +79,4 @@ function getBaseCacheDir(): string {
       /* Assume anything else follows XDG conventions */
       return process.env.XDG_CACHE_HOME ?? path.resolve(os.homedir(), ".cache");
   }
-}
-
-/**
- * Get the constraints describing the host machine, which the driver gives every
- * configuration: `HOST`, its platform triple (`aarch64-apple-macosx15.0`).
- */
-export function getHostProperties(): Record<string, string> {
-  return {
-    [HOST]: hostTriple(),
-  };
 }

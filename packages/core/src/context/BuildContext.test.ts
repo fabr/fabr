@@ -71,7 +71,7 @@ import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { isWords, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
-import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION, FILES_OVERRIDE } from "../model/Constraints";
+import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION, FILES_OVERRIDE, HOST, TARGET } from "../model/Constraints";
 import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
 import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "./Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -93,6 +93,8 @@ import { declName, INameValue, syntheticValue } from "../model/AST";
 import { StringReader } from "../support/StringReader";
 import { parseBuildString, parseName } from "../model/Parser";
 import { toBuildModel } from "../model/ModelBuilder";
+import { hostDeclarations } from "../model/HostDeclarations";
+import { hostTriple } from "../support/Platform";
 import { BuildModel } from "../model/BuildModel";
 import chai, { expect } from "chai";
 import chaiAsPromised from "chai-as-promised";
@@ -1449,8 +1451,10 @@ describe("BuildContext", () => {
         "g",
         "build"
       );
-      expect(circular.name).to.equal("g");
-      expect(sites(circular)).to.deep.equal(["u deps = g", "g run = u"]);
+      /* Running `u` pins TARGET to the host, so the `g` it requires is `g`
+       * under that TARGET, and the cycle closes at `u`, asked for again. */
+      expect(circular.name).to.equal("u");
+      expect(sites(circular)).to.deep.equal(["g run = u", "u deps = g"]);
     });
 
     it("names the redirect that reads from a target depending on the one running the command", async () => {
@@ -1494,7 +1498,8 @@ describe("BuildContext", () => {
         "ALL",
         "build"
       );
-      expect(["t", "MODE"]).to.include(circular.name);
+      /* MODE's command runs `u` with TARGET pinned to the host, so the cycle may close at `u`. */
+      expect(["t", "MODE", "u"]).to.include(circular.name);
     });
 
     for (const order of ["a b", "b a"]) {
@@ -3472,6 +3477,130 @@ describe("BuildContext", () => {
     lastString = undefined;
     await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("root"));
     expect(lastString).to.equal("caller");
+  });
+
+  describe("the machine fabr runs on", () => {
+    const ENVIRONMENT = new Map([
+      ["TOKEN", "s3cret"],
+      ["ARCHIVE", "tool.tar.gz"],
+      ["EMPTY", ""],
+    ]);
+    /** Load `input` beside the declarations of a machine `x86_64-linux-gnu` with {@link ENVIRONMENT}. */
+    const load = (input: string): { context: InternalBuildContext; errors: string[] } => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const files = [
+        ...hostDeclarations("x86_64-linux-gnu", ENVIRONMENT),
+        parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger),
+      ];
+      const model = toBuildModel(files, logger, testContributions);
+      return { context: internal(model.getConfig(Constraints.of({}), execution)), errors };
+    };
+    /** @return the value of `name` in `context`, and as output shows it. */
+    const forms = async (context: InternalBuildContext, name: string): Promise<[string, string]> => {
+      const value = (await context.getProperty(name)).toString();
+      return [value.toUnmaskedString(), value.toDisplayString()];
+    };
+    const failure = (context: InternalBuildContext, name: string): Promise<string | undefined> =>
+      Promise.resolve(context.getProperty(name)).then(
+        () => undefined,
+        (err: Error) => err.message
+      );
+
+    it("declares HOST, and refuses a project's own declaration of it", async () => {
+      const { context, errors } = load("TRIPLE = ${HOST};\n");
+      expect(errors).to.deep.equal([]);
+      expect(await forms(context, "TRIPLE")).to.deep.equal(["x86_64-linux-gnu", "x86_64-linux-gnu"]);
+      expect(load("HOST = other;\n").errors.join("\n")).to.contain("Duplicate declaration of property 'HOST'");
+    });
+
+    it("reads an environment variable as its value, shown as the substitution written wherever the value goes", async () => {
+      const { context, errors } = load(
+        "TOKEN = ${ENV.TOKEN};\n" +
+          "FLAG = --token=${TOKEN};\n" +
+          "STEM = ${ENV.ARCHIVE%%.*};\n" +
+          "PLAIN = --token=x;\n" +
+          "MISSING = ${ENV.UNSET_VARIABLE};\n"
+      );
+      expect(errors).to.deep.equal([]);
+      expect(await forms(context, "TOKEN")).to.deep.equal(["s3cret", "${ENV.TOKEN}"]);
+      /* Through another property, the value keeps its mask. */
+      expect(await forms(context, "FLAG")).to.deep.equal(["--token=s3cret", "--token=${ENV.TOKEN}"]);
+      /* An edit of a masked value masks the whole result, shown as the edit written. */
+      expect(await forms(context, "STEM")).to.deep.equal(["tool", "${ENV.ARCHIVE%%.*}"]);
+      expect((await context.getProperty("PLAIN")).toString().isMasked()).to.equal(false);
+      expect(await failure(context, "MISSING")).to.contain("'ENV' has no key 'UNSET_VARIABLE'");
+    });
+
+    it("gives a substitution's word where its value is unset or empty, as bash does", async () => {
+      const { context, errors } = load(
+        "DEFAULTED = ${ENV.UNSET_VARIABLE:-fallback};\n" +
+          "EMPTIED = ${ENV.EMPTY:-fallback};\n" +
+          "KEPT = ${ENV.TOKEN:-fallback};\n" +
+          "UNDECLARED = ${NOT_DECLARED:-fallback\\}};\n" +
+          "ALTERNATE = x${ENV.TOKEN:+on}x;\n" +
+          "NO_ALTERNATE = x${ENV.UNSET_VARIABLE:+on}x;\n" +
+          "REQUIRED = ${ENV.TOKEN:?TOKEN must be set};\n" +
+          "UNMET = ${ENV.EMPTY:?EMPTY must be set};\n" +
+          "UNMET_PLAIN = ${ENV.UNSET_VARIABLE:?};\n"
+      );
+      expect(errors).to.deep.equal([]);
+      expect(await forms(context, "DEFAULTED")).to.deep.equal(["fallback", "fallback"]);
+      expect(await forms(context, "EMPTIED")).to.deep.equal(["fallback", "fallback"]);
+      expect(await forms(context, "KEPT")).to.deep.equal(["s3cret", "${ENV.TOKEN}"]);
+      expect(await forms(context, "UNDECLARED")).to.deep.equal(["fallback}", "fallback}"]);
+      expect(await forms(context, "ALTERNATE")).to.deep.equal(["xonx", "xonx"]);
+      expect(await forms(context, "NO_ALTERNATE")).to.deep.equal(["xx", "xx"]);
+      expect(await forms(context, "REQUIRED")).to.deep.equal(["s3cret", "${ENV.TOKEN}"]);
+      expect(await failure(context, "UNMET")).to.contain("EMPTY must be set");
+      expect(await failure(context, "UNMET_PLAIN")).to.contain("'ENV.UNSET_VARIABLE' is unset or empty");
+    });
+
+    it("refuses ENV used as a whole map, spliced or named, while its entries read", async () => {
+      const { context, errors } = load("SPLICED = { ENV; };\nNAMED = ENV;\nOWN = { TOKEN = ${ENV.TOKEN}; };\n");
+      expect(errors).to.deep.equal([]);
+      for (const name of ["SPLICED", "NAMED"]) {
+        const refused = await Promise.resolve(context.lookupGlobalMap(name)).then(
+          () => undefined,
+          (err: Error) => err.message
+        );
+        expect(refused).to.equal("'ENV' is read only an entry at a time, so it cannot be used as a whole map");
+      }
+      const own = await Promise.resolve(context.lookupGlobalMap("OWN"));
+      expect((own.get("TOKEN") as SecureString[]).map(word => word.toDisplayString())).to.deep.equal(["${ENV.TOKEN}"]);
+    });
+
+    it("reads an entry of a private map, refuses a property that is no map, and takes an undeclared one as unset", async () => {
+      const { context, errors } = load(
+        "private PM = { k = pv; };\nA = ${PM.k};\nS = hello;\nB = ${S.k};\nC = ${TYPO.k};\nD = ${TYPO.k:-d};\n"
+      );
+      expect(errors).to.deep.equal([]);
+      expect(await forms(context, "A")).to.deep.equal(["pv", "pv"]);
+      expect(await failure(context, "B")).to.match(/^'S' cannot be read as a map: /);
+      expect(await failure(context, "C")).to.equal("Unknown property 'TYPO'");
+      expect(await forms(context, "D")).to.deep.equal(["d", "d"]);
+    });
+
+    it("pins a run's TARGET to the machine's host, or to a HOST constraint, which overrides it", () => {
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const model = toBuildModel([...hostDeclarations(hostTriple(), new Map())], logger, testContributions);
+      expect(
+        internal(model.getConfig(Constraints.of({}), execution))
+          .runOverrides()
+          .get(TARGET)
+      ).to.equal(hostTriple());
+      const overridden = model.getConfig(Constraints.of({ [HOST]: "riscv64-unknown-linux-gnu" }), execution);
+      expect(internal(overridden).runOverrides().get(TARGET)).to.equal("riscv64-unknown-linux-gnu");
+    });
+
+    it("reads an entry of any MAP property, and refuses one that is a map", async () => {
+      const { context, errors } = load("M = { a = one two; sub = { b = c; }; };\nX = ${M.a};\nY = ${M.sub};\nZ = ${M.none:-d};\n");
+      expect(errors).to.deep.equal([]);
+      expect(await forms(context, "X")).to.deep.equal(["one two", "one two"]);
+      expect(await failure(context, "Y")).to.contain("'M.sub' is a map, not a value to substitute");
+      expect(await forms(context, "Z")).to.deep.equal(["d", "d"]);
+    });
   });
 
   it("edits a substituted value as one text, as bash does", async () => {
@@ -5903,6 +6032,13 @@ describe("rules written in .fabr", () => {
       }
       return errors;
     }
+
+    it("reads an entry of a map the rule's block declares", async () => {
+      const model = splicing(
+        "rule lintable pkg = report { RM = { k = from-block; }; test_file report { content = ${RM.k}; } }\nlintable a { }\n"
+      );
+      expect(await textOf(model, "a")).to.equal("from-block");
+    });
 
     it("takes the matched target's properties through the rule's parameter", async () => {
       const model = splicing("rule lintable pkg = test_file report { pkg; }\nlintable a { content = hello; }\n");

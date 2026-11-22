@@ -38,7 +38,9 @@ import { BuildModel } from "./model/BuildModel";
 import { BuildCycle, ExecutionContext, hostFiles } from "./model/ExecutionContext";
 import { reportFailure } from "./model/ErrorFormatter";
 import { coreContribution, ILoadOptions, loadProject } from "./model/Loader";
-import { Constraints } from "./model/Constraints";
+import { hostDeclarations } from "./model/HostDeclarations";
+import { hostTriple } from "./support/Platform";
+import type { PluginContribution } from "./rules/Types";
 import { builtInProject } from "./model/Target";
 import { SyncSource } from "./rules/BuildSync";
 import { Diagnostic, Log } from "./support/Log";
@@ -61,8 +63,8 @@ export interface IFabrOptions {
   log: Log;
   /** Watch the source tree: filesystem changes become build cycles. */
   watch?: boolean;
-  /** The machine fabr runs on (`HOST`), which a plugin built in the project is built for. */
-  host?: Constraints;
+  /** The environment fabr was started with, which `ENV` declares, each value masked. */
+  environment?: ReadonlyMap<string, string>;
   /** Read every optional lib of each plugin the project uses, as though the
    * project included it (see {@link ILoadOptions}). */
   includeOptionalLibs?: boolean;
@@ -99,8 +101,8 @@ export class Fabr {
   public readonly sourceFileSource: SourceFileSource;
   /** The host's files read in place, whose index this run keeps (see {@link ExecutionContext.hostFileSource}). */
   private readonly hostFileSource: AbsolutePathSource<IndexedFileSource>;
-  /** The machine fabr runs on, as a configuration (see {@link IFabrOptions.host}). */
-  private readonly host: Constraints;
+  /** Core's contribution to the model: STD.fabr, and the declarations of the machine fabr runs on (`HOST`, `ENV`). */
+  private readonly core: PluginContribution;
   /** How the project is read. */
   private readonly loadOptions: ILoadOptions;
   /** The watch controller, present when watching; the driver shuts the run down through {@link WatchController.close}. */
@@ -109,7 +111,7 @@ export class Fabr {
   private readonly cycle: BuildCycle;
 
   constructor(options: IFabrOptions) {
-    this.host = options.host ?? Constraints.of({});
+    this.core = { ...coreContribution(), contents: hostDeclarations(hostTriple(), options.environment ?? new Map()) };
     this.loadOptions = { includeOptionalLibs: options.includeOptionalLibs };
     const cache = new BuildCache(options.cacheRoot, options.log, undefined, options.refresh);
     /* The controller advances it per batch of changes applied; the execution
@@ -179,7 +181,7 @@ export class Fabr {
    * indexes are saved.
    */
   public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
-    const evaluation = loadProject(this.execution, PROJECT_FILENAME, coreContribution(), this.host, this.loadOptions).then(operation);
+    const evaluation = loadProject(this.execution, PROJECT_FILENAME, this.core, this.loadOptions).then(operation);
     this.execution.observeEvaluation(evaluation);
     return evaluation.finally(() =>
       Computable.forAll([this.sourceFileSource.persistIndex(), this.persistHostIndexes()], () => undefined)

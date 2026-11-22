@@ -5,7 +5,9 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 together and share a version number.
 
 ## Fabr 0.4.3
+
 @fabr-build/cli
+
 - `fabr cache purge` removes fabr's cache, refusing while another fabr process uses it. The
   directories of the cache's installed trees are now read-only on macOS and Linux, so `rm -rf` of
   the cache stops at them.
@@ -15,15 +17,23 @@ together and share a version number.
   test run needs (the compiled tests, packages, runner and browsers) without running a test, and
   `fabr shell` on one opens its test run.
 - `fabr sync` marks a member published with a provenance statement: `✓ Publishing
-  @npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
+@npm:@acme/widgets:1.4.0 [provenance] (5.3s)`.
 
 @fabr-build/core
+
+- `${ENV.NAME}` reads an environment variable fabr was started with; fabr's own output shows
+  `${ENV.NAME}` in place of its value.
+- `${MAP.key}` reads an entry of a map property.
+- `${NAME:-text}`, `${NAME:+text}` and `${NAME:?message}` give a default, an alternative or an error
+  where a value is unset or empty.
+- `-D` refuses a key that is not a property name (`-DENV.HOME=…`).
 - A URL in fabr's output no longer shows a `user:password@` written into it.
 - Introduce internal secret string tracking.
 - New test stability options: `flaky` runs a failed test file again up to TEST_FLAKE_RETRIES (default 2); `unstable` runs every test file every time and never
   caches the run.
 
 @fabr-build/js
+
 - Fix tsc import check failing when type files are missing.
 - `fabr test --artifacts=<dir>` copies out the files test runs kept of their tests, such as a
   Playwright suite's traces and screenshots, which are kept with the cached result.
@@ -32,21 +42,26 @@ together and share a version number.
   `playwright test` with the arguments given (`--ui`, `--headed`, `--debug`), or `cypress open`.
 
 @fabr-build/java
+
 - `java_test`: tests that belong to no one jar, compiled against and run with its `deps`.
 
 @fabr-build/container
+
 - A `sync` target's image entry now contains an OCI image layout whose `index.json` names the pushed
   image's digest, platform and full reference (`host/repository:tag@sha256:…`), readable with
   `fabr cat` before or after `fabr sync`.
 - Add provenance attestation support for OCI publishing.
 
 ## Fabr 0.4.2
+
 @fabr-build/core
+
 - `HOST` spells an ARM64 CPU `aarch64` on every platform, macOS included (`aarch64-apple-macosx15.0`,
   was `arm64-apple-macosx15.0`), so one guard matches the CPU whatever the OS. Rewrite a guard on
   `arm64-*` as `aarch64-*`.
 
 @fabr-build/js
+
 - Enable layout/pnp for programs.
 - Compile dep .ts files even if the main entry is .js.
 - Fix pnp coverage still missing some cases.
@@ -58,22 +73,29 @@ together and share a version number.
 - Fix bundle's `metafile.json` containing absolute staging paths.
 
 ## Fabr 0.4.1
+
 @fabr-build/core
+
 - Allow '=' within a word of a property value (`args = --port=8080;`) without quoting.
 - `fabr sbom` takes several names, writing one bill of materials of them all.
 - `fabr deps`, `fabr audit` and `fabr sbom` now refuse globs cleanly.
 
 @fabr-build/java
+
 - Add runtime defines + env on java_program, and test equivalents on jar_package
 
 @fabr-build/js
+
 - Fix coverage not working with layout/pnp.
 
 @fabr-build/container
+
 - Change entry/args to entry/cmd for better docker consistency.
 
 ## Fabr 0.4.0
+
 @fabr-build/core:
+
 - Introduce fabr_plugin target + move rule/repository decls out to spec.
 - Make the actual working dir a subdir, with the tree pool link (if present) outside - fixes excessive tree scanning.
 - Add TEST_NAME_PATTERN / -t support for running specific tests.
@@ -85,7 +107,7 @@ together and share a version number.
 - Add support for map splices in target properties.
 - Breaking: Cache failed test runs like passing ones; add --retry-failed to run failed tests again.
 - Test targets now complete normally whether or not tests fail; top-level 'fabr test'
-still reports non-zero exit code with failures.
+  still reports non-zero exit code with failures.
 - Add `fabr test --report FILE [--format ctrf|junit]`: every tested target's results in one CTRF or JUnit XML file
 - Write a failing test run's coverage report too.
 - Add vulnerability audit via osv.
@@ -122,21 +144,26 @@ still reports non-zero exit code with failures.
 - Windows support.
 
 @fabr-build/aws:
+
 - Add s3 download support.
 - Add SSM Parameter Store reads (`@aws:ssm:<name>`); a SecureString is a secret, kept for a day in the cache's secrets store.
 - Add Secrets Manager reads (`@aws:secretsmanager:<name>`), each value a secret.
 
 @fabr-build/container:
+
 - New container image support.
 - Add container_program, to run an image with its environment, ports, network and host names.
 
 @fabr-build/migration:
+
 - New: `fabr-migrate` converts an npm, Yarn or pnpm project to fabr.
 
 @fabr-build/java:
+
 - New Java support.
 
 @fabr-build/js:
+
 - `fabr sync` publishes to npm with trusted publishing from a GitHub Actions workflow granted `id-token: write`, or a GitLab or CircleCI job given `NPM_ID_TOKEN`, falling back to the `.npmrc` credential where the registry refuses.
 - `fabr sync` publishes a signed provenance statement with each npm package from GitHub Actions or GitLab, where npm accepts one; `provenance = off;` on the registry turns it off.
 - js_package now takes a compile_deps property for compile-only inputs.
@@ -170,10 +197,13 @@ still reports non-zero exit code with failures.
 - Breaking: a js_package's root package.json only seeds the generated manifest and is no longer compiled with its sources; a package.json elsewhere among the sources is an error.
 
 VS Code extension (fabr-build.fabr):
+
 - New VSCode extension.
 
 ## Fabr 0.3.1
+
 @fabr-build/core:
+
 - Resolve dependencies separately from fetching and building them, so a version conflict fails
   before anything is downloaded and `fabr deps` needs no package contents.
 - Find dependency cycles in the computation graph itself, fixing some cycles that went unreported.
@@ -191,6 +221,7 @@ VS Code extension (fabr-build.fabr):
 - Rename the plugin API's `packageLibFile` to `getPackageLibFile`.
 
 @fabr-build/cli:
+
 - Add `fabr deps`: print the dependency tree of targets or packages, marking conflicting versions `(!)`.
 - Add `fabr test --coverage[=DIR]`, writing an lcov report.
 - `fabr ls` lists a namespace where its repository can enumerate one (`fabr ls @npm:glob`).
@@ -198,6 +229,7 @@ VS Code extension (fabr-build.fabr):
   file selection.
 
 @fabr-build/js:
+
 - A sibling package depended on under a rename (`deps = mylib -> foo;`) is declared in npm's alias
   form (`"foo": "npm:mylib@1.2.3"`).
 - Move the drivers and test runners into their own package, `@fabr-build/js-tools`, installed with
@@ -210,7 +242,9 @@ VS Code extension (fabr-build.fabr):
 - Add node distribution repository to download node.js.
 
 ## Fabr 0.3.0
+
 @fabr-build/core:
+
 - Add support for guarded properties.
 - Add xz archive support.
 - Add positional backrefs in rename templates.
@@ -227,20 +261,22 @@ VS Code extension (fabr-build.fabr):
 - Fix rule selection ignoring `default` and declared globals (only explicit overrides counted).
 - Add `targetProperties` to rule registrations, selecting a rule on the target's own properties.
 - Fix a dependency cycle through something a rule reads (a tool global naming a target that
-needs the reader) hanging the build instead of being reported.
+  needs the reader) hanging the build instead of being reported.
 - "required by" chains now name the target whose rule read a global (a tool setting), in start
-lines and in error notes; they used to stop at the global.
+  lines and in error notes; they used to stop at the global.
 - Fix local packages added to a catalog.
 - Fix aliased package resolution.
 - Add the `patched` target: a published package (or plain files) with a patch applied, retaining its shape.
 
 @fabr-build/cli:
+
 - Live progress display on terminal with progress bars and test status (suppressed with -q)
 
 @fabr-build/js:
+
 - BREAKING: TSC property has changed to TYPESCRIPT without the bin;
-TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
-- BREAKING: the test runner is chosen by a test_framework / framework property instead of test_runner. 
+  TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
+- BREAKING: the test runner is chosen by a test_framework / framework property instead of test_runner.
 - Add Yarn PnP resolution support, enabled currently for our owned tools.
 - Rewrite module-specifiers for ESM targets where required.
 - `js_bundle` now requests ESM format inputs regardless of target.
@@ -261,7 +297,9 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Add snapshot assertions (`t.assert.snapshot`) to the native test runner, updated with `fabr test -u`.
 
 ## Fabr 0.2.1
+
 @fabr-build/core:
+
 - `include` paths may now glob (`include lib/**/*.fabr;`).
 - Cap maximum concurrent connections + executing processes.
 - New 'fetch' download source for arbitrary http/https fetching.
@@ -277,6 +315,7 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 - Fix: sync targets being unavailable to other build steps.
 
 @fabr-build/js:
+
 - Add a jest compatibility test runner (`JS_TEST_RUNNER = @fabr-build/js-tools/jest-runner;`)
 - Generated package.json now strips build-only fields (devDependencies, scripts, …) from an imported manifest, and emits array metadata (keywords, os, cpu) as JSON arrays.
 - Add support for package aliases in external dependencies.
@@ -299,4 +338,3 @@ TSC=@npm:typescript:5.4.5:tsc becomes TYPESCRIPT=@npm:typescript:5.4.5.
 ## Fabr 0.1.0
 
 - First release - fully self hosting, with general support for JavaScript and TypeScript.
-

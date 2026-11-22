@@ -3,22 +3,22 @@ title: Language syntax
 description: The syntax of PROJECT.fabr and the .fabr files it includes — references, properties, targets and target types.
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 A fabr build file (`PROJECT.fabr`, and any files it includes) is written in a small declarative
 language made of these statements:
 
-| Statement | Example | Section |
-|---|---|---|
-| Load a plugin or another file | `plugin @fabr-build/js;` | [Plugins and includes](#plugins-and-includes) |
-| Set a property | `JS_TARGET = es2022-esm;` | [Properties](#properties) |
-| Declare a target | `js_package mylib { srcs = src:**/*.ts; }` | [Target declarations](#target-declarations) |
-| Declare a fallback | `default TYPESCRIPT = @npm:typescript:5.6.3;` | [Default properties](#default-properties) |
-| Declare a name for one file only | `private VERSION = 2.4.0;` | [Private declarations](#private-declarations) |
-| Apply a guard to several declarations | `<TARGET=*-apple-*> { … }` | [Guarded properties](#guarded-properties) |
-| Define a target type | `targetdef mytype { srcs = FILES; }` | [Targetdef declarations](#targetdef-declarations) |
-| Define a type from another | `targetdef mytype extends js_package { docs = FILES; }` | [Extending a type](#extending-a-type) |
-| Say how a type is built | `rule mytype t<BUILD_OPERATION=build> = …;` | [Rule and repository declarations](#rule-and-repository-declarations) |
+| Statement                             | Example                                                 | Section                                                               |
+| ------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------- |
+| Load a plugin or another file         | `plugin @fabr-build/js;`                                | [Plugins and includes](#plugins-and-includes)                         |
+| Set a property                        | `JS_TARGET = es2022-esm;`                               | [Properties](#properties)                                             |
+| Declare a target                      | `js_package mylib { srcs = src:**/*.ts; }`              | [Target declarations](#target-declarations)                           |
+| Declare a fallback                    | `default TYPESCRIPT = @npm:typescript:5.6.3;`           | [Default properties](#default-properties)                             |
+| Declare a name for one file only      | `private VERSION = 2.4.0;`                              | [Private declarations](#private-declarations)                         |
+| Apply a guard to several declarations | `<TARGET=*-apple-*> { … }`                              | [Guarded properties](#guarded-properties)                             |
+| Define a target type                  | `targetdef mytype { srcs = FILES; }`                    | [Targetdef declarations](#targetdef-declarations)                     |
+| Define a type from another            | `targetdef mytype extends js_package { docs = FILES; }` | [Extending a type](#extending-a-type)                                 |
+| Say how a type is built               | `rule mytype t<BUILD_OPERATION=build> = …;`             | [Rule and repository declarations](#rule-and-repository-declarations) |
 
 Most of what you write inside them is [references](#references): the patterns that name files,
 targets and packages.
@@ -100,10 +100,10 @@ the plugin's optional files; the error lists the ones it has.
 
 ## Names
 
-| Name | Characters allowed |
-|---|---|
+| Name                  | Characters allowed             |
+| --------------------- | ------------------------------ |
 | Property, target type | letters, digits, `_`, `@`, `-` |
-| Target | the same, plus `/` and `.` |
+| Target                | the same, plus `/` and `.`     |
 
 Every name starts with a letter, `_` or `@`, so `my-tool` and `@fabr-build` are names but `-x` and
 `2fa` are not. Registries and catalogs are conventionally named with a leading `@` (`@npm`,
@@ -169,13 +169,13 @@ Bash's extended globs are supported too. Each is a prefix character followed by 
 list of one or more patterns separated by `|`. Each matches within one path component, except
 `!(…)`, described below:
 
-| Pattern | Matches |
-| --- | --- |
-| `?(…)` | zero or one of the listed patterns |
-| `*(…)` | zero or more |
-| `+(…)` | one or more |
-| `@(…)` | exactly one |
-| `!(…)` | anything except the listed patterns |
+| Pattern | Matches                             |
+| ------- | ----------------------------------- |
+| `?(…)`  | zero or one of the listed patterns  |
+| `*(…)`  | zero or more                        |
+| `+(…)`  | one or more                         |
+| `@(…)`  | exactly one                         |
+| `!(…)`  | anything except the listed patterns |
 
 ```
 srcs = src/!(generated)/**;         # everything under src except the generated directory
@@ -287,16 +287,16 @@ itself contain a substitution (`${OPT<BUILD_TYPE=${MODE}>}`).
 
 To change the value as it is substituted, write an edit after the name, as in bash:
 
-| Form | Result |
-|---|---|
-| `${NAME#pattern}` | the value with the shortest prefix matching `pattern` removed |
-| `${NAME##pattern}` | the value with the longest matching prefix removed |
-| `${NAME%pattern}` | the value with the shortest matching suffix removed |
-| `${NAME%%pattern}` | the value with the longest matching suffix removed |
-| `${NAME/pattern/text}` | the first match replaced with `text` |
-| `${NAME//pattern/text}` | every match replaced with `text` |
-| `${NAME/#pattern/text}` | a match at the start replaced with `text` |
-| `${NAME/%pattern/text}` | a match at the end replaced with `text` |
+| Form                    | Result                                                        |
+| ----------------------- | ------------------------------------------------------------- |
+| `${NAME#pattern}`       | the value with the shortest prefix matching `pattern` removed |
+| `${NAME##pattern}`      | the value with the longest matching prefix removed            |
+| `${NAME%pattern}`       | the value with the shortest matching suffix removed           |
+| `${NAME%%pattern}`      | the value with the longest matching suffix removed            |
+| `${NAME/pattern/text}`  | the first match replaced with `text`                          |
+| `${NAME//pattern/text}` | every match replaced with `text`                              |
+| `${NAME/#pattern/text}` | a match at the start replaced with `text`                     |
+| `${NAME/%pattern/text}` | a match at the end replaced with `text`                       |
 
 ```
 TRIPLE = aarch64-apple-darwin;
@@ -318,6 +318,29 @@ backtick substitution, and `&` in a replacement is a plain `&` rather than the m
 
 An edit can follow a constraint, and applies to the value read under it:
 `${OPT<BUILD_TYPE=release>#-}` is `O2`.
+
+`${MAP.key}` is replaced by the value of the entry `key` of a [map](#map-properties) property.
+The entry must be a value rather than a map, and a map without the entry is an error, unless the
+substitution gives a default:
+
+| Form               | Result                                                             |
+| ------------------ | ------------------------------------------------------------------ |
+| `${NAME:-text}`    | the value, or `text` where it is unset or empty                    |
+| `${NAME:+text}`    | `text` where the value is set and not empty, and nothing otherwise |
+| `${NAME:?message}` | the value, or an error saying `message` where it is unset or empty |
+
+A name is unset where nothing declares it, no declaration of it applies to the configuration, or
+it names a map entry the map doesn't have. `text` and `message` are written as a pattern is, a
+backslash taking the next character literally, and can't contain a substitution.
+
+```
+CC = ${ENV.CC:-cc};                      # the CC fabr was started with, else cc
+VERBOSE = ${ENV.DEBUG:+--verbose};       # --verbose, where DEBUG is set
+TOKEN = ${ENV.DEPLOY_TOKEN:?set DEPLOY_TOKEN to deploy};
+```
+
+Bash's forms without the `:`, which tell an empty value apart from an unset one, aren't available,
+since `-` is a character of a name: `${NAME-text}` is the property `NAME-text`.
 
 ### Command substitution
 
@@ -544,6 +567,54 @@ default TYPESCRIPT = @npm:typescript:5.6.3;
 Fabr and its plugins declare their settings this way, which is why a build file can set
 `TYPESCRIPT` itself without that being a second declaration of the name.
 
+### Properties fabr declares
+
+Fabr declares two properties of the machine it runs on, in files of their own: `HOST` in
+`<host>`, and `ENV` in `<environment>`. They aren't defaults, so a build file can't declare
+either name itself. A constraint can still set `HOST` (`-DHOST=…`).
+
+`HOST` is the platform fabr runs on, as a triple (`aarch64-apple-macosx15.0`, `x86_64-linux-gnu`).
+`TARGET`, the platform a build is for, is `${HOST}` unless something sets it.
+
+`ENV` is a map of the environment variables fabr was started with, each read as
+`${ENV.NAME}`. It is read once, as fabr starts, so under `--watch` a change to the environment of
+the shell fabr runs in takes effect when fabr is started again:
+
+```
+generate deploy {
+  run = tools:deploy --region=${ENV.AWS_REGION:-us-east-1};
+  env = { DEPLOY_TOKEN = ${ENV.DEPLOY_TOKEN}; };
+}
+```
+
+A variable that isn't set is an error, unless the substitution gives a default
+([`${ENV.NAME:-text}`](#variable-substitution)). A build step sees no environment variable of its
+own: it runs with the environment its target gives it, such as a `generate` target's `env`. `ENV`
+is read only a variable at a time, so it can't be [spliced](#map-properties) into a map or a
+target, or named as a map's whole value: `env = { ENV; }` is an error. Name each variable the step
+needs instead, `env = { HOME = ${ENV.HOME}; }`.
+
+Fabr treats every environment variable as a possible secret, so where it uses one as a setting,
+its own output shows the substitution as written instead of the value: a failed `deploy` reports
+`$ … --region=${ENV.AWS_REGION}`, `fabr shell` shows the same, and a repository whose `url` holds a
+variable is shown fetching from `${ENV.REGISTRY}/…`. This holds through other properties and edits
+(`TOKEN = ${ENV.DEPLOY_TOKEN};` substituted as `${TOKEN}` still shows `${ENV.DEPLOY_TOKEN}`). A
+URL fabr shows never includes a `user:password@` part, wherever it came from. A variable written
+into a name, such as a package, a path or an image (`@npm:${ENV.PACKAGE}:1.0.0`), is part of that
+name, and shown as the name is.
+
+The value itself is used everywhere else: a step runs with it, it is part of the step's cache key
+(which is stored only as a hash), and it is written into what is built from it (a bundle's
+`defines`, a `package.json`'s `version`). What a tool prints is shown as it is, so a tool that
+echoes the value shows it, and a command-line argument is visible in the machine's process list
+while the step runs: pass a secret in a step's `env` rather than on its command line. For secrets a
+build reads from a store, see [AWS Systems Manager](/reference/aws/ssm/) and
+[Secrets Manager](/reference/aws/secretsmanager/).
+
+An environment variable can't be a constraint's value (`lib<MODE=${ENV.MODE}>`), since
+constraints are shown wherever the configuration is. Pass a setting on the command line with `-D`
+instead.
+
 ### Properties that stand in for a group of names
 
 A property can have the name of a group of targets, the part before a `/` in names such as
@@ -662,15 +733,15 @@ program, or a program installed on your machine, named through
 expanded against the target's input files. A command can't be written in a
 [map](#map-properties).
 
-| Form | Meaning |
-| --- | --- |
-| `a && b` | Run `b` once `a` has succeeded. |
-| `a \| b` | Send `a`'s stdout to `b`'s stdin. |
-| `< name` | Read the first command of a pipeline's stdin from a reference that names one file. |
-| `> name` | Keep stdout as a file called `name`. Only on the last command of a pipeline, since an earlier one's stdout goes to the pipe. |
-| `2> name` | Keep stderr as a file called `name`. |
-| `2>&1` | Send stderr wherever stdout is going at that point. `1>&2` is the reverse. |
-| `&> name` | Keep both in one file: the same as `> name 2>&1`. |
+| Form      | Meaning                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `a && b`  | Run `b` once `a` has succeeded.                                                                                              |
+| `a \| b`  | Send `a`'s stdout to `b`'s stdin.                                                                                            |
+| `< name`  | Read the first command of a pipeline's stdin from a reference that names one file.                                           |
+| `> name`  | Keep stdout as a file called `name`. Only on the last command of a pipeline, since an earlier one's stdout goes to the pipe. |
+| `2> name` | Keep stderr as a file called `name`.                                                                                         |
+| `2>&1`    | Send stderr wherever stdout is going at that point. `1>&2` is the reverse.                                                   |
+| `&> name` | Keep both in one file: the same as `> name 2>&1`.                                                                            |
 
 Redirections apply in the order written, as in a shell: `> f 2>&1` sends both streams to `f`,
 while `2>&1 > f` sends stderr to where stdout was going before, and then stdout to `f`. Unlike a
@@ -777,8 +848,8 @@ gets its kqueue transport; any other build gets neither.
   [default](#property-defaults) applies if it has one.
 
 This is the notation of a [constraint](#constraints) in a different place, with a different
-meaning. After a reference it *requires* a setting, and takes an exact value. After a property
-name being declared it *tests* a setting, and takes a pattern.
+meaning. After a reference it _requires_ a setting, and takes an exact value. After a property
+name being declared it _tests_ a setting, and takes a pattern.
 
 A guard can be written once around several declarations:
 
@@ -965,15 +1036,15 @@ targetdef sync {
 
 ### Property kinds
 
-| Kind | The value is |
-|---|---|
-| `STRING` | Text. |
-| `FILES` | References, which become a set of files. |
-| `PACKAGES` | References to packages: registry packages and the targets that build one. |
-| `MAP` | A block of `key = value;` entries; see [Map properties](#map-properties). |
-| `COMMAND` | A command pipeline; see [Command property](#command-property). |
-| `REWRITE` | Renaming rules written `pattern -> template`; see [Projection and renaming](#projection-and-renaming). |
-| `REQUIRED` | Not a kind but a modifier, written before one: the property must be set. |
+| Kind       | The value is                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| `STRING`   | Text.                                                                                                  |
+| `FILES`    | References, which become a set of files.                                                               |
+| `PACKAGES` | References to packages: registry packages and the targets that build one.                              |
+| `MAP`      | A block of `key = value;` entries; see [Map properties](#map-properties).                              |
+| `COMMAND`  | A command pipeline; see [Command property](#command-property).                                         |
+| `REWRITE`  | Renaming rules written `pattern -> template`; see [Projection and renaming](#projection-and-renaming). |
+| `REQUIRED` | Not a kind but a modifier, written before one: the property must be set.                               |
 
 `MAP`, `COMMAND` and `REWRITE` are checked: a value of the wrong form is an error, as is a missing
 `REQUIRED` property. `STRING`, `FILES` and `PACKAGES` are not told apart when a build file is read. They
@@ -982,11 +1053,11 @@ value.
 
 `FILES` and `PACKAGES` take the same references and differ in what a reference means:
 
-| A reference to | In a `FILES` property | In a `PACKAGES` property |
-|---|---|---|
-| a target | The files it builds. | The package it builds, under the target's name. |
+| A reference to                             | In a `FILES` property                                                                                                   | In a `PACKAGES` property                                                                                                            |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| a target                                   | The files it builds.                                                                                                    | The package it builds, under the target's name.                                                                                     |
 | a registry package (`@npm:lodash:4.17.21`) | That package's own files, at the version written (the lowest version a range allows). Nothing it depends on is fetched. | A dependency: its version is chosen together with every other package the target depends on, and its own dependencies come with it. |
-| a file or directory | Those files. | Those files. |
+| a file or directory                        | Those files.                                                                                                            | Those files.                                                                                                                        |
 
 A rule may read a `PACKAGES` property for its files, but reads a `FILES` property only for its
 files, except where a type says otherwise: a `js_script`'s `entry` may name a package, and a

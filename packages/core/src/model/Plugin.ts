@@ -382,11 +382,9 @@ export function resolvePlugin(
   match: IPrefixMatch,
   {
     execution,
-    host,
     libsOf,
   }: {
     execution: ExecutionContext;
-    host: Constraints;
     libsOf: (target: ITargetDecl, property: "libs" | "optional_libs") => ComputableSource<{ files: string[]; errors: number }>;
   }
 ): Computable<PluginResolution> {
@@ -399,19 +397,19 @@ export function resolvePlugin(
         name: declName(target),
         files: libs.files,
         optionalLibs: optional.files.map(file => ({ name: path.posix.relative(directory, file), file })),
-        code: (built: BuildModel) => pluginManifest(built, decl, execution, host).then(({ manifest }) => manifest),
+        code: (built: BuildModel) => pluginManifest(built, decl, execution).then(({ manifest }) => manifest),
       },
       reported: libs.errors + optional.errors,
     }));
   }
-  return pluginManifest(model, decl, execution, host).then(
+  return pluginManifest(model, decl, execution).then(
     ({ manifest, files }): PluginResolution => ({ decl, resolved: packagedPlugin(decl, manifest, files()), reported: 0 }),
     (err): PluginResolution => ({ decl, resolved: toError(err), reported: 0 })
   );
 }
 
 /**
- * Make `decl`'s plugin under `run` for `host`, in `model`. @return the path of
+ * Make `decl`'s plugin under `run`, for the host, in `model`. @return the path of
  * its code's `package.json` (a program is written to the tree pool, and an
  * installed package is used where it is installed), and the package's files,
  * by their paths within it.
@@ -419,12 +417,11 @@ export function resolvePlugin(
 function pluginManifest(
   model: BuildModel,
   decl: IPluginDecl,
-  execution: ExecutionContext,
-  host: Constraints
+  execution: ExecutionContext
 ): Computable<{ manifest: string; files: () => FileSet }> {
   const reference = syntheticValue(decl.name, decl.source, decl.offset, decl.endOffset ?? decl.offset);
   return model
-    .getConfig(host.with(Constraints.of({ [BUILD_OPERATION]: "run" })), execution)
+    .getConfig(Constraints.of({ [BUILD_OPERATION]: "run" }), execution)
     .materialize(reference)
     .then(sources => {
       if (sources.length !== 1) {

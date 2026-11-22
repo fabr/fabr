@@ -39,6 +39,7 @@ import {
   INameValue,
   IPropertyDecl,
   IRuleDecl,
+  isMapValue,
   isPropertyDecl,
   isRuleBlock,
   ISpliceDecl,
@@ -587,14 +588,38 @@ function entriesNaming(decl: ITargetDecl, member: string): INameValue[] {
     );
 }
 
-/** @return what the global or target `name` is, as named at `origin`. */
+/** @return what the global or target `name` is, as named at `origin`: for `M.key`, the entry `key` of the MAP property `M`. */
 function propertyNamed(model: BuildModel, name: string, origin: ISourceRange): INamed {
+  const dot = name.indexOf(".");
+  if (dot > 0) {
+    const entries = mapEntriesOf(model, name.substring(0, dot), origin.source.file).filter(
+      entry => entry.name.toUnmaskedString() === name.substring(dot + 1)
+    );
+    return {
+      origin,
+      declarations: entries.map(spanOf),
+      ...(entries.length === 0
+        ? {}
+        : { documentation: { source: entries.map(entry => `${name} = ${valueText(entry)};`).join("\n") } }),
+    };
+  }
   const decl = model.getPrivateScope(origin.source.file)?.getDecl(name) ?? model.getDecl(name);
   return {
     origin,
     declarations: decl === undefined ? [] : spansOf(decl),
     ...(decl === undefined ? {} : { documentation: describeProperty(name, decl) }),
   };
+}
+
+/** @return the entries written in the `{ … }` blocks of the MAP property `map`, as seen from `file`. */
+function mapEntriesOf(model: BuildModel, map: string, file: string | undefined): IPropertyDecl[] {
+  const decl = (file === undefined ? undefined : model.getPrivateScope(file)?.getDecl(map)) ?? model.getDecl(map);
+  if (decl === undefined || decl.kind !== DeclKind.Property) {
+    return [];
+  }
+  return [...decl.decls, ...decl.defaults].flatMap(property =>
+    property.values.flatMap(value => (isMapValue(value) ? value.entries.filter(isPropertyDecl) : []))
+  );
 }
 
 /** @return a target's documentation: its declaration, and the comment written above it. */
@@ -643,8 +668,8 @@ function substitutionAt(
   offset: number
 ): { name: string; origin: ISourceRange } | undefined {
   const text = source.reader.substring(from, end);
-  /* The name, a requirement on it, and an edit after it (`#p`, `%p`, `/a/b`), a backslash quoting a character of the edit. */
-  for (const match of text.matchAll(/\$\{\s*([^\s}<#%/]+)\s*(?:<[^}]*>)?\s*(?:[#%/](?:\\.|[^}\\])*)?\}/g)) {
+  /* The name, a requirement on it, and an edit after it (`#p`, `%p`, `/a/b`, `:-w`), a backslash quoting a character of the edit. */
+  for (const match of text.matchAll(/\$\{\s*([^\s}<#%/:]+)\s*(?:<[^}]*>)?\s*(?:[#%/:](?:\\.|[^}\\])*)?\}/g)) {
     const start = from + match.index!;
     if (offset >= start && offset <= start + match[0].length) {
       return { name: match[1].trim(), origin: { source, offset: start, endOffset: start + match[0].length } };
@@ -772,7 +797,12 @@ export function completionsAt(model: BuildModel, text: string, offset: number, f
     }));
   switch (context.kind) {
     case "substitution":
-      return globals();
+      return context.map === undefined
+        ? globals()
+        : mapEntriesOf(model, context.map, file).map(entry => ({
+            label: [context.map, entry.name.toUnmaskedString()].join("."),
+            kind: "property",
+          }));
     case "value":
       return [...targets(), ...globals(), ...(context.rule === undefined ? [] : parameterCompletions(model, context.rule))];
     case "property-name": {
@@ -816,7 +846,7 @@ type RuleScope = { parameter: string; type?: string };
 
 /** Where in a build file's grammar a place is, as far as the text before it says. */
 type TypingContext =
-  | { kind: "substitution" }
+  | { kind: "substitution"; map?: string }
   | { kind: "value"; rule?: RuleScope }
   | { kind: "property-name"; type: string; rule?: RuleScope }
   | { kind: "top-level" }
@@ -861,7 +891,10 @@ function typingContext(text: string, offset: number): TypingContext {
        * `%p`, `/a/b`); a `#` in it starts no comment. */
       const end = skipTo(i + 1, "}", true);
       if (end === undefined) {
-        return /^\s*[\w.-]*$/.test(text.slice(i + 2, offset)) ? { kind: "substitution" } : { kind: "other" };
+        const typed = /^\s*([\w-]+)?(\.[\w-]*)?$/.exec(text.slice(i + 2, offset));
+        return typed === null
+          ? { kind: "other" }
+          : { kind: "substitution", ...(typed[2] === undefined || typed[1] === undefined ? {} : { map: typed[1] }) };
       }
       statement += text.slice(i, end + 1);
       i = end;
