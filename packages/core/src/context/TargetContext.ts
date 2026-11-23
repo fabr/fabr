@@ -20,7 +20,7 @@
 import { FetchOptions, IFetchRequest, ISecretRecord } from "../core/BuildCache";
 import { Computable } from "../core/Computable";
 import { ITaskReport } from "../support/Execute";
-import { FileSet, FileSource } from "../core/FileSet";
+import { FileSet, FileSource, IFile } from "../core/FileSet";
 import { RepositoryPublishRef, Repository, SourceRef } from "../core/Repository";
 import { collectLists, ResolutionOptions, withOperation } from "./CollectionPoint";
 import { FileSetRef } from "../core/FileSetRef";
@@ -509,6 +509,12 @@ export abstract class TargetContext {
       url => run => this.runTask({ kind: "fetch", url, ...report }, run),
       { ...options, role: report.role }
     );
+  }
+
+  /** Reshape `file`, fetched under `tag`, into the value `convert` reads from
+   *  it, shared with every other reshape of the same content (see BuildCache.reshape). */
+  public reshape<T>(tag: string, file: IFile, convert: (text: string) => T): Computable<T> {
+    return this.context.execution.buildCache.reshape(tag, file, convert);
   }
 
   /**

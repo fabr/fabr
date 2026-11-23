@@ -441,6 +441,8 @@ function fakeContext(
       name in globals
         ? Computable.resolve(SecureString.of(globals[name]))
         : Computable.reject(new Error(`unexpected property: ${name}`)),
+    reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+      file.readString().then(convert),
     fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
       request().then(({ url: requested }): Computable<FileSet> => {
         const url = requested.toUnmaskedString();
@@ -961,6 +963,8 @@ describe("NPMRepository metadata memo", () => {
         name in globals
           ? Computable.resolve(SecureString.of(globals[name]))
           : Computable.reject(new Error(`unexpected property: ${name}`)),
+      reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+        file.readString().then(convert),
       fetch: (u: string) => {
         if (u === url && failNext) {
           failNext = false;
@@ -1001,6 +1005,8 @@ describe("NPMRepository metadata memo", () => {
         name in globals
           ? Computable.resolve(SecureString.of(globals[name]))
           : Computable.reject(new Error(`unexpected property: ${name}`)),
+      reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+        file.readString().then(convert),
       fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
       execution: fakeExecution(),
     } as unknown as TargetContext;
@@ -1042,6 +1048,8 @@ describe("NPMRepository metadata memo", () => {
         name in globals
           ? Computable.resolve(SecureString.of(globals[name]))
           : Computable.reject(new Error(`unexpected property: ${name}`)),
+      reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+        file.readString().then(convert),
       fetch: (u: string) => (u === url ? Computable.resolve(meta) : Computable.reject(new Error(`unexpected fetch: ${u}`))),
       execution: fakeExecution(),
     } as unknown as TargetContext;
@@ -1719,6 +1727,8 @@ function authCapturingContext(
       name in globals
         ? Computable.resolve(SecureString.of(globals[name]))
         : Computable.reject(new Error(`unexpected property: ${name}`)),
+    reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+      file.readString().then(convert),
     fetch: (_cacheKey: string, _tag: string, request: () => Computable<IFetchRequest>) =>
       request().then(({ url: requested, headers, credential }): Computable<FileSet> => {
         const url = requested.toUnmaskedString();

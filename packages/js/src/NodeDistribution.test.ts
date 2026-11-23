@@ -115,6 +115,8 @@ function servingContext(served: Map<string, Buffer>, cache: BuildCache, target: 
     operation,
     getGlobalString: (name: string) =>
       name === TARGET ? Computable.resolve(SecureString.of(target)) : Computable.reject(new Error(`unexpected property: ${name}`)),
+    reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+      file.readString().then(convert),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>) =>
       request().then(({ url: requested, process }): Computable<FileSet> => {
         const url = requested.toUnmaskedString();

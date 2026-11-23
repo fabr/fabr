@@ -315,6 +315,8 @@ function fetchingContext(triple: string, options: Array<FetchOptions | undefined
       workDirs.push(workDir);
       return make(workDir);
     },
+    reshape: <T>(_tag: string, file: { readString(): Computable<string> }, convert: (text: string) => T) =>
+      file.readString().then(convert),
     fetch: (_key: string, _tag: string, request: () => Computable<IFetchRequest>, _report: unknown, fetchOptions?: FetchOptions) => {
       options.push(fetchOptions);
       return request().then(({ url, headers, credential, process }) =>

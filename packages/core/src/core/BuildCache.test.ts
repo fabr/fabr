@@ -428,6 +428,43 @@ describe("BuildCache", () => {
     expect(await toPromise(b.readFile("out.txt"))).to.equal("content");
   });
 
+  it("shares one reshaped value among the readers of one content under one tag", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    let converts = 0;
+    const convert = (text: string): { text: string } => {
+      converts++;
+      return { text };
+    };
+    const first = cache.reshape("doc:1", MemoryFile.from("same"), convert);
+    const joined = cache.reshape("doc:1", MemoryFile.from("same"), convert);
+    const [a, b] = await Promise.all([toPromise(first), toPromise(joined)]);
+    const later = await toPromise(cache.reshape("doc:1", MemoryFile.from("same"), convert));
+    expect(a).to.equal(b);
+    expect(later).to.equal(a);
+    expect(converts).to.equal(1);
+
+    const otherTag = await toPromise(cache.reshape("doc:2", MemoryFile.from("same"), convert));
+    const otherContent = await toPromise(cache.reshape("doc:1", MemoryFile.from("different"), convert));
+    expect(otherTag).to.not.equal(a);
+    expect(otherContent.text).to.equal("different");
+    expect(converts).to.equal(3);
+  });
+
+  it("reshapes a fetched file again after a reshape failed", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    let converts = 0;
+    const convert = (text: string): { text: string } => {
+      if (converts++ === 0) {
+        throw new Error("unusable");
+      }
+      return { text };
+    };
+    let failure: unknown;
+    await toPromise(cache.reshape("doc:1", MemoryFile.from("text"), convert)).catch(err => (failure = err));
+    expect((failure as Error).message).to.equal("unusable");
+    expect((await toPromise(cache.reshape("doc:1", MemoryFile.from("text"), convert))).text).to.equal("text");
+  });
+
   it("rebuilds a stored entry when the demand forces it, and re-stores the result", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     let creates = 0;

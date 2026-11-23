@@ -90,6 +90,7 @@ import { Diagnostic, Log } from "../support/Log";
 import type { Credential } from "./Credential";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
 import { parseJson, toJsonObject } from "../support/Json";
+import { WeakValueMap } from "../support/WeakValueMap";
 
 /** A download request, made only where the cache holds no answer. */
 export interface IFetchRequest {
@@ -378,9 +379,15 @@ export class BuildCache {
   /** Entries currently being created, by lock key: a second demand joins the
    * first. This process only: two runs sharing a cache each build the entry. */
   private readonly inflight = new Map<string, Computable<FileSet>>();
-  /** The entries read so far, by hashed key, so every demand in the run holds
-   *  one FileSet. {@link cachePut} drops the key's entry. */
-  private readonly held = new Map<string, ICacheEntry>();
+  /** The entries read, by hashed key, while anything holds them, so every
+   *  demand of an entry in use holds one FileSet. {@link cachePut} drops the
+   *  key's entry. */
+  private readonly held = new WeakValueMap<string, ICacheEntry>();
+  /** What fetched files were reshaped into ({@link reshape}), by tag and
+   *  content hash, while anything holds them. */
+  private readonly reshaped = new WeakValueMap<string, object>();
+  /** The reshapes in progress, by the same key: a second demand joins the first. */
+  private readonly reshaping = new Map<string, Computable<unknown>>();
 
   /** Trees currently being written, by name: a second demand joins the first. */
   private readonly inflightTrees = new Map<string, Computable<string>>();
@@ -803,6 +810,39 @@ export class BuildCache {
         return request().then(made => this.fetch(key, made, track(shownUrl(made.url)), entry, options));
       })
     );
+  }
+
+  /**
+   * Reshape `file`, a file of an entry fetched under `tag` (see {@link getOrFetch}),
+   * into the value `convert` reads from its text, sharing the value with every
+   * other reshape of the same content under `tag` while anything holds it.
+   * `convert` must be what reads the files kept under `tag`, so one tag reshapes
+   * one content into one value. A value that is no object is not shared.
+   */
+  public reshape<T>(tag: string, file: IFile, convert: (text: string) => T): Computable<T> {
+    const key = `${tag}\0${file.hash}`;
+    const held = this.reshaped.get(key);
+    if (held !== undefined) {
+      return Computable.resolve(held as T);
+    }
+    const joined = this.reshaping.get(key);
+    if (joined !== undefined) {
+      return joined as Computable<T>;
+    }
+    const made = file.readString().then(convert);
+    this.reshaping.set(key, made);
+    made.then(
+      value => {
+        this.reshaping.delete(key);
+        if (typeof value === "object" && value !== null) {
+          this.reshaped.set(key, value);
+        }
+      },
+      () => {
+        this.reshaping.delete(key);
+      }
+    );
+    return made;
   }
 
   /** @return true if `entry`, a fetched entry under `key`, is mutable and not
@@ -1695,8 +1735,8 @@ export class BuildCache {
    */
 
   /** Read the entry stored under the hashed key, if any: its files, plus the
-   * cache-control metadata of a mutable entry. The first read is held for the
-   * run ({@link held}). A missing entry is found by the read failing, not
+   * cache-control metadata of a mutable entry. A read is held while anything
+   * holds it ({@link held}). A missing entry is found by the read failing, not
    * tested for first. */
   private cacheGet(key: string): Computable<ICacheEntry | undefined> {
     const held = this.held.get(key);

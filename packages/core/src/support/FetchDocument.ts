@@ -39,6 +39,7 @@ type CacheFetcher = {
     report: IFetchReport,
     options?: FetchOptions
   ): Computable<FileSet>;
+  reshape<T>(tag: string, file: IFile, convert: (text: string) => T): Computable<T>;
 };
 
 /** A document to fetch with {@link fetchDocument}. */
@@ -52,7 +53,9 @@ export interface IDocumentRequest<T> {
   readonly key?: string;
   readonly report: IFetchReport;
   /** Read the document as the value it states, throwing where it is unusable,
-   *  so an unusable one is never cached. Applied to what is kept, too. */
+   *  so an unusable one is never cached. Applied to what is kept, too, and the
+   *  value shared by every request reading the same content under `tag`, so it
+   *  must depend on that content alone. */
   readonly convert: (text: string) => T;
   /** Render what is kept of the value, where that is less than the document;
    *  `convert` must read it back. */
@@ -92,9 +95,12 @@ export function fetchDocument<T>(context: CacheFetcher, request: IDocumentReques
       request.report,
       request.options
     )
-    .then(files => files.readFile(file))
+    .then(files => {
+      const fetched = files.getFile(file);
+      return fetched === undefined ? files.readFile(file).then(convert) : context.reshape(request.tag, fetched, convert);
+    })
     .then(
-      text => convert(text) as T | undefined,
+      value => value as T | undefined,
       err => {
         if (err instanceof HttpStatusError && err.statusCode === 404) {
           return undefined;
