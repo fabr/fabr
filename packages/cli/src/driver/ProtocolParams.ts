@@ -23,8 +23,7 @@
  * converter returns the parameters or throws {@link InvalidParams}.
  */
 
-import { isJsonObject } from "@fabr-build/core";
-import { InvalidParams } from "./JsonRpc";
+import { InvalidParams, isJsonObject } from "@fabr-build/core";
 
 /** A position in a document: a zero-based line and UTF-16 character. */
 export interface IPosition {

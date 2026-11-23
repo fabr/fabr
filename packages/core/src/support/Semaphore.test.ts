@@ -67,6 +67,48 @@ describe("Semaphore", () => {
     expect(b.started).to.equal(true);
   });
 
+  it("takes the slots work asks for together, first come first served, and caps a count at the capacity", () => {
+    const semaphore = new Semaphore(3);
+    const [a, b, c, d, e] = jobs(5);
+    semaphore.run(a.run, 2);
+    semaphore.run(b.run, 2);
+    semaphore.run(c.run);
+    expect([a.started, b.started, c.started], "b waits for two slots, and c behind it").to.deep.equal([true, false, false]);
+    a.finish();
+    expect([b.started, c.started], "both fit once a's two are back").to.deep.equal([true, true]);
+    semaphore.run(d.run, 10);
+    b.finish();
+    expect(d.started, "capped at the capacity, it waits for every slot").to.equal(false);
+    c.finish();
+    expect(d.started).to.equal(true);
+    semaphore.run(e.run);
+    expect(e.started).to.equal(false);
+    d.finish();
+    expect(e.started).to.equal(true);
+  });
+
+  it("withdraws work still queued when its signal aborts, starting what then fits, and refuses a count that is no whole number", () => {
+    const semaphore = new Semaphore(2);
+    const [a, b, c, d] = jobs(4);
+    semaphore.run(a.run);
+    const controller = new AbortController();
+    let withdrawn: Error | undefined;
+    semaphore.run(b.run, 2, controller.signal).catch(err => {
+      withdrawn = err;
+      return "";
+    });
+    semaphore.run(c.run);
+    expect([b.started, c.started], "c waits behind b").to.deep.equal([false, false]);
+    controller.abort();
+    expect([b.started, c.started, withdrawn?.message]).to.deep.equal([false, true, "withdrawn before it started"]);
+    const late = new AbortController();
+    a.finish();
+    semaphore.run(d.run, 1, late.signal);
+    late.abort();
+    expect(d.started, "started before the abort").to.equal(true);
+    expect(() => semaphore.run(d.run, Number.NaN)).to.throw(RangeError);
+  });
+
   it("releases the slot of failed work too", () => {
     const semaphore = new Semaphore(1);
     const [a, b] = jobs(2);

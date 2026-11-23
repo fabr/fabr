@@ -33,26 +33,27 @@
 import {
   Computable,
   ComputableHandle,
+  type ExecutionContext,
   getTestReport,
-  type IDescribing,
-  type ITestReport,
-  type ITestedName,
-  MultiError,
-  type SourceRef,
   type IBuildTarget,
+  type IDescribing,
   type IDescription,
   type IJavacOptions,
   type ISourceItem,
-  type ExecutionContext,
+  type ITestedName,
+  type ITestReport,
+  type JsonRpcConnection,
   type Log,
+  MethodNotFound,
+  MultiError,
   reportFailure,
+  type SourceRef,
   targetIdentifier,
   toError,
 } from "@fabr-build/core";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getVersion, installationDirectory } from "./Command";
-import { type JsonRpcConnection, MethodNotFound } from "./JsonRpc";
 import { collectingLog, type IProtocolDiagnostic } from "./ProtocolDiagnostics";
 import { toDocumentParams, toTargetsParams } from "./ProtocolParams";
 

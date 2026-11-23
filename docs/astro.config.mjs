@@ -97,6 +97,7 @@ export default defineConfig({
           items: [
             { label: "Command line", link: "/reference/command-line/" },
             { label: "Language syntax", link: "/reference/syntax/" },
+            { label: "The fabr socket", link: "/reference/fabr-socket/" },
             ...generated("Reference"),
           ],
         },

@@ -30,26 +30,27 @@
 import {
   type BuildModel,
   completionsAt,
-  type ICompletion,
-  namedAt,
   EMPTY_FILESET,
   type ExecutionContext,
   type IBuildFileContents,
   type IBuildFileSymbol,
+  type ICompletion,
   type IDocumentation,
-  type Log,
-  parseBuildString,
   type INamed,
+  type JsonRpcConnection,
+  type Log,
+  MethodNotFound,
+  namedAt,
+  parseBuildString,
   symbolsOf,
-  writtenAt,
   toPosix,
+  writtenAt,
 } from "@fabr-build/core";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getVersion } from "./Command";
 import { served } from "./BspServer";
-import { type JsonRpcConnection, MethodNotFound } from "./JsonRpc";
 import { collectingLog, documentOf, type IProtocolDiagnostic, rangeOf } from "./ProtocolDiagnostics";
 import { type IPosition, toChangedParams, toDocumentParams, toOpenedParams, toPositionParams } from "./ProtocolParams";
 

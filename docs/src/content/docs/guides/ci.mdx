@@ -340,7 +340,8 @@ contacts `api.osv.dev`.
 ## Build steps and the environment
 
 Build steps and tests don't see the CI environment. They run with no environment variables other
-than the ones a target declares (`test_env`, or `env` on a `generate`), so a secret or a `CI`
+than the ones a target declares (`test_env`, or `env` on a `generate`) and fabr's own
+[`FABR_SOCKET`](/reference/fabr-socket/), so a secret or a `CI`
 variable has to be passed deliberately. `fabr run` is the exception: the program it runs gets the
 whole environment.
 
@@ -349,6 +350,11 @@ number. On a runner with many processors and little memory:
 
 - **JavaScript:** each test file is one of those steps. Limit each test process instead, with
   `NODE_OPTIONS` in `test_env`.
+- **Browser tests:** each Playwright worker counts as two of those steps, for itself and its
+  browser, so several browser-test targets together run only as many workers at once as the
+  machine has room for beside the rest of the build. Each target still starts up to its config's
+  `workers` processes, which wait their turn; lower `workers` in its Playwright config to start
+  fewer.
 - **Java:** each target's tests are one step, run in one JVM, which takes the JVM's default
   maximum heap, a quarter of the machine's memory. Several large test suites at once can exhaust a
   small runner's memory, so give each a smaller heap with `-Xmx` in `test_jvm_args` (see

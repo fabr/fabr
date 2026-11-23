@@ -445,7 +445,9 @@ reads `.env` the same way when it is among a `serve` target's `files`;
 pattern matches dotfiles too, so `./**` would include `.env`; `./src/**` doesn't, since `.env`
 isn't under `src`.
 
-It also starts with **no environment variables** except those you give in `env`:
+It also starts with **no environment variables** except those you give in `env`, and
+`FABR_SOCKET`, through which a tool that starts workers of its own can share fabr's limit on
+processes (see [The fabr socket](/reference/fabr-socket/)):
 
 ```
 generate sorted_names {

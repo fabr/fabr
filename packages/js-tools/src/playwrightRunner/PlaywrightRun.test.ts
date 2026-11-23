@@ -147,6 +147,15 @@ describe("wrapConfig", () => {
     expect(config.projects?.map(project => project.name)).to.deep.equal(["desktop"]);
   });
 
+  it("starts the invocation's workers where the config sets none, and the config's where it does", () => {
+    expect(wrapConfig({}, invocation(["a.spec.js"], undefined, { workers: 3 })).workers).to.equal(3);
+    expect(wrapConfig({ workers: "50%" }, invocation(["a.spec.js"], undefined, { workers: 3 })).workers).to.equal("50%");
+  });
+
+  it("applies no globalTimeout, whatever the config says", () => {
+    expect(wrapConfig({ globalTimeout: 60_000 }, invocation(["a.spec.js"])).globalTimeout).to.equal(0);
+  });
+
   it("makes the suite's setup module the run's globalSetup, and refuses it beside the config's own", () => {
     const setup = { globalSetup: at(".fabr-playwright-setup.cjs") };
     expect(wrapConfig({}, invocation(["a.spec.js"], undefined, setup)).globalSetup).to.equal(at(".fabr-playwright-setup.cjs"));

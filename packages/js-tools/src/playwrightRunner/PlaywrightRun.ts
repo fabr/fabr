@@ -48,6 +48,8 @@ export interface IPlaywrightProject {
 /** What this runner reads of a Playwright config, the rest passed through. */
 export interface IPlaywrightConfig extends IPlaywrightProject {
   projects?: IPlaywrightProject[];
+  globalTimeout?: number;
+  workers?: number | string;
   globalSetup?: string | string[];
   globalTeardown?: string | string[];
 }
@@ -76,6 +78,8 @@ export interface IInvocation {
   /** How many more times a failed test runs within the run: `retries` in the
    * config and in every project, whatever they say. */
   retries: number;
+  /** How many workers the run starts where the config sets none. */
+  workers?: number;
   /** The run's global setup module, made of the suite's setup files, where it has any: refused beside a config's own `globalSetup`. */
   globalSetup?: string;
   /** The URL the suite runs against, if any: `use.baseURL` in every project. */
@@ -102,7 +106,8 @@ export interface IProjectConfiguration {
  * config's `testDir`, `testMatch` and `testIgnore` select, matched as the
  * files' sources, with fabr's reporter alone where the invocation has one,
  * given the files not selected as `unmatched`; artifacts under `outputDir`;
- * `retries` the invocation's; snapshots rewritten only under `update`, where
+ * `retries` the invocation's; `workers` the invocation's where the config sets
+ * none; no `globalTimeout`; snapshots rewritten only under `update`, where
  * it is given; and `use.baseURL` from the URL. A
  * `globalSetup` or `globalTeardown` naming a TypeScript source names its
  * compiled file; the suite's setup files are the `globalSetup` where the
@@ -152,10 +157,12 @@ export function wrapConfig(user: IPlaywrightConfig, invocation: IInvocation): IP
     ...(invocation.globalSetup === undefined ? {} : { globalSetup: invocation.globalSetup }),
     ...(top.globalTeardown === undefined ? {} : { globalTeardown: compiledScripts(top.globalTeardown, invocation) }),
     ...use(top.use),
+    ...(top.workers === undefined && invocation.workers !== undefined ? { workers: invocation.workers } : {}),
     ...(reporter === undefined
       ? {}
       : { reporter: [[reporter[0], { ...reporter[1], unmatched: invocation.files.filter(file => !files.includes(file)) }]] }),
     shard: null,
+    globalTimeout: 0,
     outputDir: invocation.outputDir,
     retries: invocation.retries,
     ...(invocation.update === undefined ? {} : { updateSnapshots: invocation.update ? "changed" : "none" }),

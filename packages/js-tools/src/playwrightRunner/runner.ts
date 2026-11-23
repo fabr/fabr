@@ -51,12 +51,15 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { configurationOf, IBrowserConfiguration, isConfigurationOption } from "../support/BrowserConfigurations";
 import { parseJson, toJsonObject } from "../support/Json";
 import { childPreloads, enterInteractiveRun, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
 import type { IConfigSettings } from "./Config";
+import { FABR_SOCKET_VARIABLE } from "../support/FabrSocket";
+import { installProcessSlot, SLOTS_PER_WORKER } from "./ProcessSlot";
 import type { IProjectConfiguration } from "./PlaywrightRun";
 import type { IReporterOptions } from "./Reporter";
 
@@ -214,6 +217,9 @@ export function main(argv: string[]): void {
     outputDir:
       options.artifacts === undefined ? path.resolve(root, "..", ".fabr-playwright", name) : path.resolve(root, options.artifacts),
     retries: options.retries ?? 0,
+    /* As many workers as the machine's processors run at SLOTS_PER_WORKER
+     * slots each: Playwright's own default, outside CI. */
+    workers: Math.max(1, Math.floor(os.availableParallelism() / SLOTS_PER_WORKER)),
     ...(baseURL === undefined || baseURL === "" ? {} : { baseURL }),
     ...(configured === undefined ? {} : { configuration: projectConfiguration(configured, () => playwrightDevices(playwright.cli)) }),
     ...(options.setup.length === 0 ? {} : { globalSetup: setupModule(root, options.setup) }),
@@ -243,6 +249,14 @@ export function main(argv: string[]): void {
   );
   const children = childPreloads(options);
   process.on("exit", () => children.finish());
+  /* Where fabr offers its socket, every process of the run, this one (which
+   * loads the tests to list them) and each worker, adds the slot fixture alike. */
+  if (process.env[FABR_SOCKET_VARIABLE]) {
+    installProcessSlot();
+    process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--require ${JSON.stringify(path.join(__dirname, "preload.js"))}`]
+      .filter(Boolean)
+      .join(" ");
+  }
   /* The name pattern is Playwright's own `--grep`, which spares the projects a
    * run depends on, where a config's `grep` would filter their tests out too. */
   process.argv = [

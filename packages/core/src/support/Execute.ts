@@ -28,6 +28,7 @@ import { Computable } from "../core/Computable";
 import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { secure, SecureString } from "../core/SecureString";
+import { registerProcess } from "./FabrSocket";
 import { Semaphore } from "./Semaphore";
 import type { TaskProgress, TaskState } from "./Tasks";
 
@@ -64,10 +65,11 @@ export interface IOutputHandle {
 
 /**
  * The state of one process execution in the execution funnel: `queued` waiting
- * for a slot, `started` holding one, `finished` having given it back. Reported
- * per execution; a step may run several at once.
+ * for a slot, `started` holding one, `finished` having given it back, and
+ * `withdrawn` given up while still queued. Reported per execution; a step may
+ * run several at once.
  */
-export type ExecutionPhase = "queued" | "started" | "finished";
+export type ExecutionPhase = "queued" | "started" | "finished" | "withdrawn";
 
 /**
  * Make a listener for a task's execution phases that derives the task's
@@ -86,6 +88,8 @@ export function activityCounter(onState: (state: TaskState) => void): (phase: Ex
     } else if (phase === "started") {
       queued--;
       running++;
+    } else if (phase === "withdrawn") {
+      queued--;
     } else {
       running--;
     }
@@ -473,8 +477,10 @@ export function findCommand(command: string | SecureString, cwd?: string): Secur
  * Run one build-step command, holding a slot of the execution funnel `limit`
  * (a step passes `ActionContext.processLimit`) for the process's lifetime.
  *
- * The process runs in `cwd` with `env` plus {@link FORCE_COLOR_ENV}, stdin at
- * EOF, in a process group of its own that is swept when it exits. Its output
+ * The process runs in `cwd` with `env` plus {@link FORCE_COLOR_ENV} and its
+ * `FABR_SOCKET` (it is registered with the fabr socket while it
+ * runs, taking further slots of `limit` through it), stdin at EOF, in a
+ * process group of its own that is swept when it exits. Its output
  * lines go to `report.output` as they arrive, where there is one.
  *
  * Resolves when the process exits with status 0 and its group is gone.
@@ -490,26 +496,64 @@ export function execute(
   env: Record<string, string | SecureString>,
   report: ITaskReport
 ): Computable<void> {
-  return admitted(limit, report, () => executeUnbounded(cmd, args, cwd, env, report.output));
+  return admitted(limit, report, () =>
+    registeredWhile(limit, report, socketEnv => executeUnbounded(cmd, args, cwd, { ...env, ...socketEnv }, report.output))
+  );
+}
+
+/** Run `work` with a build-step process registered with the fabr socket, its further slots taken from `limit`, given its variables; unregister it when `work` settles. */
+function registeredWhile<T>(
+  limit: Semaphore,
+  report: ITaskReport,
+  work: (socketEnv: Readonly<Record<string, string>>) => Computable<T>
+): Computable<T> {
+  /* A process holds one slot already, so it can never be granted the whole limit besides. */
+  const most = Math.max(1, limit.capacity - 1);
+  return registerProcess((slot, count, signal) => admitted(limit, report, slot, Math.min(count, most), signal)).then(registered =>
+    work(registered.env).finally(() => registered.unregister())
+  );
 }
 
 /**
- * Take a slot of the funnel for `work`, reporting `queued` before asking for
- * the slot and `started`/`finished` around holding it.
+ * Take `count` slots of the funnel (one by default) for `work`, reporting
+ * `queued` before asking for them and `started`/`finished` around holding
+ * them, or `withdrawn` where `signal` withdraws it before it starts.
  */
-export function admitted<T>(limit: Semaphore, report: ITaskReport, work: () => Computable<T>): Computable<T> {
+export function admitted<T>(
+  limit: Semaphore,
+  report: ITaskReport,
+  work: () => Computable<T>,
+  count = 1,
+  signal?: AbortSignal
+): Computable<T> {
   report.activity("queued");
-  return limit.run(() => {
-    report.activity("started");
-    /* Report `finished` on a synchronous throw too, or the task looks running
-     * forever (the Semaphore turns the throw into a rejection). */
-    try {
-      return work().finally(() => report.activity("finished"));
-    } catch (err) {
-      report.activity("finished");
-      throw err;
-    }
-  });
+  let started = false;
+  return limit
+    .run(
+      () => {
+        started = true;
+        report.activity("started");
+        /* Report `finished` on a synchronous throw too, or the task looks running
+         * forever (the Semaphore turns the throw into a rejection). */
+        try {
+          return work().finally(() => report.activity("finished"));
+        } catch (err) {
+          report.activity("finished");
+          throw err;
+        }
+      },
+      count,
+      signal
+    )
+    .then(
+      value => value,
+      err => {
+        if (!started) {
+          report.activity("withdrawn");
+        }
+        throw err;
+      }
+    );
 }
 
 function executeUnbounded(
@@ -753,7 +797,11 @@ export function executePipeline(
   report: ITaskReport,
   env: ReadonlyMap<string, string | SecureString> = new Map()
 ): Computable<FileSet> {
-  return admitted(limit, report, () => pipelineUnbounded(specs, cwd, createOutput, stdin, report.output, env));
+  return admitted(limit, report, () =>
+    registeredWhile(limit, report, socketEnv =>
+      pipelineUnbounded(specs, cwd, createOutput, stdin, report.output, new Map([...env, ...Object.entries(socketEnv)]))
+    )
+  );
 }
 
 function pipelineUnbounded(

@@ -239,6 +239,10 @@ js_package mylib {
 }
 ```
 
+Fabr adds `FABR_SOCKET`, which a test runner's workers use to share fabr's process limit
+(see [The fabr socket](/reference/fabr-socket/)), and the variables that tell programs to colour
+their output (`FORCE_COLOR`, `CLICOLOR_FORCE`), so the output fabr shows keeps its colour.
+
 Because there is no `PATH`, a test that starts another program must name it by absolute path, for
 example `process.execPath` for Node.js itself. `NODE_OPTIONS` also carries the modules fabr's
 runner loads into every Node.js process of the run, after any value `test_env` gives it; a
@@ -731,6 +735,9 @@ answered>}`, `to` left out where nothing did. A runner that can't say what was r
   started in the install, given `--interactive` and then the compiled tests' directory, the test
   files and, after `--`, the arguments for the framework's own command; it changes to the
   compiled tests' directory and runs the framework interactively, writing no report.
+- **`FABR_SOCKET`**, in the runner's environment as in every build step's, names the
+  [fabr socket](/reference/fabr-socket/), through which the runner's own worker processes can take
+  further slots of fabr's process limit.
 - **The report** must be written to the `--report` file as a [CTRF](https://ctrf.io/) document,
   `{"results": {"tool": …, "summary": …, "tests": […]}}`, with each of the summary's counts
   (`tests`, `passed`, `failed`, `pending`, `skipped`, `other`, `start`, `stop`) a number.

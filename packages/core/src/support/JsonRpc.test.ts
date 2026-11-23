@@ -136,3 +136,70 @@ describe("JSON-RPC connection", () => {
     expect(sent.slice(0, 3).every(({ message }) => message.id === null)).to.equal(true);
   });
 });
+
+describe("JsonRpcConnection requests in flight", () => {
+  /** Make a connection whose `fabr` protocol is its default, answering `wait` only when released, and reporting each request's cancellation. */
+  function waiting(limits?: { maxHeaderBytes: number; maxBodyBytes: number }): {
+    input: PassThrough;
+    sent: string[];
+    release: Map<unknown, () => void>;
+    cancelled: unknown[];
+    ended: () => boolean;
+  } {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const sent: string[] = [];
+    output.on("data", (data: Buffer) => sent.push(data.toString("utf8")));
+    const release = new Map<unknown, () => void>();
+    const cancelled: unknown[] = [];
+    let ended = false;
+    const connection = new JsonRpcConnection(output, "fabr", limits);
+    connection.serve("fabr", (_method, _params, { id, signal }) => {
+      signal.addEventListener("abort", () => cancelled.push(id));
+      return new Promise<string>(resolve => release.set(id, () => resolve("done")));
+    });
+    connection.listen(input, () => (ended = true));
+    return { input, sent, release, cancelled, ended: () => ended };
+  }
+  const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 10));
+  const framed = (message: object): string => {
+    const body = JSON.stringify({ jsonrpc: "2.0", ...message });
+    return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+  };
+
+  it("serves untagged frames as the connection's default protocol, answers a request when its handler settles, and refuses an id still in flight", async () => {
+    const { input, sent, release } = waiting();
+    input.write(framed({ id: 1, method: "wait" }));
+    input.write(framed({ id: 1, method: "wait" }));
+    await settle();
+    expect(sent.join("")).to.contain('"code":-32600');
+    expect(sent.join(""), "the untagged answer is the default protocol's").not.to.contain("Fabr-Protocol");
+    release.get(1)!();
+    await settle();
+    expect(sent.join("")).to.contain('"result":"done"');
+  });
+
+  it("aborts a request's signal on $/cancelRequest, and every request's when the connection ends", async () => {
+    const { input, cancelled, ended } = waiting();
+    input.write(framed({ id: 1, method: "wait" }));
+    input.write(framed({ id: 2, method: "wait" }));
+    await settle();
+    input.write(framed({ method: "$/cancelRequest", params: { id: 1 } }));
+    await settle();
+    expect(cancelled).to.deep.equal([1]);
+    input.end();
+    await settle();
+    expect([cancelled, ended()]).to.deep.equal([[1, 2], true]);
+  });
+
+  it("ends the connection on a frame over its limits", async () => {
+    const headers = waiting({ maxHeaderBytes: 64, maxBodyBytes: 1024 });
+    headers.input.write("X".repeat(100));
+    await settle();
+    expect(headers.ended()).to.equal(true);
+    const body = waiting({ maxHeaderBytes: 64, maxBodyBytes: 1024 });
+    body.input.write("Content-Length: 2048\r\n\r\n{");
+    await settle();
+    expect(body.ended()).to.equal(true);
+  });
+});

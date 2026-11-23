@@ -31,6 +31,7 @@ together and share a version number.
 - Introduce internal secret string tracking.
 - New test stability options: `flaky` runs a failed test file again up to TEST_FLAKE_RETRIES (default 2); `unstable` runs every test file every time and never
   caches the run. Either or both can be used together.
+- Introduce jobserver-like protocol for tool workers.
 
 @fabr-build/js
 

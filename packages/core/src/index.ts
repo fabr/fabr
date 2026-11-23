@@ -85,6 +85,7 @@ export * from "./resolver/Types";
 export * from "./context/Description";
 export * from "./support/Execute";
 export * from "./support/Semaphore";
+export * from "./support/JsonRpc";
 export * from "./support/Expand";
 export * from "./support/Functional";
 export { globMatcher, isGlob } from "./support/Glob";
