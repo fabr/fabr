@@ -36,6 +36,10 @@ A browser test is compiled, cached and reported like any other test target (see
 - **A failed test is retried within the run,** by the framework, as the target's
   [`stability`](/reference/js/testing/#flaky-and-unstable-tests) allows: where it includes `flaky`, up to
   `TEST_FLAKE_RETRIES` times, and otherwise not at all, whatever your config's own `retries` says.
+- **Its packages may hold several versions of one package** without a `?` marker for each:
+  their dependencies nest as npm's would, as a tool's do (see
+  [When versions conflict](/reference/js/dependencies/#when-versions-conflict)). The code under
+  test runs in the browser, so the test processes load only the suite and the libraries it uses.
 - **The files the framework keeps of its tests** (traces, screenshots, videos) are kept with the
   result, and `fabr test --artifacts=<dir>` copies them out: see
   [Traces and screenshots](#traces-and-screenshots).
@@ -280,9 +284,7 @@ browser_test e2e {
 - **`deps`**: `cypress`, the other packages the specs import, and the suite's other source files:
   its `cypress.config.ts`, at the root of the target's source tree, and its support file. Without
   a config, Cypress's defaults apply, with no support file unless one is at Cypress's default
-  location, `cypress/support/e2e.ts`. Cypress's own dependencies include several versions of some
-  packages, so a Cypress target's packages are resolved as a tool's are, and conflicting versions
-  among them aren't refused.
+  location, `cypress/support/e2e.ts`.
 - **`base_url`**: the URL the suite runs against: Cypress's `baseUrl`, so `cy.visit("/")` uses
   it.
 - **`browser`**: a browser fabr fetches (`@browser:chrome:<version>`; see

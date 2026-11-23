@@ -86,7 +86,7 @@ const BROWSER_FRAMEWORKS: ReadonlyMap<string, IBrowserFramework> = new Map<strin
       builds: playwrightBuilds,
       defaultBrowser: "chromium",
       defaultBuild: "chromium",
-      permissive: false,
+      permissive: true,
       devices: true,
     },
   ],
