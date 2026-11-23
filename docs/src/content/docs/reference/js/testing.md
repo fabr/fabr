@@ -132,6 +132,24 @@ well, only the tests in the selected files whose names match run. If no test fil
 matches, the run stops with `No test file matches the pattern '…'`. A run after a filtered one
 runs every test file of the target once, rather than only those a change reaches.
 
+A test written with `.only` (`it.only`, `test.only`, `describe.only`, jest's `fit` and
+`fdescribe`) is a **focused** test: by default it runs alone in its file, so you can work on one
+test without running the rest. Under Playwright a focused test runs alone in the target's whole
+run, as Playwright runs one. The `TEST_ONLY_HANDLING` setting says what
+a run does with focused tests:
+
+| `TEST_ONLY_HANDLING` | Focused tests                                               |
+| -------------------- | ----------------------------------------------------------- |
+| `allow` (default)    | Run alone in their file; the file's other tests don't run.  |
+| `ignore`             | Run as any other test, so every test in the file runs.      |
+| `forbid`             | Fail the test file that has one, naming it.                 |
+
+Set `-DTEST_ONLY_HANDLING=forbid` in CI, so that a focused test left in by mistake fails the build
+rather than quietly skipping the rest of its file. Under node:test this differs from `node --test`,
+which ignores `.only` unless it is started with `--test-only`. vitest can't run a focused test as
+any other, so `ignore` is refused there; see [Browser tests](/reference/js/browser-testing/) for
+Playwright and Cypress.
+
 A failing run prints a line for each failed test and fails the command, naming the test file by its path in
 your project, as in `greets by name (src/greet.test.ts): 'Hello, x!' == 'Hello, world!'`. Under
 jest and vitest the line is followed by the detail the framework itself shows, such as a matcher's

@@ -208,6 +208,14 @@ they go unused for 30 days.
 
 ## Test results
 
+A test left focused with `.only` runs alone, and the rest of its file is silently skipped. To fail
+the build on one instead, set `TEST_ONLY_HANDLING`
+([focused tests](/reference/js/testing/#running-tests)):
+
+```sh
+fabr test -DTEST_ONLY_HANDLING=forbid TESTED
+```
+
 `fabr test` prints a summary for each name you give and the details of each failure, and fails
 when any test failed. To give your CI system the results too, write them to a file with
 `--report`: as JUnit XML, which CircleCI's `store_test_results`, GitLab, Jenkins and most others

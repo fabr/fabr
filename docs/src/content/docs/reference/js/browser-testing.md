@@ -177,6 +177,7 @@ Fabr uses it as written, except for the settings it owns:
 | `updateSnapshots`         | `none`, or `changed` under `fabr test -u`.                                                                                                                                |
 | `grep`                    | Your config's own, with [`fabr test -t`](/reference/js/testing/#running-tests) applied as Playwright's `--grep` where you give it.                                                             |
 | `retries`                 | The target's [`stability`](/reference/js/testing/#flaky-and-unstable-tests): where it includes `flaky`, a failed test is retried within the run up to `TEST_FLAKE_RETRIES` times, and otherwise not at all. |
+| `forbidOnly`              | Your config's own, or `true` under `TEST_ONLY_HANDLING=forbid`. |
 | `shard`                   | Not used.                                                                                                                                                                 |
 | `globalTimeout`           | Not used: how long a run takes depends on what else fabr runs beside it. Each test's own timeout still applies. |
 | `use.baseURL`             | `base_url`, where the target sets it.                                                                                                                                     |
@@ -237,6 +238,10 @@ Playwright's HTML report isn't made.
 
 ### What differs from Playwright
 
+- **A focused test (`test.only`) runs alone in the whole run of its target,** as under
+  `playwright test`. `-DTEST_ONLY_HANDLING=forbid` fails the run where any test is focused
+  (Playwright's `forbidOnly`); `ignore` isn't available, and is refused. See
+  [focused tests](/reference/js/testing/#running-tests).
 - **The browser is fetched into fabr's cache,** not Playwright's own
   (`~/Library/Caches/ms-playwright` on macOS), and by fabr rather than Playwright's installer. A
   download mirror set with `PLAYWRIGHT_DOWNLOAD_HOST`, in the environment you run fabr in, still

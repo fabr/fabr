@@ -29,7 +29,7 @@
 import * as path from "node:path";
 import type { ITestResult, TestStatus } from "@fabr-build/core";
 import { framesOf, reportPathOf, snapshotPathOf } from "../testRunner/Report";
-import { IRunnerOptions, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
+import { focusAllowed, IRunnerOptions, TEST_TIMEOUT_MS } from "../testRunner/RunTests";
 import { posixRelative } from "../support/Paths";
 
 /** An error as vitest reports one. */
@@ -64,7 +64,8 @@ export interface IReportedModule {
  *
  * Tests load through node's own loader (`viteModuleRunner: false`). Snapshots
  * are written only where `options.update` is set; otherwise a missing one
- * fails.
+ * fails. Focused tests run alone in their file, or fail it under `forbid`;
+ * throws for `ignore`, which vitest cannot do.
  */
 export function vitestOptions(options: IRunnerOptions, root: string, preloads: string[], reporter: object): Record<string, unknown> {
   return {
@@ -75,6 +76,8 @@ export function vitestOptions(options: IRunnerOptions, root: string, preloads: s
     environment: options.env,
     setupFiles: [...preloads, ...options.setup.map(entry => (entry.startsWith("./") ? path.resolve(root, entry) : entry))],
     update: options.update ? "all" : "none",
+    /* Vitest fails a file that focuses tests where `.only` is not allowed. */
+    allowOnly: focusAllowed(options.only, "vitest"),
     ...(options.namePattern === undefined ? {} : { testNamePattern: options.namePattern }),
     resolveSnapshotPath: (testPath: string) => snapshotPathOf(testPath),
     testTimeout: TEST_TIMEOUT_MS,

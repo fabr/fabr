@@ -27,7 +27,7 @@ describe("vitestOptions", () => {
   const reporter = {};
   const options = (extra: object = {}): Record<string, unknown> =>
     vitestOptions(
-      { report: "r.json", env: "node", update: false, setup: [], files: ["a.test.js", "sub/b.test.js"], ...extra },
+      { report: "r.json", env: "node", update: false, setup: [], only: "allow", files: ["a.test.js", "sub/b.test.js"], ...extra },
       ROOT,
       [],
       reporter
@@ -45,6 +45,12 @@ describe("vitestOptions", () => {
   it("checks recorded snapshots strictly, and rewrites them only when updating", () => {
     expect(options().update).to.equal("none");
     expect(options({ update: true }).update).to.equal("all");
+  });
+
+  it("runs focused tests alone, fails a file with one under forbid, and refuses ignore", () => {
+    expect(options().allowOnly).to.equal(true);
+    expect(options({ only: "forbid" }).allowOnly).to.equal(false);
+    expect(() => options({ only: "ignore" })).to.throw("TEST_ONLY_HANDLING=ignore is not available under vitest");
   });
 
   it("selects tests by name only when given a pattern", () => {

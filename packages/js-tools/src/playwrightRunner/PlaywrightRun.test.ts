@@ -152,6 +152,11 @@ describe("wrapConfig", () => {
     expect(wrapConfig({ workers: "50%" }, invocation(["a.spec.js"], undefined, { workers: 3 })).workers).to.equal("50%");
   });
 
+  it("forbids focused tests where the invocation says, whatever the config says", () => {
+    expect(wrapConfig({ forbidOnly: false }, invocation(["a.spec.js"], undefined, { forbidOnly: true })).forbidOnly).to.equal(true);
+    expect(wrapConfig({}, invocation(["a.spec.js"])).forbidOnly).to.equal(undefined);
+  });
+
   it("applies no globalTimeout, whatever the config says", () => {
     expect(wrapConfig({ globalTimeout: 60_000 }, invocation(["a.spec.js"])).globalTimeout).to.equal(0);
   });

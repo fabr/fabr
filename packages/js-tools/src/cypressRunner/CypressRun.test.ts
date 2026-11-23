@@ -107,6 +107,28 @@ describe("supportSource", () => {
     describe("other", () => { specify("waits", () => {}); });
   `;
 
+  it("makes a focused test a plain one under ignore, and one failing its spec under forbid", () => {
+    const focusedUnder = (only: "ignore" | "forbid"): Record<string, { only: unknown }> => {
+      const it = Object.assign(() => "plain", { only: () => "focused" });
+      const describe = Object.assign(() => "plain", { only: () => "focused" });
+      const context = vm.createContext({
+        it,
+        describe,
+        context: describe,
+        specify: it,
+        Cypress: { spec: { relative: "cypress/e2e/a.cy.js" } },
+      });
+      vm.runInContext(supportSource([], undefined, only), context);
+      return context as Record<string, { only: unknown }>;
+    };
+    const ignored = focusedUnder("ignore");
+    expect([ignored.it.only, ignored.describe.only]).to.deep.equal([ignored.it, ignored.describe]);
+    const forbidden = focusedUnder("forbid");
+    expect(() => (forbidden.it.only as () => void)()).to.throw(
+      "cypress/e2e/a.cy.js focuses tests with .only, which TEST_ONLY_HANDLING=forbid refuses"
+    );
+  });
+
   it("registers only the tests whose full name the regular expression matches", () => {
     expect(registered("page nested", suite)).to.deep.equal(["page nested reads"]);
     expect(registered("clicks|waits", suite)).to.deep.equal(["page clicks", "other waits"]);

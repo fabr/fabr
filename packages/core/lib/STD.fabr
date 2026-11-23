@@ -23,6 +23,12 @@ default TEST_EXPECTATIONS = check;
 # `fabr test -t PATTERN` sets it for one run.
 default TEST_NAME_PATTERN = "";
 
+# What a test run does with focused tests, those written with `.only`
+# (`it.only`, `test.only`, `describe.only`, jest's `fit`): `allow` runs them
+# alone in their file, `ignore` runs them as any other test, and `forbid` fails
+# a test file that has one.
+default TEST_ONLY_HANDLING = allow;
+
 # The glob pattern selecting the test files a test run runs: a file runs where
 # the pattern matches its source path, relative to the project
 # (`packages/app/src/date.test.ts`). Empty runs every file.

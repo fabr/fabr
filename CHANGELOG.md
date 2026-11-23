@@ -41,6 +41,8 @@ together and share a version number.
 - New `browser_test` target to run a Playwright or cypress test suite.
 - `fabr run` of a `browser_test` opens the framework's interactive run over its tests:
   `playwright test` with the arguments given (`--ui`, `--headed`, `--debug`), or `cypress open`.
+- Add TEST_ONLY_HANDLING (allow | ignore | forbid) to specify handling of 'only' in test frameworks
+  that support it.
 
 @fabr-build/java
 

@@ -32,7 +32,7 @@
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
  *              [--name-pattern=<regex>] [--setup=<module|./staged path>]…
  *              [--pnp=<file>] [--reads=<file>] [--artifacts=<dir>]
- *              [--retries=<n>] <test files…>
+ *              [--retries=<n>] [--only=<ignore|forbid>] <test files…>
  *
  * and writes its CTRF report to `--report`; its exit status counts only where
  * it wrote none.
@@ -60,6 +60,10 @@
  * - `--artifacts`: where to keep the files of its tests the runner's report
  *   attaches to them, for a framework whose runner keeps any
  *   ({@link ITestFramework.artifacts}).
+ * - `--only`: what to do with focused tests (`.only`, jest's `fit`): run them as
+ *   any other test (`ignore`), or fail a test file that has one (`forbid`);
+ *   without it they run alone in their file (TEST_ONLY_HANDLING). A runner
+ *   whose framework cannot do one of them refuses it.
  * - `--retries`: how many times to retry a failed test within the run, for a
  *   framework whose runner schedules the test files itself
  *   ({@link ITestFramework.scheduler}); fabr reruns the files it schedules.
@@ -109,6 +113,7 @@ import {
   TEST_FILE_PATTERN,
   TEST_FLAKE_RETRIES,
   TEST_NAME_PATTERN,
+  TEST_ONLY_HANDLING,
   TEST_REPORT_FILENAME,
   toEnvironment,
   toFlakeRetries,
@@ -238,6 +243,9 @@ export interface ITestFramework {
   /** Whether its tests drive a browser, which a `browser_test` supplies: only
    * a `browser_test` may name it. */
   browser?: boolean;
+  /** Whether its runner can run a focused test (`.only`) as any other, for
+   * TEST_ONLY_HANDLING=ignore; true where unset. */
+  ignoresFocus?: boolean;
 }
 
 /**
@@ -375,7 +383,17 @@ function escapeGlob(name: string): string {
 export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
   ["node", { runner: "JS_NODE_TEST_RUNNER", module: "commonjs", globalsTypes: true, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
   ["jest", { runner: "JS_JEST_RUNNER", module: "commonjs", globalsTypes: false, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
-  ["vitest", { runner: "JS_VITEST_RUNNER", module: "esm", globalsTypes: false, records: SNAPSHOT_RECORDS, scheduler: "fabr" }],
+  [
+    "vitest",
+    {
+      runner: "JS_VITEST_RUNNER",
+      module: "esm",
+      globalsTypes: false,
+      records: SNAPSHOT_RECORDS,
+      scheduler: "fabr",
+      ignoresFocus: false,
+    },
+  ],
   [
     "playwright",
     {
@@ -387,6 +405,7 @@ export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
       artifacts: true,
       scheduler: "runner",
       browser: true,
+      ignoresFocus: false,
     },
   ],
   [
@@ -611,8 +630,9 @@ export function compileAndRunTests(
         context.getGlobalString(TEST_NAME_PATTERN),
         context.getRequiredProperty(settings.stabilityProperty),
         context.getGlobalString(TEST_FLAKE_RETRIES),
+        context.getGlobalString(TEST_ONLY_HANDLING),
       ],
-      (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries): Computable<RuleResult> =>
+      (runner, expectations, target, env, coverage, namePattern, stability, flakeRetries, onlyHandling): Computable<RuleResult> =>
         (coverage.equals(COVERAGE_ON) && framework.scheduler === "fabr"
           ? context.getGlobalRunnable("JS_COVERAGE_DRIVER")
           : Computable.resolve(undefined)
@@ -669,6 +689,7 @@ export function compileAndRunTests(
                 links: settings.links,
                 update: expectations.equals(UPDATE_EXPECTATIONS),
                 namePattern: namePattern.length === 0 ? undefined : namePattern,
+                onlyHandling: focusHandlingOf(framework, onlyHandling.toUnmaskedString()),
                 stability: toTestStability(stability.getValues()),
                 flakeRetries: toFlakeRetries(flakeRetries),
                 coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
@@ -867,6 +888,8 @@ interface ITestRun {
   packageName?: string;
   /** Whether the runner rewrites recorded expectations (TEST_EXPECTATIONS=update). */
   update: boolean;
+  /** What the run does with focused tests (`.only`): TEST_ONLY_HANDLING. */
+  onlyHandling: FocusHandling;
   /** The regular expression selecting the tests run by name, if any. */
   namePattern?: SecureString;
   /** How far the tests' results are trusted. */
@@ -1039,6 +1062,25 @@ function testInstallation(run: ITestRun, compiledTree: FileSet, root: FileSet): 
   return { files, testFiles, setupFile, compiledOf, expectations };
 }
 
+/** What a test run does with focused tests (`.only`): the values of TEST_ONLY_HANDLING. */
+export type FocusHandling = "allow" | "ignore" | "forbid";
+
+const FOCUS_HANDLINGS: readonly FocusHandling[] = ["allow", "ignore", "forbid"];
+
+/** Convert TEST_ONLY_HANDLING's value, for `framework`; throws naming the values there are where it is none of them, and where `framework` cannot do it. */
+function focusHandlingOf(framework: ITestFramework, value: string): FocusHandling {
+  if (!(FOCUS_HANDLINGS as readonly string[]).includes(value)) {
+    throw new FabrError(`'${value}' is not a value of TEST_ONLY_HANDLING (${FOCUS_HANDLINGS.join(", ")})`);
+  }
+  if (value === "ignore" && framework.ignoresFocus === false) {
+    const name = [...TEST_FRAMEWORKS].find(([, each]) => each === framework)?.[0] ?? "this framework";
+    throw new FabrError(
+      `TEST_ONLY_HANDLING=ignore is not available under ${name}, which cannot run a focused test as any other`
+    ).withHelp("use allow or forbid");
+  }
+  return value as FocusHandling;
+}
+
 /** Make the runner options a run gives every invocation: its environment, its setup script, its PnP table and, for a runner scheduling its files itself, its retries. */
 function runnerOptions(run: ITestRun, setupFile: string | undefined): string[] {
   return [
@@ -1047,6 +1089,7 @@ function runnerOptions(run: ITestRun, setupFile: string | undefined): string[] {
      * installation from a bare module name by exactly that prefix. */
     ...(setupFile === undefined ? [] : [`--setup=./${setupFile}`]),
     ...(run.layout === "pnp" ? [`--pnp=../${PNP_DATA_FILE}`] : []),
+    ...(run.onlyHandling === "allow" ? [] : [`--only=${run.onlyHandling}`]),
     /* A runner scheduling its files itself retries a failed test within its
      * run, as many times as the target's stability allows, whatever its
      * framework's own config says; fabr reruns only files it schedules. */

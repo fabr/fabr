@@ -56,7 +56,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { configurationOf, isConfigurationOption } from "../support/BrowserConfigurations";
 import { buildReport, endAfterReport } from "../testRunner/Report";
-import { childPreloads, enterInteractiveRun, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
+import { childPreloads, enterInteractiveRun, FocusHandling, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
 import { ICypressResult, supportFileOf, supportSource, toTestResults } from "./CypressRun";
 
 /** The option naming the Cypress cache directory, which only this runner takes. */
@@ -106,7 +106,7 @@ export async function main(argv: string[]): Promise<void> {
   const cypress = findCypress(root);
   const files = options.files.map(file => path.resolve(root, file));
   const config = CONFIG_FILES.map(file => path.join(root, file)).find(file => fs.existsSync(file)) ?? defaultConfig(root);
-  const support = supportFor(root, config, options.setup, options.namePattern);
+  const support = supportFor(root, config, options.setup, options.namePattern, options.only);
   const children = childPreloads(options);
   process.on("exit", () => children.finish());
   const start = Date.now();
@@ -159,18 +159,25 @@ function defaultConfig(root: string): string {
 /**
  * @return the support file to run in place of the one the suite's `config`
  * names, or undefined to leave its own: with setup files (`--setup`, the
- * suite's `setupTests`) or a name pattern, a file of fabr's that loads the
- * suite's own support file and then the setup files, and runs only the tests
- * the pattern matches ({@link supportSource}); without either, the suite's own
- * where its config names a TypeScript source, by its compiled file.
+ * suite's `setupTests`), a name pattern or focused tests not allowed, a file
+ * of fabr's that loads the suite's own support file and then the setup files,
+ * runs only the tests the pattern matches, and handles focused tests as
+ * `only` says ({@link supportSource}); without any, the suite's own where its
+ * config names a TypeScript source, by its compiled file.
  */
-function supportFor(root: string, config: string, setup: ReadonlyArray<string>, namePattern: string | undefined): string | undefined {
+function supportFor(
+  root: string,
+  config: string,
+  setup: ReadonlyArray<string>,
+  namePattern: string | undefined,
+  only: FocusHandling
+): string | undefined {
   /* eslint-disable-next-line @typescript-eslint/no-var-requires */
   const loaded = require(config) as { default?: unknown };
   const written = (loaded.default ?? loaded) as { e2e?: { supportFile?: unknown } };
   const named = written.e2e?.supportFile;
   const own = supportFileOf(root, named, file => fs.existsSync(file));
-  if (namePattern === undefined && setup.length === 0) {
+  if (namePattern === undefined && setup.length === 0 && only === "allow") {
     return typeof named === "string" && own !== undefined && own !== path.resolve(root, named) ? own : undefined;
   }
   if (namePattern !== undefined) {
@@ -185,7 +192,7 @@ function supportFor(root: string, config: string, setup: ReadonlyArray<string>, 
   const fromTree = createRequire(path.join(root, "index.js"));
   const setupFiles = setup.map(spec => (spec.startsWith("./") ? path.resolve(root, spec) : fromTree.resolve(spec)));
   const file = path.join(root, SUPPORT_FILE);
-  fs.writeFileSync(file, supportSource([...(own === undefined ? [] : [own]), ...setupFiles], namePattern));
+  fs.writeFileSync(file, supportSource([...(own === undefined ? [] : [own]), ...setupFiles], namePattern, only));
   return file;
 }
 

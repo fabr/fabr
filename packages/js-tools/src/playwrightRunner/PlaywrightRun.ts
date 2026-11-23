@@ -78,6 +78,8 @@ export interface IInvocation {
   /** How many more times a failed test runs within the run: `retries` in the
    * config and in every project, whatever they say. */
   retries: number;
+  /** Whether a run fails where a test file focuses tests (`forbidOnly`), whatever the config says. */
+  forbidOnly?: boolean;
   /** How many workers the run starts where the config sets none. */
   workers?: number;
   /** The run's global setup module, made of the suite's setup files, where it has any. */
@@ -173,6 +175,7 @@ export function wrapConfig(user: IPlaywrightConfig, invocation: IInvocation): IP
       ? {}
       : { reporter: [[reporter[0], { ...reporter[1], unmatched: invocation.files.filter(file => !files.includes(file)) }]] }),
     shard: null,
+    ...(invocation.forbidOnly === undefined ? {} : { forbidOnly: invocation.forbidOnly }),
     globalTimeout: 0,
     outputDir: invocation.outputDir,
     retries: invocation.retries,

@@ -56,7 +56,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { configurationOf, IBrowserConfiguration, isConfigurationOption } from "../support/BrowserConfigurations";
 import { parseJson, toJsonObject } from "../support/Json";
-import { childPreloads, enterInteractiveRun, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
+import { childPreloads, enterInteractiveRun, focusAllowed, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
 import type { IConfigSettings } from "./Config";
 import { FABR_SOCKET_VARIABLE } from "../support/FabrSocket";
 import { installProcessSlot, SLOTS_PER_WORKER } from "./ProcessSlot";
@@ -217,6 +217,7 @@ export function main(argv: string[]): void {
     outputDir:
       options.artifacts === undefined ? path.resolve(root, "..", ".fabr-playwright", name) : path.resolve(root, options.artifacts),
     retries: options.retries ?? 0,
+    forbidOnly: !focusAllowed(options.only, "Playwright"),
     /* As many workers as the machine's processors run at SLOTS_PER_WORKER
      * slots each: Playwright's own default, outside CI. */
     workers: Math.max(1, Math.floor(os.availableParallelism() / SLOTS_PER_WORKER)),

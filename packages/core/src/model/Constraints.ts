@@ -104,6 +104,9 @@ export const UPDATE_EXPECTATIONS = "update";
  */
 export const TEST_NAME_PATTERN = "TEST_NAME_PATTERN";
 
+/** The property saying what a test run does with focused tests (`.only`): `allow` (the default, declared in STD.fabr), `ignore` or `forbid`. */
+export const TEST_ONLY_HANDLING = "TEST_ONLY_HANDLING";
+
 /**
  * The property holding the glob pattern selecting the test files a test run
  * runs: those whose source path, relative to the project, it matches. Empty

@@ -74,6 +74,7 @@ export function main(argv: string[]): void {
     env: options.env,
     updateSnapshots: options.update,
     namePattern: options.namePattern,
+    only: options.only,
     timeoutMs: TEST_TIMEOUT_MS,
     setup: options.setup,
   });

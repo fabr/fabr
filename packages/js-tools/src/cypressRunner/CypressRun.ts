@@ -26,6 +26,7 @@ import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ITestResult } from "@fabr-build/core";
 import { framesOf, reportPathOf } from "../testRunner/Report";
+import { FocusHandling, focusForbidden } from "../testRunner/RunTests";
 
 /** The part of a test's result Cypress's `run` reports that is read. */
 export interface ICypressTest {
@@ -106,13 +107,30 @@ export function describeError(error: string): { message: string; trace?: string 
  * own joined by spaces, it matches. The filter wraps the test globals as each
  * spec file defines its tests, so a test not matched is never registered.
  */
-export function supportSource(supports: ReadonlyArray<string>, pattern: string | undefined): string {
+export function supportSource(supports: ReadonlyArray<string>, pattern: string | undefined, only: FocusHandling = "allow"): string {
   return [
     "/* Written by fabr. */",
     ...supports.map(support => `require(${JSON.stringify(support)});`),
     ...(pattern === undefined ? [] : nameFilter(pattern)),
+    ...focusHandling(only),
     "",
   ].join("\n");
+}
+
+/** Make the lines of a support file rebinding the focused forms of Mocha's test functions (`it.only`, `describe.only`) as `only` says: to the plain function under `ignore`, to one failing the spec under `forbid`. */
+function focusHandling(only: FocusHandling): string[] {
+  if (only === "allow") {
+    return [];
+  }
+  const [before, after] = focusForbidden("\u0000").split("\u0000");
+  return [
+    "for (const name of ['describe', 'context', 'it', 'specify']) {",
+    "  const define = globalThis[name];",
+    only === "ignore"
+      ? "  define.only = define;"
+      : `  define.only = () => { throw new Error(${JSON.stringify(before)} + Cypress.spec.relative + ${JSON.stringify(after)}); };`,
+    "}",
+  ];
 }
 
 /** Make the lines of a support file registering only the tests whose full name `pattern` matches (see {@link supportSource}). */

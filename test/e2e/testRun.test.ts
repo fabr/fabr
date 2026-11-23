@@ -88,6 +88,21 @@ describe("e2e: fabr test (runner from @fabr-build/js)", () => {
     expect(result.stderr).to.contain("fails on purpose");
   });
 
+  it("runs a focused test alone by default, every test under ignore, and fails the file under forbid", () => {
+    const files = project('describe("thing", () => { it.only("focused", () => {}); it("other", () => {}); });');
+    const allowed = runFabr(files, ["-DJS_TARGET=es2020", "test", "thing"]);
+    expect(allowed.status, allowed.stderr).to.equal(0);
+    expect(allowed.stderr).to.contain("thing: 1 test passed");
+    const ignored = runFabr(files, ["-DJS_TARGET=es2020", "-DTEST_ONLY_HANDLING=ignore", "test", "thing"]);
+    expect(ignored.status, ignored.stderr).to.equal(0);
+    expect(ignored.stderr).to.contain("thing: 2 tests passed");
+    const forbidden = runFabr(files, ["-DJS_TARGET=es2020", "-DTEST_ONLY_HANDLING=forbid", "test", "thing"]);
+    expect(forbidden.status).to.not.equal(0);
+    expect(forbidden.stderr).to.contain("src/thing.test.ts focuses tests with .only, which TEST_ONLY_HANDLING=forbid refuses");
+    const unknown = runFabr(files, ["-DJS_TARGET=es2020", "-DTEST_ONLY_HANDLING=maybe", "test", "thing"]);
+    expect(unknown.stderr).to.contain("'maybe' is not a value of TEST_ONLY_HANDLING (allow, ignore, forbid)");
+  });
+
   it("writes a failing run's results with --report, as CTRF or JUnit, and still fails the command", () => {
     const files = project(
       'describe("thing", () => { it("holds", () => {}); it("fails on purpose", () => { assert.equal(1, 2); }); });'

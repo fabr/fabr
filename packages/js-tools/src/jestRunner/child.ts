@@ -30,7 +30,9 @@
 
 import * as fs from "node:fs";
 import { inspect } from "node:util";
-import { endAfterReport, sourcePathOf } from "../testRunner/Report";
+import { handleFocus } from "../testRunner/Focus";
+import { endAfterReport, reportPathOf, sourcePathOf } from "../testRunner/Report";
+import type { FocusHandling } from "../testRunner/RunTests";
 import { DocblockPragmas, environmentFor, IFileEnvironment, installJsdom } from "./Environment";
 import { installHoist } from "./Hoist";
 import { IFakeTimers, IMocker, makeJestObject } from "./JestObject";
@@ -49,6 +51,8 @@ export interface IChildRequest {
   namePattern?: string;
   timeoutMs: number;
   setup: string[];
+  /** What the file does with focused tests (`.only`, `fit`). */
+  only: FocusHandling;
 }
 
 /** One test's outcome, as circus reports it, with its `failureMessages`
@@ -136,7 +140,7 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
       globalConfig,
       projectConfig,
       makeEnvironmentFacade(),
-      makeRuntimeFacade(registry, mocker),
+      makeRuntimeFacade(registry, mocker, globals => handleFocus(globals, request.only, reportPathOf(request.testFile))),
       request.testFile
     );
   } finally {

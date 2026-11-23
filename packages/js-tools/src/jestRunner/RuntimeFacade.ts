@@ -53,16 +53,23 @@ export function makeEnvironmentFacade(): IEnvironmentFacade {
  * `require`, and so through the registry, which serves a mocked specifier its
  * mock.
  */
-export function makeRuntimeFacade(registry: MockRegistry, mocker: IMockerControls): Record<string, unknown> {
+export function makeRuntimeFacade(
+  registry: MockRegistry,
+  mocker: IMockerControls,
+  onGlobals: (globals: Record<string, unknown>) => void = () => undefined
+): Record<string, unknown> {
   return {
     /* Circus's own initializer, an ordinary module of the runner's install. */
     requireInternalModule: (request: string) => require(request),
     /* Setup files and the test file, through the registry's `Module._load`
      * wrap. */
     requireModule: (request: string) => require(request),
-    /* The globals circus made (describe/it/hooks/expect); the `jest` object is
-     * not among them (JestObject.ts makes it). */
-    setGlobalsForRuntime: (globals: Record<string, unknown>) => Object.assign(globalThis, globals),
+    /* The globals circus made (describe/it/hooks/expect), given to `onGlobals`
+     * first; the `jest` object is not among them (JestObject.ts makes it). */
+    setGlobalsForRuntime: (globals: Record<string, unknown>) => {
+      onGlobals(globals);
+      Object.assign(globalThis, globals);
+    },
 
     /* The config-driven per-test resets (`resetModules`, `clearMocks`, …). */
     resetModules: () => registry.resetModules(),

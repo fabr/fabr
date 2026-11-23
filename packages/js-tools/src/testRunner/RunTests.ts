@@ -78,14 +78,44 @@ export interface IRunnerOptions {
    * schedules its files itself (its framework's own retries); undefined where
    * not given. */
   retries?: number;
+  /** What the run does with focused tests, those written with `.only`: runs
+   * them alone in their file (`allow`, by default), runs them as any other
+   * test (`ignore`), or fails the file that has one (`forbid`). */
+  only: FocusHandling;
   /** The test files to run. */
   files: string[];
+}
+
+/** What a run does with focused tests (`--only`, TEST_ONLY_HANDLING). */
+export type FocusHandling = "allow" | "ignore" | "forbid";
+
+/** The handlings `--only` takes. */
+const FOCUS_HANDLINGS: readonly FocusHandling[] = ["allow", "ignore", "forbid"];
+
+/**
+ * @return true if focused tests are run alone in their file under `handling`,
+ * false where a file that has one fails: for a framework that runs focused
+ * tests alone unless told to fail on them. Throws for `ignore`, which such a
+ * framework has no way to do.
+ */
+export function focusAllowed(handling: FocusHandling, framework: string): boolean {
+  if (handling === "ignore") {
+    throw new Error(
+      `TEST_ONLY_HANDLING=ignore is not available under ${framework}, which cannot run a focused test as any other: use allow or forbid`
+    );
+  }
+  return handling === "allow";
+}
+
+/** @return the failure message for a test file that focuses tests where TEST_ONLY_HANDLING is `forbid`. */
+export function focusForbidden(file: string): string {
+  return `${file} focuses tests with .only, which TEST_ONLY_HANDLING=forbid refuses: remove the .only`;
 }
 
 /** Parse the runner contract's arguments. Throws on an option it does not
  * define. */
 export function parseRunnerArgs(argv: string[]): IRunnerOptions {
-  const options: IRunnerOptions = { report: TEST_REPORT_FILENAME, env: "node", update: false, setup: [], files: [] };
+  const options: IRunnerOptions = { report: TEST_REPORT_FILENAME, env: "node", update: false, setup: [], only: "allow", files: [] };
   for (const arg of argv) {
     if (arg.startsWith("--report=")) {
       options.report = arg.substring("--report=".length);
@@ -103,6 +133,12 @@ export function parseRunnerArgs(argv: string[]): IRunnerOptions {
       options.artifacts = arg.substring("--artifacts=".length);
     } else if (arg.startsWith("--retries=")) {
       options.retries = Number(arg.substring("--retries=".length));
+    } else if (arg.startsWith("--only=")) {
+      const only = arg.substring("--only=".length);
+      if (!(FOCUS_HANDLINGS as readonly string[]).includes(only)) {
+        throw new Error(`'${arg}' is not a handling of focused tests (${FOCUS_HANDLINGS.join(", ")})`);
+      }
+      options.only = only as FocusHandling;
     } else if (arg.startsWith("--pnp=")) {
       options.pnp = path.resolve(arg.substring("--pnp=".length));
     } else if (arg.startsWith("-")) {
@@ -365,17 +401,60 @@ export function childPreloads(options: IRunnerOptions): {
  */
 export function runTestFiles(options: IRunnerOptions, preloads: string[]): void {
   const children = childPreloads(options);
-  const results: ITestResult[] = [];
-  const stderr = new CapturedStderr();
   const start = Date.now();
+  const files = options.files.map(file => path.resolve(file));
+  runFiles(options, preloads, files, false, (results, focused) => {
+    const done = (all: ITestResult[]): void => {
+      children.finish();
+      finish(all, options.report, start);
+    };
+    if (focused.size === 0 || options.only === "ignore") {
+      done(results);
+      return;
+    }
+    const isFocused = (result: ITestResult): boolean =>
+      [...focused].some(file => result.filePath !== undefined && result.filePath === reportPathOf(file));
+    if (options.only === "forbid") {
+      const refused = [...focused].map((file): ITestResult => {
+        const name = reportPathOf(file);
+        return { name, filePath: name, status: "failed", duration: 0, message: focusForbidden(name) };
+      });
+      done([...results.filter(result => !isFocused(result)), ...refused]);
+      return;
+    }
+    /* A file that focuses tests runs again with node:test's `only`, which runs
+     * its focused tests alone: `only` set for every file would run nothing of
+     * a file that focuses none. */
+    runFiles(options, preloads, [...focused], true, focusedResults =>
+      done([...results.filter(result => !isFocused(result)), ...focusedResults])
+    );
+  });
+}
+
+/**
+ * Run `files` under node:test, with its `only` option where `only`, and call
+ * `onEnd` with their results and the files that focus tests (where `only` is
+ * not given, node:test reports each with a diagnostic and runs every test).
+ */
+function runFiles(
+  options: IRunnerOptions,
+  preloads: string[],
+  files: string[],
+  only: boolean,
+  onEnd: (results: ITestResult[], focused: ReadonlySet<string>) => void
+): void {
+  const results: ITestResult[] = [];
+  const focused = new Set<string>();
+  const stderr = new CapturedStderr();
   const stream = run({
-    files: options.files.map(file => path.resolve(file)),
+    files,
     timeout: TEST_TIMEOUT_MS,
     /* Setup entries load after the flavour's preloads, so the globals they
      * use are already installed (jest's `setupFilesAfterEnv` order). */
     ...preloadOptions([...preloads, ...options.setup.map(entry => resolveSetup(entry))], options.update),
     ...namePatternOption(options.namePattern),
     ...forceExitOption(),
+    ...(only ? { only: true } : {}),
   });
   /* Register before the outcome handlers, so a file's stderr is captured by the
    * time its failure is recorded. */
@@ -383,12 +462,18 @@ export function runTestFiles(options: IRunnerOptions, preloads: string[]): void 
     const output = data as unknown as { file?: string; message?: string };
     stderr.add(output.file, output.message);
   });
+  stream.on("test:diagnostic", data => {
+    const diagnostic = data as unknown as { file?: string; message?: string };
+    if (diagnostic.file !== undefined && diagnostic.message?.includes(ONLY_NOT_ENABLED)) {
+      focused.add(diagnostic.file);
+    }
+  });
   stream.on("test:pass", data => record(results, data as unknown as ITestEvent, "pass", stderr));
   stream.on("test:fail", data => record(results, data as unknown as ITestEvent, "fail", stderr));
-  stream.once("end", () => {
-    children.finish();
-    finish(results, options.report, start);
-  });
+  stream.once("end", () => onEnd(results, focused));
   /* The stream only ends once consumed. */
   stream.resume();
 }
+
+/** What node:test's diagnostic says for a file that focuses tests (`.only`) run without its `only` option. */
+const ONLY_NOT_ENABLED = "require the --test-only command-line option";
