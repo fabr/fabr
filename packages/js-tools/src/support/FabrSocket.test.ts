@@ -19,6 +19,7 @@
 
 import { expect } from "chai";
 import * as fs from "node:fs";
+import * as crypto from "node:crypto";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -40,7 +41,9 @@ function standIn(
   grant: (count: number) => boolean
 ): Promise<{ variable: (token: string) => string; received: IReceived[]; close(): void }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-client-"));
-  const socketPath = path.join(dir, "fabr.sock");
+  /* Windows listens on named pipes alone. */
+  const socketPath =
+    process.platform === "win32" ? `\\\\.\\pipe\\fabr-client-${crypto.randomBytes(8).toString("hex")}` : path.join(dir, "fabr.sock");
   const received: IReceived[] = [];
   const server = net.createServer(socket => {
     let buffered = "";
@@ -78,8 +81,8 @@ function standIn(
       }
     });
   });
-  return new Promise(resolve =>
-    server.listen(socketPath, () =>
+  return new Promise((resolve, reject) =>
+    server.once("error", reject).listen(socketPath, () =>
       resolve({
         variable: token => `${socketPath}#${token}`,
         received,
