@@ -91,10 +91,10 @@ export interface MaterializedCommandStage {
   /** The arguments, their masked runs kept. */
   args: SecureString[];
   stdin?: FileSet;
-  /** The file the stage's stdout is captured in, as written. */
-  stdout?: string;
-  /** The file the stage's stderr is captured in, as written. */
-  stderr?: string;
+  /** The file the stage's stdout is captured in, as written, its masked runs kept. */
+  stdout?: SecureString;
+  /** The file the stage's stderr is captured in, as written, its masked runs kept. */
+  stderr?: SecureString;
   mergedTo?: StageStreams["mergedTo"];
 }
 
@@ -165,8 +165,12 @@ export function captureStages(pipelines: MaterializedCommandList): MaterializedC
     return stages.map((stage, i) => ({
       ...stage,
       stdout:
-        stage.stdout !== undefined ? `.drop-${k}-${i}-out` : i === last && stage.mergedTo !== "err" ? substCapture(k) : undefined,
-      stderr: stage.stderr !== undefined ? `.drop-${k}-${i}-err` : undefined,
+        stage.stdout !== undefined
+          ? SecureString.of(`.drop-${k}-${i}-out`)
+          : i === last && stage.mergedTo !== "err"
+            ? SecureString.of(substCapture(k))
+            : undefined,
+      stderr: stage.stderr !== undefined ? SecureString.of(`.drop-${k}-${i}-err`) : undefined,
     }));
   });
 }

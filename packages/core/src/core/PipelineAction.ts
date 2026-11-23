@@ -242,10 +242,26 @@ export interface IPipelineStage extends StageStreams {
  * stage that has any as `env.<n>`. */
 export function pipelineConfig(pipelines: readonly (readonly IPipelineStage[])[]): ActionConfig {
   const stages = pipelines.flat();
+  /* Each of a stage's members that may hold masked text is a member of its own. */
+  const member = (key: string, values: (stage: IPipelineStage) => readonly RunnableArgument[] | undefined): ActionConfig =>
+    Object.fromEntries(
+      stages.flatMap((stage, index) => {
+        const value = values(stage);
+        return value === undefined ? [] : [[`${key}.${index}`, value]];
+      })
+    );
+  const one = (text: string | SecureString | undefined): readonly RunnableArgument[] | undefined =>
+    text === undefined ? undefined : [text];
   return {
-    spec: JSON.stringify(pipelines.map(stages => stages.map(stage => ({ ...stage, argv: undefined, env: undefined })))),
-    ...Object.fromEntries(stages.map((stage, index) => [`argv.${index}`, stage.argv])),
-    ...Object.fromEntries(stages.flatMap((stage, index) => (stage.env === undefined ? [] : [[`env.${index}`, stage.env]]))),
+    spec: JSON.stringify(
+      pipelines.map(stages =>
+        stages.map(stage => ({ ...stage, argv: undefined, env: undefined, stdout: undefined, stderr: undefined }))
+      )
+    ),
+    ...member("argv", stage => stage.argv),
+    ...member("env", stage => stage.env),
+    ...member("stdout", stage => one(stage.stdout)),
+    ...member("stderr", stage => one(stage.stderr)),
   };
 }
 
@@ -256,10 +272,14 @@ export function pipelineSpecs(action: BuildAction): StageSpec[][] {
   return pipelines.map(stages =>
     stages.map(stage => {
       const env = action.config[`env.${index}`];
+      const stdout = action.config[`stdout.${index}`];
+      const stderr = action.config[`stderr.${index}`];
       return {
         ...stage,
         argv: toArgv(commandLineConfig(action, `argv.${index++}`)),
         ...(Array.isArray(env) ? { env: textEntries(env) } : {}),
+        ...(Array.isArray(stdout) ? { stdout: textEntries(stdout)[0] } : {}),
+        ...(Array.isArray(stderr) ? { stderr: textEntries(stderr)[0] } : {}),
       };
     })
   );
@@ -354,8 +374,8 @@ function stagePipelineStep(
 export interface RunnableStage {
   runnable: RunnableFileSet;
   args: readonly SecureString[];
-  stdout?: string;
-  stderr?: string;
+  stdout?: SecureString;
+  stderr?: SecureString;
   mergedTo?: StageStreams["mergedTo"];
 }
 
@@ -386,10 +406,10 @@ export function stagePipeline(
   const kept = new Set<string>();
   for (const name of pipelines.flat().flatMap(stage => [stage.stdout, stage.stderr])) {
     if (name !== undefined) {
-      if (kept.has(name)) {
-        throw new FabrError(`'${name}' is kept by two redirections of the command`);
+      if (kept.has(name.toUnmaskedString())) {
+        throw new FabrError(`'${name.toDisplayString()}' is kept by two redirections of the command`);
       }
-      kept.add(name);
+      kept.add(name.toUnmaskedString());
     }
   }
   const mounts: FileSet[] = [];

@@ -108,7 +108,7 @@ import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
 import { hostTriple } from "../support/Platform";
-import { Name, NAME_COMPONENT_SEPARATOR, NameConstraint, NamePart, NamePartKind } from "../core/Name";
+import { mapKeyOf, Name, NAME_COMPONENT_SEPARATOR, NameConstraint, NamePart, NamePartKind } from "../core/Name";
 import { SecureString } from "../core/SecureString";
 import { COMMAND_LINE_FILE } from "../core/Constants";
 import { globMatcher } from "../support/Glob";
@@ -1620,8 +1620,8 @@ export class BuildContextImpl implements InternalBuildContext {
       .then(runnable => ({
         runnable,
         args: stage.args.map(arg => arg.name.toString()),
-        stdout: stage.stdout?.name.toUnmaskedString(),
-        stderr: stage.stderr?.name.toUnmaskedString(),
+        stdout: stage.stdout?.name.toString(),
+        stderr: stage.stderr?.name.toString(),
         mergedTo: stage.mergedTo,
       }));
   }
@@ -2310,14 +2310,6 @@ function wholeMapError(name: Name): FabrError {
   return new FabrError(`'${shown}' is read only an entry at a time, so it cannot be used as a whole map`).withHelp(
     `name each entry to pass on, as in '{ HOME = \${${shown}.HOME}; }'`
   );
-}
-
-/** @return the MAP property and the key of its entry that `name` names, where it is two names joined by one `.` (`ENV.HOME`); otherwise undefined. */
-function mapKeyOf(name: string): { map: string; key: string } | undefined {
-  const dot = name.indexOf(".");
-  return dot > 0 && dot < name.length - 1 && name.indexOf(".", dot + 1) === -1
-    ? { map: name.substring(0, dot), key: name.substring(dot + 1) }
-    : undefined;
 }
 
 /** @return the constraints a reference requires (`ref<k=v>`), if it requires any. */

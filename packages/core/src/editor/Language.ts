@@ -25,7 +25,7 @@
  * model.
  */
 
-import type { Name, NameConstraint } from "../core/Name";
+import { mapKeyOf, type Name, type NameConstraint } from "../core/Name";
 import { StringReader } from "../support/StringReader";
 import type { ISourceSpan } from "../support/Log";
 import {
@@ -590,11 +590,9 @@ function entriesNaming(decl: ITargetDecl, member: string): INameValue[] {
 
 /** @return what the global or target `name` is, as named at `origin`: for `M.key`, the entry `key` of the MAP property `M`. */
 function propertyNamed(model: BuildModel, name: string, origin: ISourceRange): INamed {
-  const dot = name.indexOf(".");
-  if (dot > 0) {
-    const entries = mapEntriesOf(model, name.substring(0, dot), origin.source.file).filter(
-      entry => entry.name.toUnmaskedString() === name.substring(dot + 1)
-    );
+  const entry = mapKeyOf(name);
+  if (entry !== undefined) {
+    const entries = mapEntriesOf(model, entry.map, origin.source.file).filter(each => each.name.toUnmaskedString() === entry.key);
     return {
       origin,
       declarations: entries.map(spanOf),

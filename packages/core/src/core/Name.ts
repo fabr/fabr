@@ -1022,3 +1022,11 @@ function unescapeDoubleQuotedString(str: string): string {
 function escapeGlob(str: string): string {
   return str.replaceAll(/([\][\\*?()!|])/g, "\\$1");
 }
+
+/** @return the MAP property and the key of its entry that `name` names, where it is two names joined by one `.` (`ENV.HOME`); otherwise undefined. */
+export function mapKeyOf(name: string): { map: string; key: string } | undefined {
+  const dot = name.indexOf(".");
+  return dot > 0 && dot < name.length - 1 && name.indexOf(".", dot + 1) === -1
+    ? { map: name.substring(0, dot), key: name.substring(dot + 1) }
+    : undefined;
+}

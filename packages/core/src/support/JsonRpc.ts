@@ -160,7 +160,7 @@ export class JsonRpcConnection {
   }
 
   /**
-   * Read messages from `input` and dispatch each until it ends, then cancel
+   * Read messages from `input` and dispatch each until it ends or closes, then cancel
    * every request in flight and call `onEnd`. A frame that cannot be read is
    * answered with an error; one over the connection's limits ends the
    * connection and destroys `input`.
@@ -205,6 +205,8 @@ export class JsonRpcConnection {
       this.readLength = this.buffer.length;
     });
     input.on("end", end);
+    input.on("close", end);
+    input.on("error", end);
   }
 
   /** Send `protocol`'s notification `method` to its client, holding it until the

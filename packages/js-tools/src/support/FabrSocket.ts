@@ -188,14 +188,17 @@ export class FabrSocketClient {
 /**
  * Connect to the fabr socket `variable` names, as `<path>#<token>` (by
  * default the process's `FABR_SOCKET`).
- * @return the connection, or undefined where fabr offers no socket, or it
- *   cannot be reached or refuses the token.
+ * @return the connection, or undefined where fabr offers no socket, the value
+ *   names no token, or the socket cannot be reached or refuses the token.
  */
 export function connectFabrSocket(variable = process.env[FABR_SOCKET_VARIABLE]): Promise<FabrSocketClient | undefined> {
   if (variable === undefined || variable === "") {
     return Promise.resolve(undefined);
   }
   const hash = variable.lastIndexOf("#");
+  if (hash < 0) {
+    return Promise.resolve(undefined);
+  }
   return FabrSocketClient.connect(variable.slice(0, hash), variable.slice(hash + 1)).catch(() => undefined);
 }
 

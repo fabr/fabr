@@ -705,9 +705,10 @@ export function executeInternalCapture(
  * (`mergedTo: "out"` leaves `stderr` unset, and vice versa).
  */
 export interface StageStreams {
-  /** The file the stage's stdout is captured in (its stderr too, where `mergedTo` is `"out"`). */
-  stdout?: string;
-  stderr?: string;
+  /** The file the stage's stdout is captured in (its stderr too, where `mergedTo` is `"out"`), its masked runs kept. */
+  stdout?: string | SecureString;
+  /** The file the stage's stderr is captured in, its masked runs kept. */
+  stderr?: string | SecureString;
   mergedTo?: "out" | "err";
 }
 
@@ -915,7 +916,7 @@ function pipelineUnbounded(
         /* Pipe captures into their handles with `{ end: false }` (finalize ends
          * the handle). A dup gives both streams one handle. */
         const captureName = spec.mergedTo === "err" ? spec.stderr : spec.stdout;
-        const shared = captureName !== undefined ? capture(captureName) : undefined;
+        const shared = captureName !== undefined ? capture(unmasked(captureName)) : undefined;
         const show =
           (stream: OutputStream) =>
           (data: Uint8Array): void =>
@@ -943,7 +944,7 @@ function pipelineUnbounded(
             proc.stdout?.pipe(shared, { end: false });
           }
           if (spec.stderr !== undefined) {
-            proc.stderr?.pipe(capture(spec.stderr), { end: false });
+            proc.stderr?.pipe(capture(unmasked(spec.stderr)), { end: false });
           } else {
             proc.stderr?.on("data", show("err"));
           }

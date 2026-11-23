@@ -55,6 +55,10 @@ describe("configurationOf", () => {
     );
   });
 
+  it("refuses a viewport not of the form <width>x<height>", () => {
+    expect(() => configurationOf(["--browser=desktop=chromium", "--browser-viewport=desktop=wide"])).to.throw(/is not a viewport/);
+  });
+
   it("tells its options from the runner contract's", () => {
     expect(isConfigurationOption("--browser-viewport=a=1x1")).to.equal(true);
     expect(isConfigurationOption("--browser=a=chromium")).to.equal(true);

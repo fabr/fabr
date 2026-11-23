@@ -56,7 +56,8 @@ export function isConfigurationOption(arg: string): boolean {
  * permission for it holds).
  * @return the configuration, or undefined where none is declared. Throws for
  *   a second configuration, an option naming one not declared, an unknown
- *   option, or an option without its `<configuration>=<value>`.
+ *   option, an option without its `<configuration>=<value>`, or a viewport
+ *   not of the form `<width>x<height>`.
  */
 export function configurationOf(argv: ReadonlyArray<string>): IBrowserConfiguration | undefined {
   const configurations = new Map<string, IBrowserConfiguration>();
@@ -86,8 +87,11 @@ export function configurationOf(argv: ReadonlyArray<string>): IBrowserConfigurat
         configuration.executable = fs.realpathSync(path.resolve(value));
         break;
       case `${PREFIX}-viewport`: {
-        const [width, height] = value.split("x").map(Number);
-        configuration.viewport = { width, height };
+        const size = /^(\d+)x(\d+)$/.exec(value);
+        if (size === null) {
+          throw new Error(`'${option}=${name}=${value}' is not a viewport (expected '<width>x<height>', such as '1280x720')`);
+        }
+        configuration.viewport = { width: Number(size[1]), height: Number(size[2]) };
         break;
       }
       case `${PREFIX}-user-agent`:

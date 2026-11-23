@@ -106,12 +106,17 @@ function commandText({ stages, stdin }: IStagedCommand, env: ReadonlyMap<string,
         }),
         ...argv.map(arg => quote(typeof arg === "string" ? arg : arg.toDisplayString())),
         ...(index === 0 && stdin !== undefined ? [`< ${quote(stdin)}`] : []),
-        ...(stdout === undefined ? [] : [`> ${quote(stdout)}`]),
-        ...(stderr === undefined ? [] : [`2> ${quote(stderr)}`]),
+        ...(stdout === undefined ? [] : [`> ${quote(displayed(stdout))}`]),
+        ...(stderr === undefined ? [] : [`2> ${quote(displayed(stderr))}`]),
         ...(mergedTo === "out" ? ["2>&1"] : mergedTo === "err" ? ["1>&2"] : []),
       ].join(" ")
     )
     .join(" | ");
+}
+
+/** @return `text` as fabr's output shows it, a masked run as it was written. */
+function displayed(text: string | SecureString): string {
+  return typeof text === "string" ? text : text.toDisplayString();
 }
 
 /** Quote an argument minimally for the shell, so a printed command is copy-pasteable. */

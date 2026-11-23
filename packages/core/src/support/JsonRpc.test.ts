@@ -192,6 +192,15 @@ describe("JsonRpcConnection requests in flight", () => {
     expect([cancelled, ended()]).to.deep.equal([[1, 2], true]);
   });
 
+  it("ends the connection, cancelling what is in flight, when its input closes without ending", async () => {
+    const { input, cancelled, ended } = waiting();
+    input.write(framed({ id: 1, method: "wait" }));
+    await settle();
+    input.destroy();
+    await settle();
+    expect([cancelled, ended()]).to.deep.equal([[1], true]);
+  });
+
   it("ends the connection on a frame over its limits", async () => {
     const headers = waiting({ maxHeaderBytes: 64, maxBodyBytes: 1024 });
     headers.input.write("X".repeat(100));

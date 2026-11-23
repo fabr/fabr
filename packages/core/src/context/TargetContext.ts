@@ -317,8 +317,8 @@ export abstract class TargetContext {
         runnable,
         args,
         stdin,
-        stdout: stage.stdout?.name.toUnmaskedString(),
-        stderr: stage.stderr?.name.toUnmaskedString(),
+        stdout: stage.stdout?.name.toString(),
+        stderr: stage.stderr?.name.toString(),
         mergedTo: stage.mergedTo,
       })
     );

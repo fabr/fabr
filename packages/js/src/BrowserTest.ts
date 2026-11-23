@@ -326,7 +326,12 @@ function browserArguments(
         );
       } else {
         /* The browser's one entry names it, and as a link names its executable's path in its install. */
-        const [own, executable] = chosen.fetched.surface.size === 1 ? [...chosen.fetched.surface][0] : ["a program with no one entry"];
+        if (chosen.fetched.surface.size !== 1) {
+          throw new FabrError(
+            `the browser is a program with ${chosen.fetched.surface.size === 0 ? "no entry" : "several entries"}, where a browser has one: its executable`
+          ).withHelp("name a browser fabr fetches, such as '@browser:chrome:156'");
+        }
+        const [[own, executable]] = [...chosen.fetched.surface];
         const frameworkName = browser.browserNames.get(own);
         if (frameworkName === undefined) {
           throw new FabrError(`'${own}' is not a browser a browser test can run in (${[...browser.browserNames.keys()].join(", ")})`);

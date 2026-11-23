@@ -369,6 +369,25 @@ fs.appendFileSync(process.env.MARKER, [fs.existsSync("build/a.spec.js"), fs.exis
     expect(ran()).to.deep.equal(["true true --interactive build a.spec.js -- --headed"]);
   });
 
+  it("says no test is selected where fabr run of a browser test selects none", () => {
+    const result = runFabr(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          BROWSER_FIXTURE +
+          "browser_test browser {\n  tests = src:**/*.spec.ts;\n  browser = chrome;\n}\n",
+        "runner/run.js": "",
+        "fakebrowser/chrome": FAKE_BROWSER,
+        "src/a.spec.ts": "exports.a = 1;\n",
+      },
+      ["-DJS_TARGET=es2020", "-DTEST_FILE_PATTERN=**/nothing.spec.ts", "run", "browser"]
+    );
+    expect(result.status).to.not.equal(0);
+    expect(result.stderr).to.contain("No test file matches the pattern '**/nothing.spec.ts'");
+  });
+
   it("refuses a browser test framework on a target that supplies no browser", () => {
     const result = runFabr(
       {

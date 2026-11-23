@@ -111,6 +111,7 @@ describe("connectFabrSocket", () => {
     const server = await standIn(() => true);
     try {
       expect(await connectFabrSocket("")).to.equal(undefined);
+      expect(await connectFabrSocket("/a/socket/with/no/token"), "a value naming no token").to.equal(undefined);
       expect(await connectFabrSocket(`${path.join(os.tmpdir(), "fabr-no-such-socket")}#good`)).to.equal(undefined);
       expect(await connectFabrSocket(server.variable("bad"))).to.equal(undefined);
     } finally {

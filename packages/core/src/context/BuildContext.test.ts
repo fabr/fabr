@@ -986,7 +986,7 @@ registerRule("test_cmd", {}, context =>
     )
     .then(pipelines => {
       lastCommand = pipelines.map(stages =>
-        stages.map(stage => ({ args: stage.args.map(arg => arg.toUnmaskedString()), stdout: stage.stdout }))
+        stages.map(stage => ({ args: stage.args.map(arg => arg.toUnmaskedString()), stdout: stage.stdout?.toUnmaskedString() }))
       );
       return EMPTY_FILESET;
     })

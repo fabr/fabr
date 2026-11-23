@@ -542,8 +542,9 @@ export function packageBuildOverrides(context: TargetContext, property: string):
  * framework's own run over the tests ({@link planInteractiveRun}).
  *
  * Yields empty content where no test file is declared, or TEST_FILE_PATTERN
- * selects none of them; only the selected test files run. Throws where tests
- * are declared but the compile has no compilable source.
+ * selects none of them, and with `interactive` rejects there instead; only
+ * the selected test files run. Throws where tests are declared but the
+ * compile has no compilable source.
  */
 export function compileAndRunTests(
   context: TargetContext,
@@ -567,6 +568,9 @@ export function compileAndRunTests(
   if (tests.isEmpty()) {
     /* No test files: nothing to run, and no runner is fetched. Declared tests
      * with no runnable output are an error, below. */
+    if (interactive) {
+      return Computable.reject(new FabrError("The target has no tests to run: its tests name no file"));
+    }
     return Computable.resolve(EMPTY_FILESET);
   }
   /* Compile the sources and tests together (the tests are usually among the
@@ -583,6 +587,9 @@ export function compileAndRunTests(
      * runs and no runner is fetched. */
     const selected = selectTestFiles(tests, filePattern);
     if (selected.isEmpty()) {
+      if (interactive) {
+        return Computable.reject(new FabrError(`No test file matches the pattern '${filePattern.toDisplayString()}'`));
+      }
       return Computable.resolve(EMPTY_FILESET);
     }
     /* The selected test sources' stems (path minus extension): planTestRun picks

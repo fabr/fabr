@@ -73,17 +73,24 @@ describe("e2e: fabr shell", () => {
     expect(result.stderr).to.match(/--report=\S+ --reads=\S+ a\.test\.js/);
   });
 
-  withShell("shows a variable in the command as written", () => {
-    const result = runFabr(
-      { ...project, "PROJECT.fabr": project["PROJECT.fabr"].replace("run = gen <", "run = gen --token=${ENV.TOKEN} <") },
-      ["shell", "g"],
-      undefined,
-      undefined,
-      { TOKEN: "s3cret-value" }
-    );
+  withShell("shows a variable in the command as written, in an argument and a redirection's file", () => {
+    const masked = {
+      ...project,
+      "PROJECT.fabr": project["PROJECT.fabr"].replace(
+        "run = gen < src:data.txt > out.txt;",
+        "run = gen --token=${ENV.TOKEN} < src:data.txt > ${ENV.OUT};"
+      ),
+    };
+    const variables = { TOKEN: "s3cret-value", OUT: "s3cret-name.txt" };
+    const result = runFabr(masked, ["shell", "g"], undefined, undefined, variables);
     expect(result.status, result.stderr).to.equal(0);
     expect(result.stderr).to.contain("gen.js '--token=${ENV.TOKEN}' <");
-    expect(result.stderr).not.to.contain("s3cret-value");
+    expect(result.stderr).to.contain("> '${ENV.OUT}'");
+    expect(result.stderr).not.to.contain("s3cret");
+    /* The file the step captures is named by the value. */
+    const listed = runFabr(masked, ["ls", "g"], undefined, undefined, variables);
+    expect(listed.status, listed.stderr).to.equal(0);
+    expect(listed.stdout).to.contain("s3cret-name.txt");
   });
 
   withShell("errors on a target that yields content, not a build command", () => {

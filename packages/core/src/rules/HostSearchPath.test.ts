@@ -98,7 +98,10 @@ describe("HostSearchPathRepository", () => {
       expect(manifestArguments(there.toCommandLine(["-x"]))).to.equal(manifestArguments(here.toCommandLine(["-x"])));
       /* Run as a command, the program keys one action wherever it was found. */
       const actionOf = (runnable: RunnableFileSet): BuildAction => {
-        const { files, specs } = stagePipeline([[{ runnable, args: [SecureString.of("-x")], stdout: "out" }]], EMPTY_FILESET);
+        const { files, specs } = stagePipeline(
+          [[{ runnable, args: [SecureString.of("-x")], stdout: SecureString.of("out") }]],
+          EMPTY_FILESET
+        );
         return createPipelineAction(files, specs, [], undefined);
       };
       expect(actionOf(there).actionKey()).to.equal(actionOf(here).actionKey());
