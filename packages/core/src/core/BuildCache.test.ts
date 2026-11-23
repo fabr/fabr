@@ -2500,10 +2500,13 @@ describe("BuildCache.ensureTree (the tree pool)", () => {
   it("makes a placed tree's directories read-only, so nothing can add to it, and removes it all the same", async () => {
     const cache = new BuildCache(root, NULL_LOG);
     const entry = await toPromise(cache.ensureTree(new FileSet(new Map<string, IFile>([["lib/a.js", MemoryFile.from("x")]]))));
-    for (const dir of [entry, path.join(entry, "lib")]) {
-      expect(fs.statSync(dir).mode & 0o222, dir).to.equal(0);
+    /* Windows has no read-only directories: a directory's mode bits restrict nothing there. */
+    if (process.platform !== "win32") {
+      for (const dir of [entry, path.join(entry, "lib")]) {
+        expect(fs.statSync(dir).mode & 0o222, dir).to.equal(0);
+      }
+      expect(() => fs.writeFileSync(path.join(entry, "lib", "cache.json"), "{}")).to.throw();
     }
-    expect(() => fs.writeFileSync(path.join(entry, "lib", "cache.json"), "{}")).to.throw();
     deleteTreeSync(entry);
     expect(fs.existsSync(entry)).to.equal(false);
     /* The asynchronous removal the trim makes, likewise. */

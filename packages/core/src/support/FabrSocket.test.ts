@@ -72,6 +72,13 @@ function connect(registered: IRegisteredProcess, initialize = true): IClient {
 
 const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 50));
 
+/** Wait until `condition` holds, for at most five seconds. */
+async function eventually(condition: () => boolean): Promise<void> {
+  for (let waited = 0; !condition() && waited < 5000; waited += 50) {
+    await settle();
+  }
+}
+
 function toPromise<T>(computable: Computable<T>): Promise<T> {
   return new Promise((resolve, reject) => computable.then(resolve, reject));
 }
@@ -118,7 +125,7 @@ describe("registerProcess", () => {
       expect([granted(third, 1), granted(third, 2)]).to.deep.equal([true, false]);
       /* A slot of the limit, given back by closing, goes to the limit's next waiter. */
       await second.close();
-      await settle();
+      await eventually(() => granted(third, 2));
       expect(granted(third, 2)).to.equal(true);
       await Promise.all([first.close(), third.close()]);
       await settle();

@@ -63,10 +63,10 @@ const BROWSER_FIXTURE =
   "include @fabr-build/js:**/BROWSER_TEST.fabr;\n" +
   "js_script fixture_runner { deps = runner:**; entry = runner:run.js; }\n" +
   "JS_PLAYWRIGHT_RUNNER = fixture_runner;\n" +
-  "script chrome { entry = fakebrowser:chrome; }\n";
+  "js_script chrome { entry = fakebrowser:chrome; }\n";
 
 /** The stand-in browser's program, never run. */
-const FAKE_BROWSER = "#!/bin/sh\nexit 0\n";
+const FAKE_BROWSER = "process.exit(0);\n";
 
 describe("e2e: fabr test (runner from @fabr-build/js)", () => {
   const project = (body: string): Record<string, string> => ({
@@ -428,7 +428,7 @@ fs.appendFileSync(process.env.MARKER, [fs.existsSync("build/a.spec.js"), fs.exis
             "plugin @fabr-build/js;\n\n" +
             STUB_TSC_CONFIG +
             BROWSER_FIXTURE +
-            "script other { entry = fakebrowser:chrome; }\n" +
+            "js_script other { entry = fakebrowser:chrome; }\n" +
             `browser_test e2e {\n  framework = ${framework};\n  tests = src:**/*.spec.ts;\n  ${settings}\n}\n`,
           "runner/run.js": "",
           "fakebrowser/chrome": FAKE_BROWSER,

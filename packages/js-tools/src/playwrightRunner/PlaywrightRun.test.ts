@@ -84,7 +84,9 @@ describe("wrapConfig", () => {
       invocation(["tests/ui/home.spec.js", "tests/api/x.spec.js"], undefined, { configuration: desktop })
     );
     expect(config.projects?.map(project => project.name)).to.deep.equal(["desktop"]);
-    expect(config.projects?.[0].testMatch).to.deep.equal([/^\/work\/build\/tests\/ui\/home\.spec\.js$/]);
+    expect(config.projects?.[0].testMatch).to.deep.equal([
+      new RegExp(`^${at("tests/ui/home.spec.js").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`),
+    ]);
     expect(config.projects?.[0].testDir).to.equal(at("tests"));
     /* The config's own worker count stands: Playwright schedules the run's files across its workers. */
     expect(config.workers).to.equal(undefined);

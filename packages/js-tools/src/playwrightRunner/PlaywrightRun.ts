@@ -358,10 +358,11 @@ export function describeErrors(errors: ReadonlyArray<IReportedError>): { message
 }
 
 /** @return `text` with each path inside the compiled tree, the runner's working
- * directory, written relative to it. */
+ * directory, written relative to it and `/`-separated. */
 function withinTree(text: string): string {
   const root = process.cwd() + path.sep;
-  return text.split(root).join("");
+  const [first, ...rest] = text.split(root);
+  return [first, ...rest.map(part => part.replace(/^[^\s'"()]+/, relative => relative.split(path.sep).join("/")))].join("");
 }
 
 /** Playwright's wording for a recorded expectation that is missing or does not match. */
