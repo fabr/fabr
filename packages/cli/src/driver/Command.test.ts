@@ -86,6 +86,7 @@ describe("Command", () => {
       refresh: false,
       force: false,
       retryFailed: false,
+      testNamePatterns: [],
       targets: [],
       deferred: ["foo"],
       properties: new Map(),
@@ -105,6 +106,7 @@ describe("Command", () => {
       refresh: false,
       force: false,
       retryFailed: false,
+      testNamePatterns: [],
       targets: ["foo", "bar"],
       properties: new Map(),
     });
@@ -128,6 +130,7 @@ describe("Command", () => {
       refresh: false,
       force: false,
       retryFailed: false,
+      testNamePatterns: [],
       targets: ["foo"],
       properties: new Map([["x", "1"]]),
     });
@@ -146,6 +149,7 @@ describe("Command", () => {
       refresh: false,
       force: false,
       retryFailed: false,
+      testNamePatterns: [],
       targets: ["foo", "bar"],
       properties: new Map(),
     });

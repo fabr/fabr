@@ -319,6 +319,18 @@ export function toRunFailure(error: IReportedError, file: string | undefined): I
   };
 }
 
+/**
+ * @return `text`, Playwright's error context for a failed test (its
+ * `error-context` attachment), with the `Name` and `Location` lines of its
+ * test info naming the test's file by `filePath`, the report's name for it,
+ * in place of the compiled file and the staged source.
+ */
+export function withReportedFile(text: string, filePath: string): string {
+  return text
+    .replace(/^(- Name: ).*?( >> )/m, (_line, label: string, separator: string) => `${label}${filePath}${separator}`)
+    .replace(/^(- Location: ).*(:\d+:\d+)$/m, (_line, label: string, position: string) => `${label}${filePath}${position}`);
+}
+
 /** @return the report's name for the file Playwright reports a test at: the
  * source a `fabr:` reference in it names, else its compiled file's source. */
 function filePathOf(file: string): string {

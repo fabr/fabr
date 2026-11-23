@@ -49,18 +49,22 @@ const reportPaths = new Map<string, string>();
  * - A map entry naming the source by reference
  *   (`fabr:./packages/x/src/Foo.test.ts`) gives that reference's path
  *   (`packages/x/src/Foo.test.ts`).
- * - A map entry naming the source by a path gives that path relative to the
- *   install, its mount (`src/`) stripped.
+ * - A map entry naming a staged source by its path gives the source path the
+ *   installation records for it ({@link SOURCE_LOCATIONS_FILE}); naming any
+ *   other path, that path relative to the install, its mount (`src/`) stripped.
  * - With no map (a release build emits none), the source path the installation
- *   records for the staged source of the compiled file's stem
- *   ({@link stagedSourceOf}), else the compiled file's path relative to the
- *   install, its mount (`build/`) stripped.
+ *   records for `file` where it is a staged source, else for the staged source
+ *   of the compiled file's stem ({@link stagedSourceOf}), else the compiled
+ *   file's path relative to the install, its mount (`build/`) stripped.
  */
 export function reportPathOf(file: string): string {
   let name = reportPaths.get(file);
   if (name === undefined) {
     const entry = getMapSource(file);
-    const reference = entry === undefined ? stagedSourceOf(file)?.sourcePath : referenceOfEntry(entry);
+    const reference =
+      entry === undefined
+        ? (sourcePathStagedAt(file) ?? stagedSourceOf(file)?.sourcePath)
+        : (referenceOfEntry(entry) ?? sourcePathStagedAt(entry));
     name =
       reference !== undefined ? reference.replace(/^\.\//, "") : stripMount(posixRelative(installRoot(), sourcePathOf(file) ?? file));
     reportPaths.set(file, name);
@@ -157,6 +161,17 @@ function sourcesByStem(): ReadonlyMap<string, { sourcePath: string; location: st
 /** @return a `/`-separated path without its file name's final extension. */
 function stemOfPath(name: string): string {
   return name.replace(/\.[^./]+$/, "");
+}
+
+let bySourceLocation: ReadonlyMap<string, string> | undefined;
+
+/** @return the source path the installation records for the source staged at
+ * `file`, an absolute path, or undefined where it stages none there. */
+function sourcePathStagedAt(file: string): string | undefined {
+  if (bySourceLocation === undefined) {
+    bySourceLocation = new Map([...stagedSources()].map(([sourcePath, location]) => [location, sourcePath]));
+  }
+  return bySourceLocation.get(posixRelative(installRoot(), file));
 }
 
 let staged: ReadonlyMap<string, string> | undefined;

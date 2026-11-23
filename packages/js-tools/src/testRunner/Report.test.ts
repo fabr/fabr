@@ -164,6 +164,21 @@ describe("reportPathOf", () => {
       );
     });
 
+    it("names a compiled file whose map names a staged source by that source's path", () => {
+      const file = stage("staged/c.test.js", "c.test.ts");
+      assert.equal(
+        withInstallCwd(() => reportPathOf(file)),
+        "pkg/src/c.test.ts"
+      );
+    });
+
+    it("names a staged source by its source path", () => {
+      assert.equal(
+        withInstallCwd(() => reportPathOf(path.join(install, "src", "sub", "f.test.tsx"))),
+        "pkg/src/sub/f.test.tsx"
+      );
+    });
+
     it("finds where the installation stages it, and nothing where it records none", () => {
       const file = referenced("c.test.js", "fabr:./pkg/src/c.test.ts");
       assert.equal(

@@ -30,6 +30,7 @@ import {
   IInvocation,
   IReportedTest,
   toTestResult,
+  withReportedFile,
   wrapConfig,
 } from "./PlaywrightRun";
 
@@ -336,5 +337,23 @@ describe("projectConfiguration", () => {
     expect(() => projectConfiguration({ name: "x", browser: "chromium", device: "Nokia 3310" }, devices)).to.throw(
       /Playwright knows no device 'Nokia 3310'/
     );
+  });
+});
+
+describe("withReportedFile", () => {
+  it("names the test's file in the error context's test info by the report's name", () => {
+    const context = [
+      "# Test info",
+      "",
+      "- Name: sub/page.spec.js >> suite >> fails",
+      "- Location: ../src/sub/page.spec.ts:2:5",
+      "",
+      "# Error details",
+      "- Location: elsewhere.ts:1:1",
+    ].join("\n");
+    expect(withReportedFile(context, "e2e/sub/page.spec.ts").split("\n").slice(2, 4)).to.deep.equal([
+      "- Name: e2e/sub/page.spec.ts >> suite >> fails",
+      "- Location: e2e/sub/page.spec.ts:2:5",
+    ]);
   });
 });

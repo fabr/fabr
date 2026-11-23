@@ -928,7 +928,11 @@ interface ITestRun {
  */
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
   const preload = run.layout === "pnp" ? pnpPreloadOf(context) : Computable.resolve(undefined);
-  return Computable.forAll([run.compiled, preload] as const, (compiledTree, pnpPreload) => {
+  /* A runner that schedules its own files reads the maps itself (Playwright's
+   * locations and code frames), so they name the staged sources; nothing
+   * measures such a run for coverage, which reads the `fabr:` entries. */
+  const compiled = run.scheduler === "runner" ? run.compiled.then(tree => withStagedSources(tree, run.compileSrcs)) : run.compiled;
+  return Computable.forAll([compiled, preload] as const, (compiledTree, pnpPreload) => {
     /* The step lays out the packages (the action's `deps`) as `layout` says,
      * under `pnp` a table at the root, beside which the PnP runtime's preload
      * goes for the runner to load. */

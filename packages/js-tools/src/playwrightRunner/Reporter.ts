@@ -27,7 +27,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ITestResult } from "@fabr-build/core";
 import { buildReport } from "../testRunner/Report";
-import { IReportedError, IReportedResult, IReportedTest, reportedRunOf, toRunFailure, toTestResult } from "./PlaywrightRun";
+import {
+  IReportedError,
+  IReportedResult,
+  IReportedTest,
+  reportedRunOf,
+  toRunFailure,
+  toTestResult,
+  withReportedFile,
+} from "./PlaywrightRun";
+
+/** The name and type of the attachment Playwright writes a failed test's error context to. */
+const ERROR_CONTEXT = { name: "error-context", contentType: "text/markdown" };
 
 /** The options the invocation's config gives the reporter. */
 export interface IReporterOptions {
@@ -109,7 +120,9 @@ export default class FabrReporter {
    * in the artifacts directory, each named within it: a file already there as
    * it is, a file elsewhere copied in, and one held in memory written there. A
    * file that no longer exists (Playwright removes what it does not retain) is
-   * left out. Unchanged where there is no artifacts directory.
+   * left out. A kept error context names the test's file as the report does
+   * ({@link withReportedFile}). Unchanged where there is no artifacts
+   * directory.
    */
   private withAttachments(result: ITestResult, run: IReportedResult | undefined): ITestResult {
     const dir = this.options.artifacts;
@@ -118,7 +131,18 @@ export default class FabrReporter {
     }
     const attachments = run.attachments.flatMap(attachment => {
       const kept = this.keep(dir, attachment);
-      return kept === undefined ? [] : [{ name: attachment.name, contentType: attachment.contentType, path: kept }];
+      if (kept === undefined) {
+        return [];
+      }
+      if (
+        result.filePath !== undefined &&
+        attachment.name === ERROR_CONTEXT.name &&
+        attachment.contentType === ERROR_CONTEXT.contentType
+      ) {
+        const file = path.join(dir, kept);
+        fs.writeFileSync(file, withReportedFile(fs.readFileSync(file, "utf8"), result.filePath));
+      }
+      return [{ name: attachment.name, contentType: attachment.contentType, path: kept }];
     });
     return attachments.length === 0 ? result : { ...result, attachments };
   }
