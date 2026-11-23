@@ -120,8 +120,8 @@ export interface ITaskReport {
    *  succeeded and its result stands (a red test run): the task then ends as
    *  failed, with `error` saying why. */
   fail: (error: Error) => void;
-  /** Add `text` to the annotation the task's end is shown with (`[provenance]`):
-   *  a fact about how its work came out. */
+  /** Add `text` to the bracketed annotation the task's end is shown with
+   *  (`[provenance]`): a fact about how its work came out. */
   annotate: (text: string) => void;
 }
 
@@ -240,8 +240,8 @@ function executableFile(candidate: string): string | undefined {
  * PATH search. A bare name is searched for on the PATH environment variable;
  * what it finds (the `sh` a `script` runs on) is an input fabr does not track.
  * On Windows a name with no extension is also looked for with `.exe`.
- * @return the executable's path, absolute where `name` has a path separator.
- * @throws ExecutionError if the executable cannot be found, naming it as output shows `name`.
+ * @return the executable's path, absolute where `written` has a path separator.
+ * @throws ExecutionError if the executable cannot be found, naming `written` as output shows it.
  */
 export function findExecutable(
   written: string | SecureString,
@@ -501,13 +501,17 @@ export function execute(
   );
 }
 
-/** Run `work` with a build-step process registered with the fabr socket, its further slots taken from `limit`, given its variables; unregister it when `work` settles. */
+/**
+ * Register a build-step process with the fabr socket, its further slots taken
+ * from `limit`, and run `work` given the variables the process is started
+ * with; unregister it when `work` settles.
+ */
 function registeredWhile<T>(
   limit: Semaphore,
   report: ITaskReport,
   work: (socketEnv: Readonly<Record<string, string>>) => Computable<T>
 ): Computable<T> {
-  /* A process holds one slot already, so it can never be granted the whole limit besides. */
+  /* A process already holds one slot, so a request is granted at most the rest of the limit (one, where the limit is one). */
   const most = Math.max(1, limit.capacity - 1);
   return registerProcess((slot, count, signal) => admitted(limit, report, slot, Math.min(count, most), signal)).then(registered =>
     work(registered.env).finally(() => registered.unregister())
@@ -701,7 +705,7 @@ export function executeInternalCapture(
  * (`mergedTo: "out"` leaves `stderr` unset, and vice versa).
  */
 export interface StageStreams {
-  /** The file the stage's stdout, and its stderr, is captured in. */
+  /** The file the stage's stdout is captured in (its stderr too, where `mergedTo` is `"out"`). */
   stdout?: string;
   stderr?: string;
   mergedTo?: "out" | "err";
@@ -748,7 +752,7 @@ export function unmaskedVariables(entries: readonly (string | SecureString)[]): 
   return Object.fromEntries(entries.map(variableEntry).map(([name, value]) => [name, value.toUnmaskedString()]));
 }
 
-/** @return `spec` to run as `found`, the executable found for its command ({@link findCommand}). */
+/** @return `spec` with its command replaced by the executable found for it in `cwd` ({@link findCommand}). */
 export function foundStage(spec: StageSpec, cwd?: string): StageSpec {
   return { ...spec, argv: [findCommand(spec.argv[0], cwd), ...spec.argv.slice(1)] };
 }

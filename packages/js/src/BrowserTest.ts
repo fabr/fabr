@@ -25,9 +25,9 @@
  * with `resources` beside them, `expectations` as the recorded screenshots
  * and `env` as the test processes' environment. The browser is named on the
  * runner's command line: a browser fabr fetches by the framework's name for
- * it, a Playwright build, which a `playwright/<name>` flag names, as the
- * directory Playwright finds it in, and the framework's own program
- * (Cypress's) as the directory it is installed in.
+ * it and its executable, a Playwright build (a `playwright/<name>` flag) by
+ * the directory Playwright finds it in, and the framework's own program
+ * (Cypress's) by the directory it is installed in.
  */
 
 import * as path from "path";
@@ -62,14 +62,15 @@ interface IBrowserFramework {
   baseUrlVariable: string;
   /** The framework's name for each browser fabr fetches, by the browser's own (its runnable's entry). */
   browserNames: ReadonlyMap<string, string>;
-  /** Playwright's own builds of the browsers named by `playwright/<name>`, where the framework runs them. */
+  /** Fetch Playwright's own builds of the browsers `names` (each a `playwright/<name>`), where the framework runs them. */
   builds?: (context: TargetContext, names: string[], deps: FileSet[]) => Computable<FileSet>;
-  /** The framework's own default browser, which an unset `browser` means, by its name, and the Playwright build it is, where it is one. */
+  /** The framework's own default browser, by its name, which an unset `browser` means. */
   defaultBrowser: string;
+  /** The Playwright build the default browser is, where it is one. */
   defaultBuild?: string;
   /** The framework's own program, where its runner needs one installed: what to link beside the runner, and the option naming its directory. */
   program?: { link: string; option: string; install: (context: TargetContext, deps: FileSet[]) => Computable<FileSet> };
-  /** Whether the target's packages are read permissively, as a tool's are, where the framework's own dependency tree forks. */
+  /** Whether the target's packages are read permissively, as a tool's are. */
   permissive: boolean;
   /** Whether a target may name a device to emulate. */
   devices: boolean;
@@ -114,8 +115,9 @@ const MINIMUM_PLAYWRIGHT = "1.50";
 /** The file marking a Playwright build installed, in its directory. */
 const INSTALLED_MARKER = "INSTALLATION_COMPLETE";
 
-/** The names a browser fabr fetches, and Playwright's builds, are linked beside the runner as. */
+/** The name a browser fabr fetches is linked beside the runner as. */
 const BROWSER_LINK = ".fabr-browser";
+/** The name Playwright's builds are linked beside the runner as. */
 const PLAYWRIGHT_BROWSERS_LINK = ".fabr-playwright-browsers";
 
 /** The package whose version names the Cypress binary. */
@@ -153,10 +155,12 @@ export function browserTestRequirements(context: TargetContext): Computable<Reso
 }
 
 /**
- * Compile a browser test's tests and run them in its browser: as a test run,
- * the installs the runner is given linked beside it, or, `interactive`, as
- * the program `fabr run` runs, the framework's own interactive run, which
- * finds them in the tree pool.
+ * Compile a browser test's tests and run them in its browser, `base_url`
+ * given in the framework's variable where it is set. As a test run, the
+ * installs the runner is given (the browser, the framework's program) are
+ * linked beside the runner; where `interactive`, the result is the program
+ * `fabr run` runs, the framework's own interactive run, which finds them in
+ * the tree pool.
  */
 export function runBrowserTests(context: TargetContext, collected: TestContents, interactive: boolean): Computable<RuleResult> {
   return Computable.forAll(
@@ -189,7 +193,7 @@ export function runBrowserTests(context: TargetContext, collected: TestContents,
   );
 }
 
-/** Get the test framework the target's `framework` names, with what a browser test makes of it; fail where it is no browser test framework. */
+/** Get the test framework the target's `framework` names, with what a browser test makes of it. Rejects where it is no browser test framework. */
 export function browserFramework(context: TargetContext): Computable<[ITestFramework, IBrowserFramework]> {
   return Computable.forAll(
     [testFramework(context, "framework", true), context.getRequiredProperty("framework")],
@@ -242,7 +246,12 @@ function targetBrowser(context: TargetContext): Computable<IBrowser> {
   });
 }
 
-/** Read the target's browser settings (`viewport`, `user_agent`, `device`) that are set, by the runner option each is given as. */
+/**
+ * Read the target's browser settings (`viewport`, `user_agent`, `device`) that
+ * are set, by the runner option each is given as. Rejects where `viewport` is
+ * not `<width>x<height>`, or `device` is set for a framework that emulates
+ * none.
+ */
 function browserSettings(context: TargetContext, browser: IBrowserFramework): Computable<ReadonlyMap<string, SecureString>> {
   return Computable.forAll(
     [...BROWSER_SETTINGS.keys()].map(property =>

@@ -321,13 +321,14 @@ function pendingRequests(): string[] {
   return process.getActiveResourcesInfo().filter(name => /Req(Wrap|Callback|Promise)$/.test(name));
 }
 
-/** One stack frame's location: `file:line:column`, bare or parenthesized; the
- * file a path or a `file:` URL, with a Windows drive where it has one. */
+/** A stack frame located in an absolute file: `file:line:column`, bare or
+ * parenthesized; the file a path or a `file:` URL, with a Windows drive where
+ * it has one. */
 const FRAME_LOCATION = /^\s*(at (?:.*? )?)\(?((?:file:\/\/)?(?:\/?[A-Za-z]:)?[\\/][^():]+):(\d+):(\d+)\)?$/;
 
-/** A `fabr:` reference read as a path relative to a compiled file, either
- * separator: as a location reported through a source map another transform
- * chained names its source (`/w/build/tests/fabr:./tests/a.spec.ts`). */
+/** A `fabr:` reference that is the end of a path, either separator: how a
+ * location mapped through a chained source map names its source
+ * (`/w/build/tests/fabr:./tests/a.spec.ts`). */
 const REFERENCE_IN_PATH = /(?:^|[\\/])fabr:(?:\.[\\/])?(.+)$/;
 
 /** @return the source path the `fabr:` reference read as part of `file` names,
@@ -337,17 +338,20 @@ export function referenceInPath(file: string): string | undefined {
   return reference === null ? undefined : reference[1].split("\\").join("/");
 }
 
-/** One stack frame's location: `at <name> (<file>:<line>:<column>)` or bare. */
+/** A stack frame with any location: `at <name> (<file>:<line>:<column>)` or bare. */
 const ANY_FRAME = /^\s*(at (?:.*? )?)\(?(.+?):(\d+):(\d+)\)?$/;
 
 /** A path through a `node_modules` directory, either separator. */
 const IN_NODE_MODULES = /[\\/]node_modules[\\/]/;
 
 /**
- * Filter a stack to its frames in the code under test — those inside a
- * dependency, and those with no file of their own, dropped — each naming the
- * SOURCE position its compiled one came from, where the compiled file has a
- * source map.
+ * Filter a stack to its frames in the code under test, dropping each frame in
+ * a `node_modules` directory and each naming no file. A kept frame names its
+ * source by its report path ({@link reportPathOf}) at the source position its
+ * compiled one came from, where the compiled file has a source map; a frame
+ * whose location is already a `fabr:` reference names that reference's
+ * source path.
+ * @return the kept frames, or undefined where there are none.
  */
 export function framesOf(stack: string | undefined): string | undefined {
   const frames = (stack ?? "")

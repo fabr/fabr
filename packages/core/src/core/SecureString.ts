@@ -94,7 +94,7 @@ export class SecureString {
     throw new FabrError("internal: a SecureString was made a string implicitly; read toDisplayString() or toUnmaskedString()");
   }
 
-  /** Throw, as {@link toString} does: a SecureString is never serialized whole. */
+  /** Throw, as {@link toString} does: a SecureString is never serialized. */
   public toJSON(): never {
     return this.toString();
   }
@@ -155,7 +155,7 @@ export class SecureString {
       return matcher.test(this.text) ? [] : [this];
     }
     const parts: SecureString[] = [];
-    /* The parts `String.prototype.split` would give: `parts` and the groups left out. */
+    /* How many parts `String.prototype.split` would have given so far: `parts` and the groups left out. */
     let count = 0;
     let p = 0;
     let q = 0;
@@ -311,7 +311,7 @@ export class SecureString {
     return new SecureString(this.text.substring(from, to), spans);
   }
 
-  /** @return this text followed by `other`, a masked run ending where one of the same source begins taken as one. */
+  /** @return this text followed by `other`, a masked run that ends where one with the same `shown` begins merged into one. */
   private append(other: SecureString): SecureString {
     if (other.text === "") {
       return this;

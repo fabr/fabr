@@ -79,7 +79,11 @@ export class Diagnostic<T extends Record<string, any>> {
     this.format = format;
   }
 
-  /** @return the message with each `{param}` replaced by its value in `params`, one that has a `toDisplayString()` (a `SecureString`, a `Name`) as that shows it. */
+  /**
+   * @return the message, each `{param}` replaced by its value in `params`: a
+   * value with a `toDisplayString()` (a `SecureString`, a `Name`) as that
+   * shows it, any other as `String` writes it.
+   */
   public message(params: T): string {
     return this.format.replaceAll(/\{([a-zA-Z_]+)\}/g, (_match, p1: string) => {
       const value: unknown = params[p1];

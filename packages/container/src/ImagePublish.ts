@@ -65,9 +65,9 @@ interface ILayerSource {
  * Package a member for its registry, as the `PublishableFileSet` (the carrier)
  * `pushImage` pushes: an OCI image layout of the image as published, and
  * `sources.json` beside it, where each layer not in the layout is fetched
- * from. The layout's index names the manifest, with its platform and, as its
- * `org.opencontainers.image.ref.name`, `named` (`host/repository:tag`) and the
- * manifest's digest; its blobs are the manifest, the config and the
+ * from. The layout's index names the manifest, with its platform and the
+ * annotation `org.opencontainers.image.ref.name` = `<named>@<digest>` (`named`
+ * is `host/repository:tag`); its blobs are the manifest, the config and the
  * compressed layers built here.
  *
  * A layer fetched from a registry keeps the form it was published in, and is
@@ -187,11 +187,11 @@ function compressLayer(tar: IFile, out: string): Computable<void> {
  * the repository lacks, then the manifest. A blob is mounted from the
  * repository it was published to where that is on the same registry, else
  * uploaded (a layer published on another registry is streamed from there).
- * Where the tag does not name the manifest yet, `sign` is asked for an
- * attestation of the manifest before anything is pushed. One it gives is
- * attached to the image before the tag is put: the manifest is put by its
- * digest first, so the tag names the image only once its attestation is in,
- * and a push that fails before then is not already synced when run again.
+ * Where the tag does not name the manifest yet, `sign` is first asked for an
+ * attestation of the manifest. Where it gives one, the manifest is put by its
+ * digest and the attestation attached to it before the tag is put, so the
+ * tag names the image only once its attestation is in, and a push that fails
+ * before then pushes again when run again.
  * @return "already-synced" where the tag already names the manifest, else "published".
  */
 export function pushImage(
@@ -277,7 +277,7 @@ function pushBlob(
   });
 }
 
-/** Make the registry a layer published before is had from, signed in to as its auth files say: `source` records its URL as text, as published. */
+/** Make the registry a layer published before is fetched from, at the URL `source` records, signed in with its auth files' credential. */
 function sourceRegistry(context: TargetContext, source: ILayerSource): Registry {
   const url = SecureString.of(source.registry);
   return new Registry(context, url, authFileSignIn(context, url, source.loginUrl));

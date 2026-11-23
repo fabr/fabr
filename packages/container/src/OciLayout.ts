@@ -21,8 +21,9 @@ import { Computable, contentSize, FileSet, IFile, MemoryFile } from "@fabr-build
 import { ImageFileSet } from "./ImageFileSet";
 import { digested, IDigested, OCI_CONFIG, OCI_INDEX, OCI_LAYER, OCI_MANIFEST } from "./OciProtocol";
 
-/** The file marking a directory as an OCI image layout, and what it holds. */
+/** The file marking a directory as an OCI image layout. */
 export const OCI_LAYOUT_FILE = "oci-layout";
+/** The content of {@link OCI_LAYOUT_FILE}. */
 export const OCI_LAYOUT_DOCUMENT = JSON.stringify({ imageLayoutVersion: "1.0.0" });
 
 /** The image index an OCI image layout is entered through. */

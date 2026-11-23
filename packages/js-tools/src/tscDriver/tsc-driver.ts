@@ -630,9 +630,8 @@ export type IResolutionHost = Pick<
  *   same position: a relative path with an extension whose file is absent, or
  *   a subpath of an installed package that the package does not publish or
  *   whose file node loads (by the runtime conditions, without `types`) is
- *   absent. A bare package name is never judged, nor is
- *   a side-effect import where the project sets `noUncheckedSideEffectImports`
- *   to false.
+ *   absent. A bare package name is never judged, nor is a side-effect import
+ *   where the project sets `noUncheckedSideEffectImports` to false.
  */
 export function installResolution(
   ts: ITypeScript,
@@ -679,8 +678,9 @@ export function installResolution(
    * was written without an extension, by importing package and specifier. */
   const completedSpecifiers = new Map<string, string>();
   /**
-   * @return the files the package publishes for a specifier: the resolver's
-   * candidates, in the package's own order.
+   * @return the files the package publishes for a specifier under
+   * `conditions` (by default the compile's, for the output's module system):
+   * the resolver's candidates, in the package's own order.
    *
    * An `exports` target names a file exactly (node, bundlers and the compiler
    * add no extension to one), so a target with no extension that names no file
@@ -929,11 +929,10 @@ export function installResolution(
    * @return the file an import names, where it is present, else undefined: for
    * a relative import, the file beside the importer (after the rewrite rules);
    * for a package specifier, the file node loads for it when imported for
-   * `mode`. Asked
-   * of an import the compiler could not resolve, so of a resource it cannot
-   * read as a module (a stylesheet, an image, a `.wasm`). The target's own
-   * resources count as present by name (`declared`); any other file must be on
-   * disk.
+   * `mode`. Asked of an import the compiler could not resolve, so of a
+   * resource it cannot read as a module (a stylesheet, an image, a `.wasm`).
+   * The target's own resources count as present by name (`declared`); any
+   * other file must be on disk.
    */
   const resourceFile = (written: string, issuer: string, mode: number): string | undefined => {
     const specifier = ownRelative(written, issuer) ?? written;
@@ -948,11 +947,11 @@ export function installResolution(
    * @return true if an unresolved import certainly names no file, otherwise
    * false: a relative path with an extension whose file is absent, or a subpath
    * of an installed package that the package publishes nothing for, imported
-   * for `mode`, or whose file node loads for it is absent. A relative path without an extension (a bundler
-   * may complete it), a `#` import and a bare package name are never judged
-   * (`declare module "virtual:*"` types a bundler's virtual modules). An import
-   * of the compile's own package by name is judged as the relative path it
-   * names.
+   * for `mode`, or whose file node loads for it is absent. A relative path
+   * without an extension (a bundler may complete it), a `#` import and a bare
+   * package name are never judged (`declare module "virtual:*"` types a
+   * bundler's virtual modules). An import of the compile's own package by name
+   * is judged as the relative path it names.
    */
   const certainlyMissing = (written: string, issuer: string, mode: number): boolean => {
     const specifier = ownRelative(written, issuer) ?? written;

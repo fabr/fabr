@@ -23,16 +23,16 @@
  * run the runner over the compiled test files, reporting through core's test
  * report contract (CTRF).
  *
- * A test framework ({@link ITestFramework}) says which runner runs the tests
- * and the module format it loads them as. Each test target type has one rule
- * per framework, selected on the target's framework property, which passes its
- * framework here. The runner runs in the installation's compiled tree, its
- * working directory, invoked as
+ * A test framework ({@link ITestFramework}) says which runner runs the tests,
+ * the module format it loads them as, and how it names their records. Each
+ * test target type's rule looks up the framework its target's framework
+ * property names ({@link testFramework}) and passes it here. The runner runs in
+ * the installation's compiled tree, its working directory, invoked as
  *
  *     <runner> --report=<file> --env=<node|jsdom> [--update-snapshots]
  *              [--name-pattern=<regex>] [--setup=<module|./staged path>]…
  *              [--pnp=<file>] [--reads=<file>] [--artifacts=<dir>]
- *              <test files…>
+ *              [--retries=<n>] <test files…>
  *
  * and writes its CTRF report to `--report`; its exit status counts only where
  * it wrote none.
@@ -60,12 +60,15 @@
  * - `--artifacts`: where to keep the files of its tests the runner's report
  *   attaches to them, for a framework whose runner keeps any
  *   ({@link ITestFramework.artifacts}).
- * - `--interactive`: under `fabr run`, run the framework's own interactive run
- *   instead of a test run, writing no report: the runner is started in the
- *   installation, its first operand the compiled tree, where it then works
- *   as in a test run, the test files after it and, after `--`, the
- *   arguments the framework's command is given. A runner that has no
- *   interactive run refuses it.
+ * - `--retries`: how many times to retry a failed test within the run, for a
+ *   framework whose runner schedules the test files itself
+ *   ({@link ITestFramework.scheduler}); fabr reruns the files it schedules.
+ * - `--interactive`: under `fabr run`, start the framework's own interactive
+ *   run in place of a test run, writing no report. The runner is started in
+ *   the installation as `<runner> <options> --interactive <compiled tree>
+ *   <test files…> -- <arguments…>`, works in the compiled tree as in a test
+ *   run, and gives the arguments after `--` to the framework's command. A
+ *   runner that has no interactive run refuses it.
  */
 
 import {
@@ -222,8 +225,8 @@ export interface ITestFramework {
    * test, are emitted at, where the framework has one. */
   minimumEsLevel?: string;
   /** Whether the runner is given a directory for the files it keeps of its
-   * tests (`--artifacts`), which the target's result then holds: for a
-   * framework whose runner schedules the test files (`scheduler: "runner"`). */
+   * tests (`--artifacts`), which the target's result then holds. Only a
+   * runner that schedules the test files (`scheduler: "runner"`) is given one. */
   artifacts?: boolean;
   /**
    * Which schedules the test files across processes: `fabr`, one runner
@@ -320,9 +323,10 @@ const TEST_FILE_RECORDS: ITestRecords = {
 /**
  * Find the test file a record named `name` belongs to, among the keys of
  * `renames`: the test whose file name is one of the record's directories, or
- * begins one followed by `-`, preferring the test whose own directories lead
- * to that one (`a/Foo.spec.ts-snapshots/x.png` is `a/Foo.spec.ts`'s), then the
- * first test by name.
+ * begins one followed by `-`. A test whose own directories lead to that
+ * directory is preferred, the more of them the better
+ * (`a/Foo.spec.ts-snapshots/x.png` is `a/Foo.spec.ts`'s), then the first test
+ * by name.
  *
  * @return that test, and the record's name with that directory renamed for
  *   the test's value in `renames` (`a/Foo.spec.js-snapshots/x.png`); undefined
@@ -400,10 +404,11 @@ export const TEST_FRAMEWORKS: ReadonlyMap<string, ITestFramework> = new Map([
 ]);
 
 /**
- * Get the test framework the target's STRING property `property` names, of
- * those that drive a browser where `browserTest`, else of the others; fail
- * naming the frameworks there are, or where a browser test framework is named
- * by a target that supplies no browser.
+ * Get the test framework the target's STRING property `property` names: one
+ * that drives a browser where `browserTest`, else one that does not. Fails
+ * naming the frameworks the target may name where it names none of them, with
+ * help where a target that is not a browser_test names one that drives a
+ * browser.
  */
 export function testFramework(context: TargetContext, property: string, browserTest = false): Computable<ITestFramework> {
   return context.getRequiredProperty(property).then(name => {
@@ -536,8 +541,9 @@ export function packageBuildOverrides(context: TargetContext, property: string):
  * With `interactive`, yield the installation as a program instead, the
  * framework's own run over the tests ({@link planInteractiveRun}).
  *
- * Yields empty content where there are no test files. Throws where tests are
- * declared but the compile has no compilable source.
+ * Yields empty content where no test file is declared, or TEST_FILE_PATTERN
+ * selects none of them; only the selected test files run. Throws where tests
+ * are declared but the compile has no compilable source.
  */
 export function compileAndRunTests(
   context: TargetContext,
@@ -872,16 +878,19 @@ interface ITestRun {
  * {@link COMPILE_OUT_DIR}; the compile's sources under {@link COMPILE_SRC_DIR};
  * a minimal `package.json` and the source-locations table), the packages as
  * its discoverable deps, the runner's install linked at
- * {@link RUNNER_STAGE_DIR}, and the runner's command line.
+ * {@link RUNNER_STAGE_DIR} beside the installs the target links, and the
+ * runner's command line. A flaky suite's failed tests are run again, and an
+ * unstable suite runs on every demand, uncached ({@link TestStability}).
  *
  * The action's reshape ({@link reshapeTestResult}) makes its output the
- * target's content: the report and, under `update`, the refreshed snapshot
- * files as write-back candidates. The reshape is applied on a cache hit as on
+ * target's content: the report, the coverage report and the files the runner
+ * kept of its tests, and, under `update`, the refreshed records as write-back
+ * candidates. The reshape is applied on a cache hit as on
  * a miss, so a replayed update run whose writes were never applied still
  * offers them.
  *
- * Throws where the tests compiled to no runnable file, where the root has two
- * setup scripts.
+ * Throws where the tests compiled to no runnable file, or the compiled tree's
+ * root has two setup scripts.
  */
 function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResult> {
   const preload = run.layout === "pnp" ? pnpPreloadOf(context) : Computable.resolve(undefined);
@@ -913,8 +922,8 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
       { base: `../${RUNNER_STAGE_DIR}`, pool: `../${TREE_MOUNT}` }
     );
     /* The report (and, measured, the coverage report); under `update`, the
-     * refreshed records too, named with the `build/` mount so they stay apart
-     * from the report and the kept files, which the reshape strips. The
+     * refreshed records too, named under the `build/` mount, which the reshape
+     * strips, so they stay apart from the report and the kept files. The
      * patterns are in the action's config, so the two modes never share a
      * cache entry. */
     const outputs = [
@@ -961,6 +970,7 @@ function planTestRun(context: TargetContext, run: ITestRun): Computable<RuleResu
 
 /** A test run's own files, and what the runner is told of them ({@link testInstallation}). */
 interface ITestInstallation {
+  /** The run's own files, named as the installation stages them. */
   files: FileSet;
   /** The compiled test files, by their names in the compiled tree, sorted. */
   testFiles: string[];
@@ -973,14 +983,14 @@ interface ITestInstallation {
 }
 
 /**
- * Lay out a test run's own files: a minimal `package.json`, `root` (what lays
- * out its packages beside it, where the run lays them out itself), the
- * compiled tree with the resources and the recorded expectations under
- * {@link COMPILE_OUT_DIR}, the compile's sources under {@link COMPILE_SRC_DIR}
- * and the source-locations table.
+ * Lay out a test run's own files: a minimal `package.json`, the files `root`
+ * adds at the installation's root (the PnP preload, or the packages a program
+ * lays out itself), the compiled tree with the resources and the recorded
+ * expectations under {@link COMPILE_OUT_DIR}, the compile's sources under
+ * {@link COMPILE_SRC_DIR}, and the source-locations table.
  *
- * Throws where the tests compiled to no runnable file, and where the root has
- * two setup scripts.
+ * Throws where the tests compiled to no runnable file, or the compiled tree's
+ * root has two setup scripts.
  */
 function testInstallation(run: ITestRun, compiledTree: FileSet, root: FileSet): ITestInstallation {
   /* Empty where the declared tests compiled to no runnable file: an error. */
@@ -1135,11 +1145,12 @@ function measuredRun(
 }
 
 /**
- * Split the run's output into the target's content, the report, coverage
- * report and the files the run kept of its tests, and its write-back candidates, the refreshed records paired with the
- * tests they belong beside (`run.records`' {@link ITestRecords.writeBacks},
- * given `recorded`, the records the run was staged with). With no candidate
- * (every `check` run), the plain report.
+ * Split the run's output into the target's content (the report, the coverage
+ * report and the files the run kept of its tests) and its write-back
+ * candidates: the refreshed records paired with the tests they belong beside
+ * (`run.records`' {@link ITestRecords.writeBacks}, given `recorded`, the
+ * records the run was staged with). With no candidate (every `check` run),
+ * the plain content.
  */
 function reshapeTestResult(
   result: FileSet,

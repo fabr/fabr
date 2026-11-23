@@ -19,7 +19,8 @@
 
 /**
  * The test-run action (`js:test-run`): the build step that runs a test runner
- * once per test file over a staged installation. The shared test pipeline
+ * over a staged installation, once per test file or, for a runner that
+ * schedules the files itself, once over them all. The shared test pipeline
  * (TestPipeline.ts) makes it, assembling its files and argv, and reshapes its
  * output.
  */
@@ -96,14 +97,19 @@ import { IPackageLayout, layoutPackages, NodeLayout, ReadName, selfConfig } from
  * the runner once for each test file that needs it ({@link filesToRun}), each
  * invocation one process execution of the process funnel, and collect the
  * outputs, the invocations' reports merged into one {@link TEST_REPORT_FILENAME}.
+ * A runner that schedules the files itself is run once over them all instead
+ * ({@link runScheduledByRunner}).
  *
  * - A run whose tests failed is a result: its merged report says what failed,
  *   its task ends as failed, and it is cached.
  * - Where an invocation failed outright (crashed, or wrote no usable report),
  *   the step rejects and nothing is cached.
+ * - A test file whose tests failed is run again, up to the `flake_retries`
+ *   config member's count ({@link runRetried}).
  * - The step keeps each test file's report, reads and, in a measured run, the
- *   coverage its processes recorded as its incremental state, and keys the entry on the deps rows the files
- *   read ({@link selectionOf}).
+ *   coverage its processes recorded as its incremental state, and keys the
+ *   entry on the deps rows the files read ({@link selectionOf}). An uncached
+ *   action keeps and keys on none of them.
  */
 /* Bump the version when what the step stages, keeps between runs or reports
  * as its reads changes. */
@@ -114,7 +120,7 @@ function declaredEnv(action: BuildAction): Record<string, SecureString> {
   return Object.fromEntries((Array.isArray(action.config.env) ? action.config.env : []).map(variableEntry));
 }
 
-/** Stage the installation as {@link runTests} does, and describe its per-file invocations of the runner. */
+/** Stage the installation as {@link runTests} does, and describe its invocations of the runner: one per test file, or one over them all where the runner schedules them. */
 function stageTests(action: BuildAction, dir: string, ensureTree: (files: FileSet) => Computable<string>): Computable<IStagedStep> {
   const argv = toArgv(commandLineConfig(action, "argv"));
   return Computable.forAll([testFilesOf(action), stageInstall(action, dir, ensureTree, work => work())], testFiles => ({
@@ -186,7 +192,9 @@ function scheduledByRunner(action: BuildAction): boolean {
   return action.config.scheduler === "runner";
 }
 
-/** @return the runner's one invocation over every test file, where it schedules them itself: `argv` less its interpreter, the report, the artifacts directory, then the files. */
+/** @return the runner's one invocation over every test file, where it
+ * schedules them itself: `argv` less its interpreter, the report, the
+ * directory for the files it keeps where it is given one, then the files. */
 function runnerInvocationOf(action: BuildAction, argv: readonly SecureString[], testFiles: string[]): Array<string | SecureString> {
   return [
     ...argv.slice(1),
@@ -281,12 +289,13 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
 }
 
 /**
- * Run the runner once over every test file of the action, as a framework that
- * schedules its own tests across its own workers wants
+ * Run the runner once over every test file of the action, for a framework that
+ * schedules its own tests across its own workers
  * ({@link ITestRunInputs.scheduler}); a failed test is retried within the run
- * by the runner (its `--retries`). Nothing is kept for the next run, which
- * runs every file again; the files the runner kept of its tests are held
- * under {@link TEST_ARTIFACTS_DIR}.
+ * by the runner (its `--retries`). No incremental state is kept, so a run not
+ * served from the cache runs every file. The files the runner kept of its
+ * tests are held under {@link TEST_ARTIFACTS_DIR}. Rejects where the
+ * invocation failed outright.
  */
 function runScheduledByRunner(action: BuildAction, ctx: ActionContext, report: ITaskReport): Computable<BuildResult> {
   const workDir = ctx.workDir;
@@ -358,7 +367,7 @@ function selectionOf(latest: ReadonlyArray<ILatestRun>): { discoveredDeps?: Disc
   return { discoveredDeps: new Map([["deps", rows.map(row => splitDepsPath(row))]]) };
 }
 
-/** Where the runner keeps the files of its tests, a directory per test file, by its index. */
+/** Where the runner keeps the files of its tests, a directory per invocation, by its index. */
 const ARTIFACTS_RAW_DIR = ".fabr-artifacts";
 
 /** Where a measured run's test processes record their coverage, a directory per test file, by its index. */
@@ -946,10 +955,10 @@ function judgeRun(
   return { file, report };
 }
 
-/** @return `report` with each attachment, named within the invocation's
- * directory of kept files, named where the target's result holds it, under
- * `dir` ({@link TEST_ARTIFACTS_DIR}).
- * An attachment naming a path outside that directory is left out. */
+/** @return `report` with each attachment's path, relative to the
+ * invocation's directory of kept files, renamed to where the target's result
+ * holds the file, under `dir` ({@link TEST_ARTIFACTS_DIR}). An attachment
+ * whose path leads outside that directory is left out. */
 export function withArtifactsOf(report: ITestReport, dir: string): ITestReport {
   const placed = (test: ITestResult): ITestResult => {
     if (test.attachments === undefined) {
@@ -1080,8 +1089,8 @@ export interface ITestRunInputs {
   uncached: boolean;
   /** Whether the runner is given a directory for the files it keeps of its
    * tests (`--artifacts`), which the result then holds under
-   * {@link TEST_ARTIFACTS_DIR}: where the runner schedules the files
-   * (`scheduler`), one invocation's directory. */
+   * {@link TEST_ARTIFACTS_DIR}. Only a runner that schedules the files
+   * (`scheduler`) is given one. */
   artifacts?: boolean;
   /** Which schedules the test files across processes: `fabr`, one invocation
    * per file; or the `runner`, given every file in one invocation, across its

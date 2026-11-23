@@ -92,7 +92,7 @@ export class FabrSocketClient {
     });
   }
 
-  /** Send the request `method`. @return its result, once answered; rejected with a {@link FabrSocketError} where it is answered with one, or where the connection ends first. */
+  /** Send the request `method`. @return its result, once answered; rejected with a {@link FabrSocketError} where it is answered with an error, or with an Error where the connection ends first. */
   public request(method: string, params?: object): Promise<unknown> {
     return this.call(method, params).result;
   }
@@ -186,7 +186,8 @@ export class FabrSocketClient {
 }
 
 /**
- * Connect to the fabr socket the environment names (`FABR_SOCKET`).
+ * Connect to the fabr socket `variable` names, as `<path>#<token>` (by
+ * default the process's `FABR_SOCKET`).
  * @return the connection, or undefined where fabr offers no socket, or it
  *   cannot be reached or refuses the token.
  */

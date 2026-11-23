@@ -139,12 +139,12 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-/** @return the words of `property`, a STRING property's value, as written; none where it is unwritten. */
+/** @return the words of `property`, a STRING property's value, with masked runs unmasked; none where it is unwritten. */
 export function unmaskedWords(property: Property | undefined): string[] {
   return (property?.getValues() ?? []).map(word => word.toUnmaskedString());
 }
 
-/** Read a MAP property whose every entry is a string, in the order written. */
+/** Read a MAP property whose every entry is a string, in the order written; throws where an entry is not a string. */
 export function stringEntries(target: string, property: string, map: PropertyMap): Array<[string, SecureString]> {
   return [...map].map(([key, setting]): [string, SecureString] => {
     if (!isWords(setting)) {

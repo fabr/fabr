@@ -252,7 +252,7 @@ function buildJar(
     );
 }
 
-/** @return `map`, a MAP property's value, as the metadata a package carries: each value's words as written. */
+/** @return `map`, a MAP property's value, as the metadata a package carries: each value's words unmasked, nested maps alike. */
 function metadataOf(map: PropertyMap): MetadataMap {
   const value = (entry: PropertyMapValue): MetadataValue =>
     isWords(entry) ? entry.map(word => word.toUnmaskedString()) : Array.isArray(entry) ? entry.map(metadataOf) : metadataOf(entry);

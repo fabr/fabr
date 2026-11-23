@@ -122,8 +122,8 @@ const INTERACTIVE_OPTION = "--interactive";
 /**
  * Enter the interactive run `argv` asks for (`--interactive`): change to the
  * compiled tree, its first operand, where the run then works as a test run
- * does. A path among the runner's own options that is resolved on reading is
- * read before this.
+ * does. Resolve any relative path among the runner's own options before
+ * calling this, since it changes the working directory.
  *
  * @return the runner's arguments, without the option and the tree, and those
  *   after `--`, which the framework's command is given; or undefined where

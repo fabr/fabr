@@ -34,12 +34,12 @@ import { registerExitTeardown } from "../support/Execute";
 const NO_ENV: ReadonlyMap<string, SecureString> = new Map();
 
 /**
- * A fixed argument of a runnable: text, a string or with masked runs; a program of the host, named on the
- * command line by where it lies; a path relative to the runnable's install
- * (`installFile`: a file of it, or one beside it, as of an install a launch
- * links there, `../<link>/<path>`), placed wherever the install is; or parts
- * joined into one argument by `join` (`--module-path=` and the jars, joined by
- * `path.delimiter`).
+ * A fixed argument of a runnable: text (a string, or a SecureString keeping
+ * its masked runs); a program of the host, named on the command line by where
+ * it lies; a path relative to the runnable's install (`installFile`: a file of
+ * it, or a file of a tree a launch links beside it, `../<link>/<path>`),
+ * placed wherever the install is; or parts joined into one argument by `join`
+ * (`--module-path=` and the jars, joined by `path.delimiter`).
  *
  * A command line made of these is written two ways: as key text
  * ({@link manifestArguments}), which names a host program by its content and
@@ -104,7 +104,7 @@ export function toArgv(args: readonly RunnableArgument[], anchor?: string): Secu
   return commandLineOf(args, anchor);
 }
 
-/** Make the command line of {@link toArgv}. */
+/** Make the command line {@link toArgv} returns. */
 function commandLineOf(args: readonly RunnableArgument[], anchor?: string): SecureString[] {
   const text = (arg: RunnableArgument): SecureString => {
     if (typeof arg === "string") {

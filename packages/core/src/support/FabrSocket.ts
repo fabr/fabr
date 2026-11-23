@@ -24,17 +24,17 @@
  * protocol is `fabr`, the socket's own. Each build-step process is registered
  * as it starts ({@link registerProcess}) and finds the socket and its token in
  * its environment as `FABR_SOCKET=<path>#<token>`; a connection opens with
- * `fabr/initialize`, giving the token, which files it under that process.
+ * `fabr/initialize`, whose token names the process the connection is for.
  *
  * Process slots are its first methods: a process fabr starts owns one slot of
  * fabr's process limit, and `slots/acquire` asks for further ones (`count`,
- * one by default, taken together), answered when they are granted; `slots/release` ends a
- * request, giving back its slots, or withdrawing it while it waits, and closing
- * the connection gives back every slot it holds and withdraws every request
- * not yet answered. The first request of a process's connections is lent the slot
- * the process owns, and that slot, given back, goes to the oldest request
- * waiting, so a process that hands all its work to workers keeps one working.
- * docs' reference/fabr-socket.md is the protocol as clients see it.
+ * one by default, taken together), answered when they are granted.
+ * `slots/release` ends a request, giving back its slots or withdrawing it
+ * while it waits, and closing the connection gives back every slot it holds
+ * and withdraws every request not yet answered. The first request of a
+ * process's connections is lent the slot the process owns, and that slot,
+ * given back, goes to the oldest request waiting. docs'
+ * reference/fabr-socket.md is the protocol as clients see it.
  */
 
 import * as crypto from "crypto";
@@ -147,11 +147,12 @@ export function registerProcess(
 }
 
 /**
+ * Make the directory the socket listens in, removing first those of this
+ * user's fabr processes that have died.
  * @return where the socket listens: a named pipe on Windows, else a socket in
- * a directory of this process's own, made afresh (so only this user can open
- * it, and nothing already there is trusted) in the system's temporary
- * directory, or in `/tmp` where that would make the path too long. The
- * directories of fabr processes that have died are removed first.
+ *   a new directory of this process's own, which only this user can open, in
+ *   the system's temporary directory, or in `/tmp` where that would make the
+ *   path too long. The directory is removed as this process exits.
  */
 function socketPath(): string {
   const name = "fabr.sock";
@@ -203,7 +204,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Start the server; resolve undefined where it cannot listen. An error after it listens closes only the connection it concerns. */
+/** Start the server; resolve undefined where it cannot listen. An error of the server's once it is listening is ignored; each connection handles its own. */
 function startServer(): Computable<IServer | undefined> {
   return Computable.from<IServer | undefined>(resolve => {
     try {
@@ -230,7 +231,7 @@ function startServer(): Computable<IServer | undefined> {
   });
 }
 
-/** One client's connection: the JSON-RPC connection it is read through, the process it was filed under, and the slot requests it made, by id. */
+/** One client's connection: the JSON-RPC connection it is read through, the process its token named, and the slot requests it made, by id. */
 class Connection {
   private registered?: IProcess;
   private readonly requests = new Map<RequestId, ISlotRequest>();
@@ -253,7 +254,7 @@ class Connection {
     this.stream.destroy();
   }
 
-  /** @return the process the connection was filed under, for the slot functions. */
+  /** @return the process the connection's token named. */
   public get process(): IProcess {
     return this.registered!;
   }
@@ -306,7 +307,7 @@ class Connection {
    * Grant `id` the process's own slot where it is free, whatever its `count`,
    * else wait for `count` slots of the limit together. A cancel (`signal`)
    * withdraws it while it waits.
-   * @return the request's answer: settled when it is granted, rejected as cancelled where it is withdrawn.
+   * @return the request's answer: resolved when it is granted, rejected as cancelled where it is withdrawn.
    */
   private acquire(registered: IProcess, id: RequestId, count: number, signal: AbortSignal): Promise<unknown> {
     return new Promise((answer, refuse) => {

@@ -136,13 +136,16 @@ export function urlJoin(base: SecureString, path: string): SecureString {
 
 /**
  * @return `ref`, a URL as a server gave it, resolved against `base`, the URL
- * it was had from: where it lies under `base`'s text (at a `/`, `?` or `#`, or
- * `base` ends with `/`), `base` followed by the rest; where it lies under
- * `base`'s text up to its path, which holds any `user:password@` it is
- * written with, that text followed by the rest; where it is of `base`'s origin
- * otherwise (its host written in other capitals), `base` up to its path
- * followed by its own path, where `base` holds no `user:password@`; otherwise
- * as it resolves.
+ * it was fetched from, keeping `base`'s masked runs where the result begins
+ * with `base`'s text:
+ * - where the result lies under `base` (at a `/`, `?` or `#`, or `base` ends
+ *   with `/`): `base` followed by the rest;
+ * - where it lies under `base`'s scheme and authority (any `user:password@`
+ *   included): those, as `base` has them, followed by the rest;
+ * - where it is of `base`'s origin, its host written otherwise (in other
+ *   capitals), and `base` holds no `user:password@`: `base`'s scheme and
+ *   authority followed by the result's path, query and fragment;
+ * - otherwise the result as it resolves, nothing masked.
  */
 export function urlResolved(base: SecureString, ref: string): SecureString {
   const text = base.toUnmaskedString();
@@ -237,7 +240,7 @@ export function sendRequest(written: string | SecureString, request: HttpRequest
   );
 }
 
-/** @return `request`, a request to `url`: where `url` holds masked text, failing as {@link maskedFailure} shows its failure. */
+/** @return `request`, a request to `url`, its failure rewritten by {@link maskedFailure} where `url` holds masked text. */
 function maskingFailures<T>(url: SecureString, request: Computable<T>): Computable<T> {
   return url.isMasked()
     ? request.catch(err => {
@@ -247,12 +250,13 @@ function maskingFailures<T>(url: SecureString, request: Computable<T>): Computab
 }
 
 /**
- * @return `err`, a request to `url` failing, as output may show it: where
- * `url`'s host is masked and the message of a failure in transport names it
- * (a host the connection could not reach), a FabrError whose message shows the
- * host as written, `err` its cause; where
- * `url` is no URL, a FabrError saying so, without `err`, which holds its text;
- * else `err` as it is.
+ * @return `err`, the failure of a request to `url`, as output may show it:
+ * - where `url`'s host is masked and the message of a failure in transport
+ *   names it (a host the connection could not reach): a FabrError whose
+ *   message shows the host as written, `err` its cause;
+ * - where `url` is no URL: a FabrError saying so, without `err`, whose message
+ *   holds the URL's text;
+ * - otherwise `err` as it is.
  */
 function maskedFailure(err: unknown, url: SecureString): unknown {
   const message = (err as { message?: unknown } | undefined)?.message;

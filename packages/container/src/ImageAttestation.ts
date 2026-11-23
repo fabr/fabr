@@ -35,12 +35,14 @@ import { digestOf, IDescriptor, OCI_INDEX, OCI_MANIFEST, Registry } from "./OciP
 /** The media type of a Sigstore bundle, as an attestation's artifact type and its one layer. */
 const SIGSTORE_BUNDLE = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
-/** OCI's empty descriptor content, the config of an artifact that has none. */
+/** The media type of OCI's empty descriptor, the config of an artifact that has none. */
 const OCI_EMPTY = "application/vnd.oci.empty.v1+json";
+/** The content of OCI's empty descriptor. */
 const EMPTY_CONTENT = Buffer.from("{}", "utf8");
 
 /** A signed provenance statement for an image, ready to attach to it. */
 export interface IImageAttestation {
+  /** The Sigstore bundle: the statement, signed. */
   readonly bundle: SerializedBundle;
   /** The predicate type of the statement the bundle signs. */
   readonly predicateType: string;
@@ -50,7 +52,8 @@ export interface IImageAttestation {
  * Sign a provenance statement that the CI job's build built the image whose
  * manifest is `manifest`, published as `name` (`host/repository`), where it
  * applies: the job states its build and its source repository is public.
- * Undefined where it does not apply; any failure once it applies is an error.
+ * Resolves to undefined where it does not apply; any failure once it applies
+ * is a rejection.
  */
 export function signImageProvenance(
   context: TargetContext,
@@ -134,8 +137,9 @@ function ensureBlob(registry: Registry, repository: string, blob: IDescriptor, c
 
 /**
  * Add `entry`, a referrer of `subject`, to the referrers tag index of
- * `subject` in `repository`, kept as the registry holds it: made where there
- * is none, unchanged where it already lists the referrer.
+ * `subject` in `repository` (`sha256-<hex>`): made where there is none, left
+ * unchanged where it already lists the referrer, its other entries kept as
+ * written.
  */
 function addReferrer(registry: Registry, repository: string, subject: string, entry: { digest: string }): Computable<void> {
   const tag = subject.replace(":", "-");

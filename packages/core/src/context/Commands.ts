@@ -91,8 +91,9 @@ export interface MaterializedCommandStage {
   /** The arguments, their masked runs kept. */
   args: SecureString[];
   stdin?: FileSet;
-  /** The file the stage's stdout, and its stderr, is kept in, as written. */
+  /** The file the stage's stdout is captured in, as written. */
   stdout?: string;
+  /** The file the stage's stderr is captured in, as written. */
   stderr?: string;
   mergedTo?: StageStreams["mergedTo"];
 }

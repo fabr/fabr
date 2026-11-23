@@ -33,11 +33,13 @@
  * Usage (the runner contract, as for every runner):
  *   node runner.js --report=<path> --env=node [--update-snapshots]
  *                  [--name-pattern=<regex>] [--setup=<file>]... [--pnp=<file>] [--reads=<file>] [--artifacts=<dir>]
- *                  [--browser=<target>=<browser>]
+ *                  [--retries=<n>] [--browser=<target>=<browser>]
  *                  [--browser-<setting>=<target>=<value>]... [--cypress-cache=<dir>]
  *                  <spec-file>...
  *
- * With `--artifacts`, Cypress's screenshots and videos are kept there. A
+ * With `--artifacts`, Cypress's screenshots and videos are kept there;
+ * `--retries` is how many times a failed test is retried, whatever the
+ * suite's config says. A
  * setup file (`--setup`) runs in the browser before every spec, after the
  * suite's own support file; with `--name-pattern`, only the tests whose full
  * names it matches are registered. Both are done by a support file of fabr's
@@ -81,7 +83,7 @@ interface ICypressCli {
   parseOpenCommand(args: string[]): Promise<Record<string, unknown>>;
 }
 
-/** Run the spec files `argv` names under Cypress, and write the report. */
+/** Run the spec files `argv` names under Cypress, and write the report; with `--interactive`, open Cypress over them instead, exiting with its status. */
 export async function main(argv: string[]): Promise<void> {
   const configuration = configurationOf(argv);
   const cacheOption = argv.find(arg => arg.startsWith(CACHE_OPTION));

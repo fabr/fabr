@@ -128,8 +128,8 @@ const STABILITY_WORDS = ["stable", "flaky", "unstable"];
 /**
  * Convert the words of a test target's stability property to a
  * {@link TestStability}.
- * @throws FabrError naming the words there are, where one is none of them,
- *   and where a word is written twice or `stable` is written beside another.
+ * @throws FabrError where a word is none of {@link STABILITY_WORDS} (naming
+ *   them), is written twice, or is `stable` written beside another.
  */
 export function toTestStability(words: readonly SecureString[]): TestStability {
   const written = new Set<string>();

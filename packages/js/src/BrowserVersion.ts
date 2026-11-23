@@ -115,7 +115,7 @@ function splitBrowserReference(name: Name): Requirement & { projection?: IProjec
   return { name: written.substring(0, colon), versionConstraint: written.substring(colon + 1) };
 }
 
-/** Check a browser reference: it states the oldest version supported. */
+/** Check a browser reference states a version, the oldest supported, as a version is written in a reference. */
 function validateBrowserRequirement({ name, versionConstraint }: Requirement): void {
   if (versionConstraint === undefined) {
     throw new FabrError(`Missing version in a browser reference (expected '@browser:${name}:<version>', that version and newer)`);

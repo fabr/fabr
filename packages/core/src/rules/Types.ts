@@ -241,13 +241,13 @@ export interface RuleImplementation {
    */
   describe?: (context: TargetContext, requirements: Unmaterialized<Record<string, RequiredSources>>) => Computable<RuleResult>;
   /**
-   * Get the build action that building the target performs, not performed,
+   * Get the build action building the target performs, without performing it,
    * where that is another target's action rather than one {@link evaluate}
    * yields: a rule written in `.fabr` whose result is one whole target answers
-   * with that target's. Undefined where building the target performs no one
-   * action. Optional: a rule without it is asked through `evaluate`, whose
-   * result is the action where it is one. What `fabr shell` opens and
-   * `fabr build` of a test target prepares.
+   * with that target's action. Undefined where building the target performs no
+   * single action. Optional: for a rule without it, the action is `evaluate`'s
+   * result where that is an action. Read by `fabr shell`, and by `fabr build`
+   * of a test target to prepare it.
    */
   action?: (context: TargetContext) => Computable<BuildAction | undefined>;
 }

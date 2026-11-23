@@ -1141,8 +1141,8 @@ export class BuildCache {
    *
    * The tree's files are hardlinks to blobs, so they carry the blobs' read-only
    * modes, not the modes the manifest records; its directories are made
-   * read-only once it is placed, so a process running from it cannot change
-   * what every other user of the tree sees. Throws an internal error where a
+   * read-only once it is placed, so no process running from it can add,
+   * remove or rename an entry. Throws an internal error where a
    * file lives outside the cache or is a host program's link. A symlink in
    * `files` stays within the tree (writeFileSet drops one leaving it), so
    * trees do not link to one another; a step links trees into its own work
@@ -2762,7 +2762,7 @@ function holderOf(file: string): number | undefined {
 
 /**
  * @return the work trees under `workRoot` of the live fabr processes using the
- * store, by name (`<host>-<pid>`), `own` left out: one of this host's whose
+ * store, by name (`<host>-<pid>`), `own` (a work tree's path) left out: one of this host's whose
  * process is alive, or another host's changed within {@link GC_GRACE_MS} of
  * `now`. Kept work dirs are not counted: a holder has a work tree of its own.
  */

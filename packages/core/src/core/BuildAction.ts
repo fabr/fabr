@@ -152,10 +152,10 @@ export interface IBuildActionOptions {
    */
   links?: Readonly<Record<string, FileSet>>;
   /**
-   * Run the step on every demand, never looking up a stored entry and
-   * storing none: its output depends on something outside its inputs. The
-   * step is given no base ({@link trackChangedFiles} has no effect) and its
-   * discoverable inputs' selection keys nothing.
+   * Run the step on every demand, never looking up or storing an entry: for a
+   * step whose output depends on something outside its inputs. The step is
+   * given no base ({@link trackChangedFiles} has no effect), and the reads it
+   * reports of its discoverable inputs key nothing.
    */
   uncached?: boolean;
 }

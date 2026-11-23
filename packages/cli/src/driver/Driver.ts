@@ -392,8 +392,9 @@ function runBuild(
 
 /**
  * @return the operation `fabr build` and `fabr shell` build `name` under:
- * `build`, or where the type of the target it names has no rule for `build`,
- * `run` where it has one for `run`, else `test` where it has one for `test`.
+ * `build` where the type of the target it names has a rule for `build`, else
+ * `run` where it has one for `run`, else `test` where it has one for `test`,
+ * else `build`.
  */
 function buildingOperation(model: BuildModel, name: string): string {
   const target = model.getReferencedTarget(name);
@@ -407,9 +408,10 @@ function buildingOperation(model: BuildModel, name: string): string {
 /** Run `fabr test <targets>` through core's {@link testOperation}, then, each
  * time a watch cycle changes the results: log the summary of each target whose
  * tests ran, write `--report`'s file from those, write refreshed expectations
- * back where no test failed and every target was built, and report coverage.
- * Fails where any test failed or any target failed to build, after the reports
- * are written, or where `-t` matched no test. */
+ * back where no test failed and every target was built, report coverage, and
+ * copy `--artifacts`' files. Fails where any test failed or any target failed
+ * to build, after the reports are written, or where `-t` or `-T` matched no
+ * test. */
 function runTest(
   model: BuildModel,
   options: Options,
@@ -460,10 +462,10 @@ function runTest(
 /**
  * Copy the files each tested name's runs kept of its tests into `dir`, under
  * `<target>/`, the name of the target it names as declared (the name as written
- * where it names none), each named as its report's attachments name it beneath
- * the artifacts directory. Each name's directory is emptied first, so it holds
- * this run's files alone. Runs whether or not tests failed: those are the runs
- * whose files are wanted.
+ * where it names none), each named as it is within the runs' artifacts
+ * directory ({@link getTestArtifacts}). Each name's directory is emptied
+ * first, so it holds this run's files alone. Call it whether or not tests
+ * failed.
  */
 function writeTestArtifacts(
   model: BuildModel,
@@ -1784,8 +1786,8 @@ function reportTestResults(
       });
     }
   });
-  /* A file pattern alone matched a file where the file reported any test,
-   * skipped ones included; a name pattern, where a test ran. */
+  /* With a file pattern alone, a file matched where it reported any test,
+   * skipped ones included; with a name pattern, where a test ran. */
   const filesOnly = filePattern !== undefined && namePattern === undefined;
   const ran = reports.reduce((count, report) => {
     const summary = report?.results.summary;

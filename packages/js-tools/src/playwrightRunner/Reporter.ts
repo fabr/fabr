@@ -33,8 +33,8 @@ import { IReportedError, IReportedResult, IReportedTest, reportedRunOf, toRunFai
 export interface IReporterOptions {
   /** Where to write the report. */
   report: string;
-  /** The invocation's test files: an error outside any test is named for the
-   * one there is. */
+  /** The invocation's test files. An error outside any test is named for the
+   * file where there is exactly one. */
   files: string[];
   /** Whether tests are selected by name, so that a run of none is no failure. */
   named: boolean;
@@ -81,9 +81,12 @@ export default class FabrReporter {
     this.errors.push(error);
   }
 
-  /** Write the report: a result per test, a failure per error raised outside
-   * every test, and one per file no project of the config runs, or that
-   * registered no tests where none are selected by name. */
+  /**
+   * Write the report: a result per test, and a failure for each error raised
+   * outside every test, for each file no project of the config runs, for each
+   * file where the run registered no tests and none are selected by name, and
+   * for a run that did not pass where nothing else failed.
+   */
   public onEnd(result: { status: string }): void {
     const { files, named, unmatched = [] } = this.options;
     const file = files.length === 1 ? files[0] : undefined;
@@ -120,7 +123,7 @@ export default class FabrReporter {
     return attachments.length === 0 ? result : { ...result, attachments };
   }
 
-  /** Keep one attachment in `dir`, and @return its path within it, `/`-separated; undefined where there is nothing to keep. */
+  /** Keep one attachment in `dir`. @return its path within `dir`, `/`-separated; undefined where its file is gone or it has no content. */
   private keep(dir: string, attachment: { name: string; path?: string; body?: Buffer }): string | undefined {
     if (attachment.path !== undefined) {
       if (!fs.existsSync(attachment.path)) {

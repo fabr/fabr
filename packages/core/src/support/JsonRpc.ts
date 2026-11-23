@@ -34,7 +34,7 @@ const INITIALIZE: Record<Protocol, string> = { bsp: "build/initialize", lsp: "in
 /** The notification LSP defines for cancelling a request in flight, by its id. */
 const CANCEL_REQUEST = "$/cancelRequest";
 
-/** JSON-RPC's error codes a server answers with. */
+/** The JSON-RPC and LSP error codes a server answers with. */
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
 const METHOD_NOT_FOUND = -32601;
@@ -53,7 +53,11 @@ interface IMessage {
 /** What a frame read holds: a message, or what was wrong with it and the code to answer that with. */
 type Frame = { protocol: Protocol; message: IMessage } | { protocol: Protocol; code: number; reason: string };
 
-/** Convert a JSON-RPC message: an object whose `id`, where it has one, is a number or a string, and whose `method`, where it has one, is a string. */
+/**
+ * Convert a JSON-RPC message: an object whose `id`, where it has one, is a
+ * number or a string (a null `id` is taken as none), and whose `method`, where
+ * it has one, is a string.
+ */
 function toMessage(json: unknown): IMessage {
   if (!isJsonObject(json)) {
     throw new FabrError("expected a JSON object");
@@ -83,7 +87,11 @@ export class ServerNotInitialized extends FabrError {}
 /** A request cancelled before it was answered. */
 export class RequestCancelled extends FabrError {}
 
-/** What a handler is told of the message it answers: its id where it is a request, and a signal that aborts where the client cancels the request (`$/cancelRequest`). */
+/**
+ * What a handler is told of the message it answers: its id where it is a
+ * request, and a signal that aborts where the client cancels the request
+ * (`$/cancelRequest`) or the connection ends.
+ */
 export interface IMessageContext {
   readonly id?: number | string;
   readonly signal: AbortSignal;
@@ -97,7 +105,12 @@ export interface IConnectionLimits {
   maxBodyBytes: number;
 }
 
-/** A protocol's server: answers a request or notification `method` with its result, or throws (MethodNotFound, InvalidParams, or any other error, answered as an internal error). */
+/**
+ * A protocol's server: answers a request or notification `method` with its
+ * result, or a promise of it, or throws. An error of one of this module's
+ * classes (MethodNotFound, InvalidParams, …) is answered with its code, any
+ * other as an internal error.
+ */
 export type Handler = (method: string, params: unknown, context: IMessageContext) => unknown;
 
 /**
@@ -125,8 +138,8 @@ export class JsonRpcConnection {
   private readonly handlers = new Map<Protocol, Handler>();
   /** Each protocol's notifications sent before its client's initialize was answered, sent once it is. */
   private readonly held = new Map<Protocol, unknown[]>(Object.keys(INITIALIZE).map(protocol => [protocol as Protocol, []]));
-  /** The protocols that have a client: the default, the connection's own, and
-   * each other whose client has sent a frame naming it. */
+  /** The protocols that have a client: the connection's default, and each
+   * other whose client has sent a frame naming it. */
   private readonly heard: Set<Protocol>;
   /** Each protocol's requests not yet answered, by id, with what cancels each. */
   private readonly inFlight = new Map<Protocol, Map<number | string, AbortController>>();
@@ -146,7 +159,12 @@ export class JsonRpcConnection {
     this.handlers.set(protocol, handler);
   }
 
-  /** Read messages from `input` and dispatch each until it ends, then call `onEnd`. A frame that cannot be read is answered with an error; one over the connection's limits ends it. */
+  /**
+   * Read messages from `input` and dispatch each until it ends, then cancel
+   * every request in flight and call `onEnd`. A frame that cannot be read is
+   * answered with an error; one over the connection's limits ends the
+   * connection and destroys `input`.
+   */
   public listen(input: NodeJS.ReadableStream, onEnd: () => void): void {
     /* Every request still in flight is cancelled: nothing can be answered. */
     const end = (): void => {
@@ -309,7 +327,7 @@ export class JsonRpcConnection {
       );
   }
 
-  /** Write `message` as a frame, naming its protocol where it is not the connection's default; nothing once the connection has ended. */
+  /** Write `message` as a frame, naming its protocol where it is not the connection's default; write nothing once the connection has ended. */
   private send(protocol: Protocol, message: unknown): void {
     if (this.ended) {
       return;

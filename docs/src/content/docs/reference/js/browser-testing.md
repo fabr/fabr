@@ -46,7 +46,7 @@ A browser test is compiled, cached and reported like any other test target (see
   support file.
 - **Browser tests share the machine with the rest of the build.** Fabr runs a Playwright worker's
   tests only while it has processors to spare, counting a worker and its browser as two of the
-  processes it runs at once, so several targets run together don't overload the machine.
+  processes it runs at once, so several targets running together don't overload the machine.
 - **`fabr run <target>` opens the framework's interactive run** over the suite: see
   [Running a suite interactively](#running-a-suite-interactively).
 
@@ -172,7 +172,7 @@ Fabr uses it as written, except for the settings it owns:
 | `projects`                | Refused, with `The Playwright config defines projects, and a browser_test is one`: [declare a target for each browser](#testing-in-several-browsers), and sign in from [`globalSetup`](#signing-in-once). |
 | `testMatch`, `testIgnore` | Applied to choose which files run, matched against the source file names you wrote them for, in a release build as in a debug one.                                      |
 | `reporter`                | Replaced by fabr's report.                                                                                                                                                |
-| `workers`                 | Your config's own, or, where it sets none, half the machine's processors, as Playwright's own default outside CI: each test's `parallelIndex` and `TEST_PARALLEL_INDEX` mean what they do under `playwright test`. Workers run tests only while fabr has processes to spare beside the rest of the build. |
+| `workers`                 | Your config's own or, where it sets none, half the machine's processors, which is Playwright's own default outside CI. Each test's `parallelIndex` and `TEST_PARALLEL_INDEX` mean what they do under `playwright test`. |
 | `outputDir`               | A directory fabr chooses for each run.                                                                                                                                    |
 | `updateSnapshots`         | `none`, or `changed` under `fabr test -u`.                                                                                                                                |
 | `grep`                    | Your config's own, with [`fabr test -t`](/reference/js/testing/#running-tests) applied as Playwright's `--grep` where you give it.                                                             |

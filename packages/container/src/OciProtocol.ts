@@ -434,7 +434,7 @@ export class Registry {
   }
 
   /**
-   * Put `manifest` into `repository` under `tag` (a tag or its digest).
+   * Put `manifest` into `repository` under `tag` (a tag, or the manifest's digest).
    * @return the digest the registry says it recorded as the manifest's
    * subject (`OCI-Subject`), or undefined where it says none.
    */
@@ -452,7 +452,8 @@ export class Registry {
 
   /**
    * Read the manifest `tag` names in `repository` as the registry holds it now,
-   * uncached, or undefined where there is none: for a document fabr changes.
+   * uncached, for a document fabr is about to change; undefined where there is
+   * none.
    */
   public currentManifest(repository: string, tag: string): Computable<Buffer | undefined> {
     return this.send(urlJoin(this.url, `v2/${repository}/manifests/${tag}`), {

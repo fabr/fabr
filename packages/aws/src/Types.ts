@@ -33,6 +33,7 @@ export interface IAccountSettings {
   readonly credentials: string;
   /** The region of the account's regional services. */
   readonly region: string;
+  /** The URL every service's requests are sent to in place of AWS's own, where the account declares one (`endpoint`). */
   readonly endpoint?: SecureString;
   /** The account's ID, where it is declared. */
   readonly accountId?: string;

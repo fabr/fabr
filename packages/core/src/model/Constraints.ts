@@ -147,10 +147,10 @@ export const SOURCES_OPERATION = "sources";
 
 /**
  * The `compatibility` operation: a reference names a runtime the output must
- * be compatible with, at its floor (`@browser:chrome:120`, Chrome 120 and
- * newer). References read under it combine by union, so the lowest version
- * required of each package is selected, and nothing is fetched (see
- * {@link compatibilityReader}).
+ * be compatible with, from the lower bound it states up
+ * (`@browser:chrome:120`, Chrome 120 and newer). Of each package, the lowest
+ * version any reference states is selected, and nothing is fetched (see
+ * resolver/Compatibility.ts's `compatibilityReader`).
  */
 export const COMPATIBILITY_OPERATION = "compatibility";
 

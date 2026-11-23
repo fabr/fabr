@@ -59,7 +59,12 @@ export function takeProcessSlot(variable: string): Promise<FabrSocketClient | un
   );
 }
 
-/** @return `playwright` with its `test`, its `default` and, where the module is itself `test`, the module extended with the slot fixture. */
+/**
+ * @return the module `playwright` with its `test` and `default` replaced by
+ * `test` extended with the slot fixture, which takes slots from the fabr
+ * socket `address` names; where the module is itself `test`, calling it and
+ * reading what `test` carries reach the extended one too.
+ */
 export function withProcessSlot<T extends IPlaywrightTest>(playwright: T, address: string): T {
   const test = playwright.test.extend({
     fabrProcessSlot: [

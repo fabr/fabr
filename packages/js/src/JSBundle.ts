@@ -218,7 +218,7 @@ export function toBundleFormat(value: SecureString): BundleFormat {
   throw new FabrError(`JS_BUNDLE_FORMAT must be 'iife', 'cjs', 'esm' or 'esm-split', not '${value.toDisplayString()}'`);
 }
 
-/** Each bundle format. */
+/** The bundle formats. */
 const BUNDLE_FORMATS: readonly BundleFormat[] = ["iife", "cjs", "esm", "esm-split"];
 
 /**

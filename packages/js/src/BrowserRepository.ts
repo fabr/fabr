@@ -146,7 +146,8 @@ export function browserDataOf(agents: ICaniuseAgents, baselineVersions: IBaselin
 
 /**
  * Write the browsers `packages` reach as a browserslist query, sorted, each by
- * the lowest version selected for it (`safari >= 17.2, chrome >= 120`), or as
+ * the lowest version selected for it, a range by its lower end
+ * (`safari >= 17.2, chrome >= 120`), or as
  * `op_mini all` where that version is Can I Use's `all`; `baseline` names no
  * browser and is left out.
  */
@@ -305,6 +306,7 @@ class FetchableBrowsers extends Namespace {
     super();
   }
 
+  /** Get the distribution of the browser `name`, made the first time it is asked for. Rejects for a browser fabr cannot fetch. */
   public get(name: string): Computable<Repository> {
     if (name === CHROME) {
       this.chrome ??= new ChromeForTesting(this.context, this.chromeUrl, `${this.context.name}:${CHROME}`);
@@ -317,7 +319,7 @@ class FetchableBrowsers extends Namespace {
     );
   }
 
-  /** List the browsers fabr can fetch, each made only when a name goes through it. */
+  /** List the browsers fabr can fetch, each as the namespace of its releases. */
   public children(ref: NamespaceRef): Computable<Map<string, Reference>> {
     return Computable.forAll(
       FETCHABLE.map(browser =>
@@ -331,13 +333,15 @@ class FetchableBrowsers extends Namespace {
   }
 }
 
-/** The browsers fabr can fetch. */
+/** The name Chrome is fetched under. */
 const CHROME = "chrome";
+/** The browsers fabr can fetch. */
 const FETCHABLE = [CHROME];
 
 /**
- * Make a `browser_repository`'s compatibility reading from its `data`, the browser data packages: each
- * is written to the tree pool and loaded from there, Can I Use's for its
+ * Make a `browser_repository`'s compatibility reading from its `data`, the
+ * browser data packages: each is written to the tree pool and loaded from
+ * there, Can I Use's for its
  * browsers' releases and baseline-browser-mapping's for the Baseline years.
  */
 function createCompatibilityRepository(context: TargetContext): Computable<Repository> {

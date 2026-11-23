@@ -24,8 +24,8 @@
  * names derived from `package_name` and the file's path, and a TypeScript
  * module `x.css.ts` exporting them; other stylesheets keep their names. Every
  * stylesheet is prefixed for the browsers the `BROWSER_TARGET` global names,
- * read under `compatibility`, so the lowest version of each named is the one
- * prefixed for.
+ * read under the `compatibility` operation: each browser is prefixed for from
+ * the lowest version of it named.
  *
  * `deps` are read, never included in the output: a `composes` naming another
  * file in `srcs` resolves among them, and one naming a package's stylesheet

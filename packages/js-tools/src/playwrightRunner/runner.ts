@@ -35,7 +35,7 @@
  * Usage (the runner contract, as for every runner):
  *   node runner.js --report=<path> --env=node [--update-snapshots]
  *                  [--name-pattern=<regex>] [--setup=<file>]... [--pnp=<file>] [--reads=<file>]
- *                  [--artifacts=<dir>] [--browser=<target>=<browser>]
+ *                  [--artifacts=<dir>] [--retries=<n>] [--browser=<target>=<browser>]
  *                  [--browser-<setting>=<target>=<value>]...
  *                  [--playwright-browsers=<dir>]
  *                  <test-file>...
@@ -69,14 +69,14 @@ const MINIMUM_PLAYWRIGHT = [1, 50] as const;
 /** The environment variable naming the URL the suite runs against. */
 export const BASE_URL_VARIABLE = "PLAYWRIGHT_BASE_URL";
 
-/** The stems a project's config may have, compiled. */
+/** The file names a project's compiled Playwright config is looked for under, in order. */
 const CONFIG_FILES = ["playwright.config.js", "playwright.config.cjs"];
 
 /** Playwright's modules this runner loads, from the test installation. */
 interface IPlaywright {
-  /** `@playwright/test`'s command line. */
+  /** The path of `@playwright/test`'s command line. */
   cli: string;
-  /** `playwright`'s `lib/util`, its file matcher. */
+  /** The path of `playwright`'s `lib/util`, which holds its file matcher. */
   util: string;
 }
 
@@ -141,11 +141,11 @@ export function projectConfiguration(
 }
 
 /**
- * Write the run's global setup module for the setup files `setup` (`./`-prefixed
- * paths within the tree, or module names): one that loads each in turn and
- * runs the function it exports, where it exports one, given Playwright's
- * config, so a setup file may be a script that does its work as it loads or
- * a `globalSetup` function.
+ * Write the run's global setup module into `root` for the setup files `setup`
+ * (`./`-prefixed paths within the tree, or module names): one that loads each
+ * in turn and calls the function it exports, where it exports one, with
+ * Playwright's config. A setup file may thus be a script that does its work
+ * as it loads, or a `globalSetup` function.
  * @return the module's path.
  */
 function setupModule(root: string, setup: ReadonlyArray<string>): string {
@@ -186,8 +186,8 @@ function playwrightDevices(cli: string): Readonly<Record<string, Record<string, 
 export function main(argv: string[]): void {
   const configured = configurationOf(argv);
   const buildsOption = argv.find(arg => arg.startsWith(BUILDS_OPTION));
-  /* By their real path, which is fixed by their content, so a browser keeps
-   * one location from run to run (a firewall's permission for it holds). */
+  /* By their real path, so a browser keeps one location from run to run (a
+   * firewall's permission for it holds). */
   const builds = buildsOption === undefined ? undefined : fs.realpathSync(path.resolve(buildsOption.substring(BUILDS_OPTION.length)));
   const interactive = enterInteractiveRun(argv);
   const options = parseRunnerArgs(
@@ -249,16 +249,17 @@ export function main(argv: string[]): void {
   );
   const children = childPreloads(options);
   process.on("exit", () => children.finish());
-  /* Where fabr offers its socket, every process of the run, this one (which
-   * loads the tests to list them) and each worker, adds the slot fixture alike. */
+  /* Where fabr offers its socket, every process of the run adds the slot
+   * fixture: this one, which loads the tests to list them, and each worker. */
   if (process.env[FABR_SOCKET_VARIABLE]) {
     installProcessSlot();
     process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--require ${JSON.stringify(path.join(__dirname, "preload.js"))}`]
       .filter(Boolean)
       .join(" ");
   }
-  /* The name pattern is Playwright's own `--grep`, which spares the projects a
-   * run depends on, where a config's `grep` would filter their tests out too. */
+  /* The name pattern is passed as Playwright's `--grep`, not a config's
+   * `grep`, which would also filter out the tests of the projects a run
+   * depends on. */
   process.argv = [
     process.execPath,
     playwright.cli,

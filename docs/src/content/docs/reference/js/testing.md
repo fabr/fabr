@@ -204,9 +204,8 @@ flaky tests included. To see a flaky target's failures without retries, set
 An `unstable` target's tests run in full each time `fabr test` is run. Under `fabr test -w` they
 run again only when something they depend on changes, as any test does.
 
-Tests that depend on something outside the build and also fail by chance, such as browser tests
-against a staging server, are both: `stability = unstable flaky;` (in either order) runs them on
-every `fabr test` and retries a failed test within each run.
+Write both as `stability = unstable flaky;`, in either order: for example, for browser tests against
+a staging server.
 
 ## The test environment
 
@@ -241,7 +240,8 @@ js_package mylib {
 
 Fabr adds `FABR_SOCKET`, which a test runner's workers use to share fabr's process limit
 (see [The fabr socket](/reference/fabr-socket/)), and the variables that tell programs to colour
-their output (`FORCE_COLOR`, `CLICOLOR_FORCE`), so the output fabr shows keeps its colour.
+their output (`FORCE_COLOR`, `CLICOLOR_FORCE`), so the output fabr shows keeps its colour. On
+Windows a process also gets the variables Windows programs need to start, such as `SYSTEMROOT`.
 
 Because there is no `PATH`, a test that starts another program must name it by absolute path, for
 example `process.execPath` for Node.js itself. `NODE_OPTIONS` also carries the modules fabr's

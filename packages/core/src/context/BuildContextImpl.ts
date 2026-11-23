@@ -1507,10 +1507,11 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   /**
-   * Apply `edit` to `value`, the value of `name`, or undefined where it has
-   * none: `:-` gives the word where it is unset or empty, `:+` the word where it
-   * is neither (else nothing), and `:?` throws, its word the message, where it
-   * is unset or empty.
+   * @return the text the unset edit `edit` makes of `value`, the value of
+   * `name` (undefined where it has none): for `:-`, the word where the value
+   * is unset or empty, else the value; for `:+`, the word where it is neither,
+   * else empty text; for `:?`, the value. Throws for `:?` where the value is
+   * unset or empty, the word its message.
    */
   private unsetEditedText(
     value: SecureString | undefined,
@@ -1914,9 +1915,11 @@ export class BuildContextImpl implements InternalBuildContext {
 
   /**
    * Get the build action the rule of the declared target `name` yields, not
-   * performed: undefined where the rule is a value or yields content. The
-   * target's requirements are read from its resolution where it has been
-   * resolved, and are resolved here otherwise. A name that is no target throws.
+   * performed: the one its `action` gives where the rule has one
+   * ({@link RuleDefinition.action}), else the one it evaluates to; undefined
+   * where the rule is a value or yields content. The target's requirements
+   * are read from its resolution where it has been resolved, and are resolved
+   * here otherwise. A name that is no target throws.
    */
   public actionOfTarget(name: string, stack?: IDependencyStack): Computable<BuildAction | undefined> {
     const def = this.lookupDecl(name);
@@ -2309,7 +2312,7 @@ function wholeMapError(name: Name): FabrError {
   );
 }
 
-/** @return `name` as the MAP property and the key of its entry it names (`ENV.HOME`), where it names one: two names joined by a `.`. */
+/** @return the MAP property and the key of its entry that `name` names, where it is two names joined by one `.` (`ENV.HOME`); otherwise undefined. */
 function mapKeyOf(name: string): { map: string; key: string } | undefined {
   const dot = name.indexOf(".");
   return dot > 0 && dot < name.length - 1 && name.indexOf(".", dot + 1) === -1
@@ -2381,7 +2384,7 @@ function editedText(text: SecureString, edit: PatternEdit, part: NamePart): Secu
   return text.isMasked() ? SecureString.masked(edited, new Name([part]).toDisplayString()) : SecureString.of(edited);
 }
 
-/** @return true if `stage` holds text from a masked source (its arguments, redirections, or its runnable's arguments or environment), otherwise false. */
+/** @return true if `stage` holds text from a masked source (its arguments, or its runnable's arguments or environment), otherwise false. */
 function stageIsMasked(stage: MaterializedCommandStage): boolean {
   return (
     stage.args.some(arg => arg.isMasked()) ||
@@ -2537,9 +2540,9 @@ class RuleScope {
   }
 
   /**
-   * Get the build action building the matched target performs, not performed:
-   * where the result is one whole target, that target's, in the configuration
-   * the block resolves it in; otherwise undefined.
+   * Get the build action that builds the matched target, not performed: where
+   * the result is one whole target, that target's action, in the
+   * configuration the block resolves it in; otherwise undefined.
    */
   public action(stack?: IDependencyStack): Computable<BuildAction | undefined> {
     return Computable.forAll([this.lookupBlockRequirements(stack), this.resultConfiguration()] as const, ({ result }, constraints) => {
@@ -2864,7 +2867,7 @@ abstract class ScopedConfiguration extends BuildContextImpl {
   /** @return the scope's own match for a prefix of `name`, or undefined where none of its names is one. */
   protected abstract ownPrefixMatch(name: Name): ScopedMatch | undefined;
 
-  /** @return true if the scope declares `name`, or for `M.key`, `M`, which the key is read in (`${MAP.key}`), otherwise false. */
+  /** @return true if the scope declares `name`, or, for an entry `M.key` of a MAP property (`${M.key}`), `M`, otherwise false. */
   protected owns(name: string): boolean {
     return this.ownDecl(mapKeyOf(name)?.map ?? name) !== undefined;
   }

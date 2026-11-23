@@ -232,9 +232,10 @@ export abstract class Distribution<V, C> implements Repository, RepositoryLookup
   }
 
   /**
-   * Select the version a range names from `versions`, the published versions:
-   * the lowest satisfying `constraint`, a stable version only, unless the
-   * constraint's own minimum is a prerelease. Undefined where none does.
+   * Select from `versions`, the published versions, the one a constraint that
+   * is no exact version names. By default, the lowest satisfying `constraint`,
+   * and a stable one unless the constraint's own minimum is a prerelease.
+   * Undefined where none satisfies it.
    */
   protected selectFrom(versions: V[], constraint: C): V | undefined {
     return lowestSatisfying(this.domain, versions, constraint);

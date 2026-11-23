@@ -265,7 +265,7 @@ export function pipelineSpecs(action: BuildAction): StageSpec[][] {
   );
 }
 
-/** @return the text entries of a config member holding a list of them. */
+/** @return the entries of a config member holding a list of text; throws an internal error for an entry that is not text. */
 function textEntries(entries: readonly RunnableArgument[]): SecureString[] {
   return entries.map(entry => {
     if (typeof entry === "string") {

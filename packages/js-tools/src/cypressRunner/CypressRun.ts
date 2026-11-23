@@ -47,9 +47,10 @@ export interface ICypressRun {
 export type ICypressResult = { runs: ReadonlyArray<ICypressRun> } | { status: "failed"; message?: string };
 
 /**
- * Convert a run to test results: each test named `suite › title`, for its
- * spec's source. A spec that could not run, and a run that could not start,
- * fail every file of `files` it reaches.
+ * Convert a run to test results: each test named by its suites' titles and
+ * its own, joined by ` › `, for its spec's source. A run that could not start
+ * fails every file of `files`; a spec that could not run fails its own file,
+ * beside the tests it reported.
  */
 export function toTestResults(result: ICypressResult, files: ReadonlyArray<string>): ITestResult[] {
   if (!("runs" in result)) {

@@ -56,14 +56,15 @@ import {
 
 /**
  * The step that runs a Java test suite: stage the install, run the runner once
- * over every test class, and collect its CTRF report, with the coverage report
- * of a measured run beside it. Where tests failed and the action allows
- * retries, the runner runs again over the source files whose tests failed (or
- * over every class, where a failure names no file or the run died), and each
- * file's report is combined with its earlier runs' ({@link retriedReport}). A
- * run whose tests failed is still a result and is cached: its report says what
- * failed, and its task ends as failed. A run that wrote no usable report fails
- * with the runner's own output.
+ * over every test class (or the classes of the selected source files), and
+ * collect its CTRF report, with the coverage report of a measured run beside
+ * it. Where tests failed and the action allows retries, the runner runs again
+ * over the source files whose tests failed (or over the whole selection, where
+ * a failure names no file or the run died), and each file's report is
+ * combined with its earlier runs' ({@link retriedReport}); the coverage of
+ * every run is merged. A run whose tests failed is still a result: its report
+ * says what failed, and its task ends as failed. Where the last run wrote no
+ * usable report, the step fails with the runner's own output.
  */
 const JAVA_TEST_STEP: IBuildActionDefinition = { id: "java:test-run", version: 6, run: runTests };
 
@@ -136,12 +137,12 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
     .then(result => ({ result }));
 }
 
-/** Name run `index`'s report, apart from the step's own, which combines them. */
+/** @return the name of run `index`'s report, apart from the step's own, which combines them. */
 function reportOf(index: number): string {
   return `${TEST_REPORT_FILENAME}.${index}`;
 }
 
-/** Name run `index`'s coverage report; the first run's is the step's own. */
+/** @return the name of run `index`'s coverage report; the first run's is the step's own. */
 function coverageOf(index: number): string {
   return index === 0 ? COVERAGE_REPORT_FILENAME : `${COVERAGE_REPORT_FILENAME}.${index}`;
 }
@@ -156,11 +157,11 @@ export function failedFiles(report: ITestReport): string[] | undefined {
 }
 
 /**
- * Combine the runs of a suite into its report: each source file's tests as its
+ * Combine the runs of a suite into its report: each source file's tests as the
  * last run that ran it reported them, marked with what its earlier runs did
  * ({@link retriedReport}). A run that died counts, for every file it ran, as
  * every test failing; a file first reported after such a run of every class
- * counts it too. The last run is one that wrote a report.
+ * counts it too. `runs` must end with a run that wrote a report.
  */
 export function combinedReport(runs: IRun[]): ITestReport {
   const byFile = new Map<string, Array<ITestReport | undefined>>();
@@ -224,10 +225,11 @@ function mergeRunCoverage(workDir: string, count: number): void {
 }
 
 /**
- * Judge run `reportName`: its report, or the failure no report explains: the
- * run's own `error` where the run failed and its report is unreadable or
- * records no failed test, and an ExecutionError naming `invocation` where the
- * run succeeded but its report is unreadable.
+ * Judge the run whose report is `reportName`, given the run's own `error`.
+ * @return the run's report; or the failure no report explains: `error` where
+ *   the run failed and its report is unreadable or records no failed test, or
+ *   an ExecutionError naming `invocation` where the run succeeded but its
+ *   report is unreadable.
  */
 function judgeRun(
   workDir: string,
@@ -254,14 +256,18 @@ function judgeRun(
   return { report };
 }
 
-/** How a suite's results are trusted: the further runs failed tests get, and whether the run is never cached. */
+/** How a suite's run treats failures and caching. */
 export interface ITestRunStability {
+  /** The further runs the tests that failed get. */
   retries: number;
+  /** Whether the run's result is never cached. */
   uncached: boolean;
 }
 
 /** @return the action that runs `argv` (the runner's command line, less its report) in `staged`
- * with the environment `env` and no other, collecting the coverage report too where the run is `measured`. */
+ * with the environment `env` and no other, collecting the coverage report too where the run is `measured`.
+ * It retries and caches as `stability` says, and runs only the tests of the source files `selected`
+ * names, where it is given. */
 export function createTestRunAction(
   staged: FileSet,
   argv: readonly RunnableArgument[],

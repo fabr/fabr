@@ -63,11 +63,11 @@ export interface IInvocation {
   configDir: string;
   /** The invocation's test files, absolute. */
   files: ReadonlyArray<string>;
-  /** @return the path a compiled file is matched by: where its source would
-   * be in the compiled tree (`<configDir>/tests/a.spec.ts`), so the project's
-   * patterns, written for the sources, match it. */
+  /** @return the path a compiled test file is matched as: where its source
+   * would be in the compiled tree (`<configDir>/tests/a.spec.ts`), since the
+   * project's patterns are written for the sources. */
   sourceOf(compiled: string): string;
-  /** Playwright's own matcher of `testMatch` and `testIgnore` patterns. */
+  /** Make Playwright's own matcher for `testMatch` or `testIgnore` patterns. */
   matcher(patterns: FilePattern): (file: string) => boolean;
   /** @return true if `file` exists, otherwise false. */
   exists(file: string): boolean;
@@ -80,38 +80,49 @@ export interface IInvocation {
   retries: number;
   /** How many workers the run starts where the config sets none. */
   workers?: number;
-  /** The run's global setup module, made of the suite's setup files, where it has any: refused beside a config's own `globalSetup`. */
+  /** The run's global setup module, made of the suite's setup files, where it has any. */
   globalSetup?: string;
   /** The URL the suite runs against, if any: `use.baseURL` in every project. */
   baseURL?: string;
-  /** The target's browser configuration: the run's one project (see {@link wrapConfig}). */
+  /** The target's browser configuration, which is the run's one project. */
   configuration?: IProjectConfiguration;
   /** fabr's reporter, as a config's reporter entry; undefined leaves the config's own. */
   reporter?: [string, Record<string, unknown>];
 }
 
-/** The browser configuration, as its project's settings: its browser by Playwright's name, the executable fabr fetched where it did, and its `use` (a device's descriptor, its viewport and user agent). */
+/** A browser configuration as the settings of its Playwright project. */
 export interface IProjectConfiguration {
   name: string;
+  /** The browser, by Playwright's name for it. */
   browser: string;
+  /** The browser's executable, where fabr fetched it. */
   executable?: string;
+  /** The project's `use`: a device's descriptor, then the viewport and user agent. */
   use: Record<string, unknown>;
 }
 
 /**
- * Make the config one invocation runs with, from the project's own `user`.
- * The run has one project, the browser configuration's, of its name and
- * `use`, a browser fabr fetched its `launchOptions.executablePath`; a config
- * defining projects of its own is refused. It runs the invocation's files the
- * config's `testDir`, `testMatch` and `testIgnore` select, matched as the
- * files' sources, with fabr's reporter alone where the invocation has one,
- * given the files not selected as `unmatched`; artifacts under `outputDir`;
- * `retries` the invocation's; `workers` the invocation's where the config sets
- * none; no `globalTimeout`; snapshots rewritten only under `update`, where
- * it is given; and `use.baseURL` from the URL. A
- * `globalSetup` or `globalTeardown` naming a TypeScript source names its
- * compiled file; the suite's setup files are the `globalSetup` where the
- * config names none, and refused where it does.
+ * Make the config one invocation runs with from the project's own config,
+ * `user`, which is otherwise passed through:
+ * - The run has one project, named and set up as the browser configuration
+ *   is where there is one, its `launchOptions.executablePath` the browser
+ *   fabr fetched, where it fetched one. It runs the invocation's
+ *   files that the config's `testDir`, `testMatch` and `testIgnore` select,
+ *   each matched as its source ({@link IInvocation.sourceOf}); with no such
+ *   file the run has no project.
+ * - fabr's reporter, where the invocation has one, is the only reporter, given
+ *   the invocation's files not selected as `unmatched`.
+ * - `outputDir` and `retries` are the invocation's, at the top and in the
+ *   project; `workers` the invocation's where the config sets none;
+ *   `globalTimeout` and `shard` are off; snapshots are rewritten as `update`
+ *   says, where it is given; and `use.baseURL` is the invocation's URL, where
+ *   it has one.
+ * - A `globalSetup` or `globalTeardown` naming a TypeScript source that is
+ *   not there names its compiled file. The suite's setup files are the
+ *   `globalSetup`.
+ *
+ * Throws where the config defines projects of its own, or names a
+ * `globalSetup` while the suite has setup files.
  */
 export function wrapConfig(user: IPlaywrightConfig, invocation: IInvocation): IPlaywrightConfig {
   const { projects: written, ...top } = user;
@@ -137,7 +148,7 @@ export function wrapConfig(user: IPlaywrightConfig, invocation: IInvocation): IP
     const executable = ofProject ? configuration?.executable : undefined;
     const additions = {
       ...(invocation.baseURL === undefined ? {} : { baseURL: invocation.baseURL }),
-      /* A project's `launchOptions` replaces the config's whole, so it carries both. */
+      /* A project's `launchOptions` replaces the config's whole: carry both. */
       ...(executable === undefined
         ? {}
         : {
@@ -254,10 +265,11 @@ export interface IReportedTest {
 }
 
 /**
- * Convert one test's runs: `suite › title`, named for its file's source. An expected outcome is
- * passed or skipped as its last run was, an unexpected one failed with its last
- * failing run's errors, and a flaky one (passed on Playwright's own retry)
- * passed and flaky.
+ * Convert one test's runs to its result, named `suite › title` and for its
+ * file's source. An expected outcome is passed or skipped as its last run
+ * was, an unexpected one failed with its last failing run's errors, and a
+ * flaky one (passed on Playwright's own retry) passed and flaky, with its
+ * retries counted.
  */
 export function toTestResult(test: IReportedTest): ITestResult {
   return resultOf(test).result;
@@ -271,7 +283,7 @@ export function reportedRunOf(test: IReportedTest): IReportedResult | undefined 
 
 /** Convert one test's runs ({@link toTestResult}), with the run it reports. */
 function resultOf(test: IReportedTest): { result: ITestResult; run: IReportedResult | undefined } {
-  /* The run's one project is the target's, so its name adds nothing to a test's. */
+  /* Leave out the root suite, the project and the file: the run's one project is the target's. */
   const [, , , ...titles] = test.titlePath();
   const name = titles.join(" › ");
   const duration = test.results.reduce((sum, result) => sum + result.duration, 0);
@@ -311,9 +323,11 @@ function filePathOf(file: string): string {
 }
 
 /**
- * Split a failure into its one-line message — the first line of its first
- * error, without its colour codes — and the rest as its trace: the remainder of each
- * message, and the frames of each stack in the code under test.
+ * Split a failure into its one-line message (the first line of its first
+ * error) and the rest as its trace: the remainder of each error's message,
+ * and the frames of each stack in the code under test ({@link framesOf}).
+ * Colour codes are removed, paths inside the compiled tree are made relative
+ * to it, and a failed recorded expectation gains fabr's remedy.
  */
 export function describeErrors(errors: ReadonlyArray<IReportedError>): { message: string; trace?: string } {
   const [summary = "failed", ...detail] = errors

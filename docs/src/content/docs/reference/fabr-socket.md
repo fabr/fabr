@@ -49,9 +49,9 @@ Fabr sets `FABR_SOCKET` in the environment of every process it starts as a build
 - **`<path>`** is the socket: a Unix-domain socket in a directory only your user can open, or a
   named pipe (`\\.\pipe\fabr-…`) on Windows. There is one per fabr process, for as long as it
   runs.
-- **`<token>`** identifies the process fabr started, the build step. It is what files a
-  connection under that step, so the step's owned slot can be lent to it, and fabr refuses a
-  connection whose token it didn't give out.
+- **`<token>`** identifies the process fabr started, the build step. It tells fabr which step a
+  connection belongs to, so that the slot the step already holds can be lent to it, and fabr
+  refuses a token it didn't give out.
 
 The variable is passed on to whatever that process starts, so its workers find it in their own
 environment. A program fabr runs outside a build step, under `fabr run` or `fabr shell`, has no
@@ -71,8 +71,8 @@ fabr already speaks to editors: every message is a
 which BSP adopts: a `Content-Length` header giving the length of the body in bytes, a blank line,
 then the body as UTF-8 JSON.
 
-Fabr carries several protocols over one stream this way, a frame naming the protocol it belongs
-to in a `Fabr-Protocol` header. On the socket, a frame with no `Fabr-Protocol` header belongs to the
+A frame may name the protocol it belongs to in a `Fabr-Protocol` header, which is how fabr carries
+several protocols over one stream. On the socket, a frame with no `Fabr-Protocol` header belongs to the
 socket's own protocol, the one this page describes, so a client sends none; it is the only
 protocol the socket serves today.
 
@@ -84,11 +84,10 @@ Content-Length: 49\r\n
 
 A request carries an `id` the client chooses, a string or a number, and is answered by a response
 with the same `id`, which may come at once or much later; a notification (without one) isn't
-answered. A connection may not reuse an `id` while a request with it is still in progress, or
-while a `slots/acquire` with it still holds its slots: such a request is answered with error
-`-32600`. A body that isn't JSON is answered with error `-32700`, and one that isn't a JSON-RPC
-message, such as a batch (an array of messages), with error `-32600`, both with a `null` `id`. A
-frame whose headers run past 8 KB, or whose body is over 1 MB, closes the connection.
+answered. A connection can't reuse an `id` while a request with it is still in progress, or while
+a `slots/acquire` with it still holds its slots. A batch (an array of messages) isn't served. A
+frame whose headers run past 8 KB, or whose body is over 1 MB, closes the connection; anything
+else that's wrong is answered with an [error](#errors).
 
 ### Initializing
 
@@ -103,10 +102,9 @@ The first request on a connection is `fabr/initialize`, giving the token:
 `capabilities` lists the method families it serves: `slots`, today. Fabr ignores params it doesn't
 know, so a client may send more, such as its own name.
 
-A token fabr didn't give out, or one whose build step has finished, is answered with error
-`-32602` (`unknown token`), and the connection stays uninitialized. Any other request before `fabr/initialize` is
-answered with error `-32002`, and a second `fabr/initialize` on one connection with error
-`-32600`.
+A token fabr didn't give out, or one whose build step has finished, is refused with error `-32602`
+(`unknown token`), and the connection stays uninitialized: any other request is refused with
+error `-32002` until a `fabr/initialize` succeeds.
 
 ## Methods
 
@@ -116,14 +114,15 @@ answered with error `-32002`, and a second `fabr/initialize` on one connection w
 | `slots/release`   | notification | `{"id": <id>}`   | End the `slots/acquire` request the client sent with that `id`: give back its slots where it was granted, or withdraw it where it is still waiting, which answers it with error `-32800`. |
 | `$/cancelRequest` | notification | `{"id": <id>}`   | Cancel a request still waiting. See [Cancelling a request](#cancelling-a-request). |
 
-`count` is the number of slots the work about to start needs, such as 2 for a worker that drives a
-browser, which is more than one process's work; a count is taken as at most one less than fabr's
-limit, since the process already holds one slot, and one that isn't a whole number of 1 or more is answered with error `-32602`. A client may
-send several `slots/acquire` requests without waiting for answers. Closing the
-connection gives back every slot granted on it and withdraws every request not yet answered, so a
-client that has finished doesn't need to release its slots first, and a client that crashes gives
-them back the same way. A `slots/release` naming no request of the connection changes nothing. A request for a method fabr doesn't serve is answered
-with error `-32601`.
+`count` is the number of slots the work about to start needs, a whole number of 1 or more, such as
+2 for a worker that drives a browser, which is more than one process's work. A count above one
+less than fabr's limit is taken as that, since the process already holds one slot. A client may
+send several `slots/acquire` requests without waiting for answers.
+
+Closing the connection gives back every slot granted on it and withdraws every request not yet
+answered, so a client that has finished doesn't need to release its slots first, and a client that
+crashes gives them back the same way. A `slots/release` naming no request of the connection
+changes nothing.
 
 ### Cancelling a request
 
@@ -149,9 +148,9 @@ or not the grant has arrived.
   fabr's limit, beside every other step's work, and is granted once that many are free, taking
   them together. The process's own slot, lent to a request, counts as all the slots it asked
   for.
-- **Oldest first.** A request waiting for several slots holds back those made after it, so it isn't
-  passed over by smaller ones. A step's requests are granted in the order they were made, across all of its
-  connections.
+- **Oldest first.** Fabr's limit grants requests in the order they were made, this step's and every
+  other step's alike. A request waiting for several slots holds back those made after it, even
+  where a smaller one would fit, so that it isn't passed over indefinitely.
 - **The end of the step.** When the process fabr started exits, fabr closes every connection made
   with its token and takes back every slot they hold. A client whose connection fabr closes should
   stop work.
@@ -177,6 +176,20 @@ it can go on; fabr's lending of the process's own slot depends on it.
   the wait out.
 - **Run without a slot where there's none to take.** If the socket can't be reached, or refuses the
   connection, carry on without one, as a GNU make job does without a jobserver.
+
+### Errors
+
+| Code     | Meaning                                                                                                   |
+| -------- | --------------------------------------------------------------------------------------------------------- |
+| `-32700` | The body isn't JSON. Answered with a `null` `id`.                                                         |
+| `-32600` | Not a request fabr can serve: a batch or other non-message (with a `null` `id`), an `id` still in use, or a second `fabr/initialize`. |
+| `-32601` | A method fabr doesn't serve.                                                                              |
+| `-32602` | Params fabr can't take: an unknown token, or a `count` that isn't a whole number of 1 or more.           |
+| `-32002` | A request before a successful `fabr/initialize`.                                                          |
+| `-32800` | The `slots/acquire` was withdrawn before it was granted, by `$/cancelRequest` or `slots/release`.         |
+
+Codes `-32700` to `-32600` are JSON-RPC's own, and `-32002` and `-32800` are LSP's
+(`ServerNotInitialized`, `RequestCancelled`).
 
 ## Example client
 

@@ -21,8 +21,7 @@
  * The java_test rule: compile the tests against `deps` and `compile_deps`, and
  * run them with `deps` on the classpath ({@link runJavaTests}), with
  * `defines`, `jvm_args`, `env` and `stability`. A measured run measures
- * nothing: the coverage of what the tests run is named by its sources, which
- * the packages in `deps` do not carry.
+ * nothing.
  */
 
 import { BUILD_OVERRIDE, defineRule, EMPTY_FILESET, FileSet } from "@fabr-build/core";

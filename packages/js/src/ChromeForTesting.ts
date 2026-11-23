@@ -116,7 +116,7 @@ export function chromePlatformOf(target: string): string | undefined {
  * release branch of the newest (its third part, `8078` for Chrome 156), so
  * `156` selects the first build of Chrome 156's branch. Throws for a milestone
  * not yet branched, whose newest build is a trunk build (its last part 0),
- * naming the browser as `written`. Undefined where it names none.
+ * naming the browser as `written`. Returns undefined where it names none.
  */
 export function releaseBranchBuild(
   versions: BrowserVersion[],

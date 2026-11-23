@@ -181,10 +181,10 @@ export function deleteTreeSync(filepath: string): void {
 
 /**
  * Make every directory under `dir`, `dir` itself included, read-only, so that
- * no entry can be added, removed or renamed: what keeps a tree as it was made
- * ({@link setDirectoriesWritable} undoes it). Files and symlinks are left as
- * they are. Does nothing on Windows, where a directory's read-only attribute
- * does not stop changes to its entries but does stop its removal.
+ * no entry can be added, removed or renamed ({@link setDirectoriesWritable}
+ * undoes it). Files and symlinks are left as they are. Does nothing on
+ * Windows, where a directory's read-only attribute does not stop changes to
+ * its entries but does stop its removal.
  */
 export function setDirectoriesReadOnly(dir: string): Computable<void> {
   if (process.platform === "win32") {
@@ -210,9 +210,10 @@ export function setDirectoriesReadOnly(dir: string): Computable<void> {
 
 /**
  * Make every directory under `dir`, `dir` itself included, writable by its
- * owner (`writable`), or none of them writable by anyone (as
- * {@link setDirectoriesReadOnly} does, now). Files and symlinks are left as
- * they are. Does nothing where `dir` is not a directory, or on Windows.
+ * owner where `writable`, else writable by no one (as
+ * {@link setDirectoriesReadOnly} does, but synchronously). Files and symlinks
+ * are left as they are. Does nothing where `dir` is not a directory, or on
+ * Windows.
  */
 export function setDirectoriesWritable(dir: string, writable: boolean): void {
   if (process.platform === "win32") {

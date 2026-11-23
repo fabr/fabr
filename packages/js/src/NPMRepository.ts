@@ -344,8 +344,9 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
    * The credential is the token the registry exchanges the run's CI identity
    * for (trusted publishing), where there is one and the registry grants it;
    * else this repository's credential. Where the exchange was refused and the
-   * upload then fails, the error carries help naming the refusal. A publish
-   * with a provenance statement annotates the task's end `provenance`.
+   * upload then fails, the error carries help naming the refusal. A version
+   * published with a provenance statement adds `provenance` to the
+   * annotation of `report`'s task.
    */
   public publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus> {
     const { name, version } = packageCoordinateOf(artifact.destination);

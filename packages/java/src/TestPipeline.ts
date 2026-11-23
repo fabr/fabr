@@ -68,6 +68,7 @@ export interface IJavaTestSettings {
 
 /** What a Java test run is made from. */
 export interface IJavaTestInputs {
+  /** The test sources. */
   tests: FileSet;
   /** The packages the tests are compiled against. */
   compile: FileSet[];
@@ -100,8 +101,9 @@ const COVERAGE_DIR = ".coverage";
 
 /**
  * Make the test run's action: the tests compiled against `compile`, then run
- * by the runner over the compiled test classes, with `runtime` as the
- * classpath; nothing where no tests are declared.
+ * by the runner over the compiled test classes, with the classes, the
+ * resources, the runner and `runtime` as the classpath. The result is empty
+ * where no tests are declared, or `TEST_FILE_PATTERN` selects none.
  */
 export function runJavaTests(context: TargetContext, settings: IJavaTestSettings, inputs: IJavaTestInputs): Computable<RuleResult> {
   const { tests } = inputs;
@@ -245,7 +247,7 @@ interface ICoverageTools {
   analysis: Array<[string, IFile]>;
 }
 
-/** Materialize `JACOCO_AGENT` and `JACOCO`, a tool's packages, resolved permissively for `run`. */
+/** Materialize the jar `JACOCO_AGENT` names, under `build`, and the classpath of `JACOCO`'s packages, resolved permissively for `run`. */
 function coverageTools(context: TargetContext): Computable<ICoverageTools> {
   const analysis = context
     .getGlobalFileProperty("JACOCO", BUILD_OVERRIDE)

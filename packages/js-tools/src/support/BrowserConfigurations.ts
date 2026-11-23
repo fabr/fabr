@@ -30,6 +30,7 @@ import * as path from "node:path";
 
 /** The browser configuration, as given. */
 export interface IBrowserConfiguration {
+  /** The configuration's name: the target's. */
   name: string;
   /** The framework's name for the browser (`chromium`, `webkit`, `chrome`). */
   browser: string;
@@ -51,10 +52,11 @@ export function isConfigurationOption(arg: string): boolean {
 
 /**
  * Read the browser configuration among `argv`, its executable by its real
- * path, which its content fixes, so a browser keeps one location from run to
- * run (a firewall's permission for it holds); undefined where none is
- * declared. Throws for a second configuration, an option naming one not
- * declared, or a malformed option.
+ * path, so a browser keeps one location from run to run (a firewall's
+ * permission for it holds).
+ * @return the configuration, or undefined where none is declared. Throws for
+ *   a second configuration, an option naming one not declared, an unknown
+ *   option, or an option without its `<configuration>=<value>`.
  */
 export function configurationOf(argv: ReadonlyArray<string>): IBrowserConfiguration | undefined {
   const configurations = new Map<string, IBrowserConfiguration>();

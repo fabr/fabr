@@ -150,7 +150,7 @@ function bucketUrl(location: IBucketLocation): SecureString {
   return isVirtualHostable(bucket) ? getServiceUrl(`${bucket}.s3`, region) : getServiceUrl(S3_HOST, region, encoded);
 }
 
-/** The host name of S3's API within a region. */
+/** The service part of S3's API host, `s3.<region>.amazonaws.com`. */
 const S3_HOST = "s3";
 
 /** @return `key` URI-encoded a path segment at a time. */

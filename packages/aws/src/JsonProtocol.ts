@@ -29,7 +29,8 @@ import { IServiceSettings } from "./Types";
 
 /**
  * Make a request for the operation `target` with `body`: to `endpoint` where
- * there is one, else to `service`, its URL on AWS (`https://ssm.eu-west-2.amazonaws.com/`).
+ * there is one, else to `service`, the service's URL on AWS
+ * (`https://ssm.eu-west-2.amazonaws.com/`).
  */
 export function jsonRequest(
   target: string,
@@ -98,7 +99,7 @@ export function isThrottling(error: IServiceError): boolean {
 }
 
 /**
- * Sign `request` for `service` and send it, resolving to the body of
+ * Sign `request` for `service` and send it to its URL, resolving to the body of
  * a 200. A 5xx rejects with an `HttpStatusError` of that status, and a
  * throttling error (see {@link isThrottling}) with one of 429, both of which a
  * fetch retries as transient; any other answer rejects with `refuse` of its

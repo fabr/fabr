@@ -227,9 +227,9 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
 
   /**
    * Push a packaged image under its tag (see {@link pushImage}), with a signed
-   * provenance statement where this repository asks for one and it applies
-   * (see {@link signImageProvenance}); the task's end is then annotated
-   * `provenance`.
+   * provenance statement where this repository's `provenance` is not `off` and
+   * one applies (see {@link signImageProvenance}). Where the image is pushed
+   * with one, the task's end is annotated `provenance`.
    */
   public publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus> {
     const name = artifact.destination.name;
@@ -376,7 +376,7 @@ export class OciRepository implements Repository, RepositoryLookup, RepositoryWr
  * Make the repository an `oci_repository` declaration declares, or a namespace
  * makes with `url` and `credential`: the declaration's `url` over the one
  * given, and a `credential` in place of signing in with the auth files' (see
- * {@link authFileSignIn}).
+ * {@link authFileSignIn}). Throws where `provenance` is neither `on` nor `off`.
  */
 function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(

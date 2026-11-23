@@ -41,13 +41,14 @@ export class Semaphore {
   constructor(public readonly capacity: number) {}
 
   /**
-   * Run `work` once `count` slots are available (one by default, at most
-   * `capacity`), settling as its result first settles. The slots are held
+   * Run `work` once `count` slots are available (one by default; a count over
+   * `capacity` takes every slot), settling as its result first settles. The slots are held
    * from the call of `work` until that result settles, so put only the
    * bounded work itself inside `work` (not a cache lookup before it). A
    * synchronous throw from `work` rejects. Aborting `signal` while `work` is
    * still queued withdraws it, rejecting without running it; once it has
-   * started, aborting changes nothing.
+   * started, aborting changes nothing. Throws a RangeError where `count` is
+   * not a whole number of at least one.
    */
   public run<T>(work: () => Computable<T>, count = 1, signal?: AbortSignal): Computable<T> {
     if (!Number.isInteger(count) || count < 1) {
@@ -95,7 +96,11 @@ export class Semaphore {
     });
   }
 
-  /** Grant `count` slots at once where they are free and nothing is queued, else queue the grant. @return the queued entry, or undefined where it was granted at once. */
+  /**
+   * Grant `count` slots at once where they are free and nothing is queued,
+   * else queue the grant.
+   * @return the queued entry, or undefined where it was granted at once.
+   */
   private acquire(count: number, grant: () => void): { count: number; grant: () => void } | undefined {
     if (this.queued.length === 0 && this.held + count <= this.capacity) {
       this.held += count;
@@ -107,7 +112,10 @@ export class Semaphore {
     return entry;
   }
 
-  /** Remove `entry` from the queue, then start what now fits. @return true if it was still queued, otherwise false. */
+  /**
+   * Remove `entry` from the queue, then start what now fits.
+   * @return true if it was still queued, otherwise false.
+   */
   private withdraw(entry: { count: number; grant: () => void }): boolean {
     const index = this.queued.indexOf(entry);
     if (index < 0) {
@@ -118,7 +126,10 @@ export class Semaphore {
     return true;
   }
 
-  /** Give back `count` slots, then start each queued function in turn whose slots are now free, stopping at the first that has to wait. */
+  /**
+   * Give back `count` slots, then start each queued function in turn whose
+   * slots are now free, stopping at the first that has to wait.
+   */
   private release(count: number): void {
     this.held -= count;
     while (this.queued.length > 0 && this.held + this.queued[0].count <= this.capacity) {

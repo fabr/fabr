@@ -327,11 +327,11 @@ export function testOperation(config: BuildContext, refs: INameValue[]): Computa
 
 /**
  * Build everything the build action of each of `refs` reads, under `config`'s
- * operation, and perform none of the actions (the `build` verb on a target
- * whose type only tests: everything its test run needs, short of running
- * it). A target whose rule yields no one build action is built outright.
- * Names are refused as for {@link buildOperation}: rejects where any name is
- * refused, or where any target fails to build.
+ * operation, performing none of the actions: for `fabr build` on a target
+ * whose type only tests, everything its test run needs short of running it.
+ * A name whose rule yields content rather than a build action is built
+ * outright. Names are refused as by {@link buildOperation}; rejects where any
+ * name is refused or any target fails to build.
  */
 export function prepareOperation(config: BuildContext, refs: INameValue[]): Computable<void> {
   return requireAllDeclared(config, refs).then(() =>

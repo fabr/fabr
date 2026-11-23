@@ -19,9 +19,9 @@
 
 /**
  * The `compatibility` reading of a registry: each reference names a runtime
- * the output must be compatible with, at its floor (`@browser:chrome:120`,
- * Chrome 120 and newer). Requirements combine by union, so of each package the
- * lowest version required is selected, and nothing is fetched.
+ * the output must be compatible with, from the lower bound it states up
+ * (`@browser:chrome:120`, Chrome 120 and newer). Of each package the lowest
+ * version any requirement states is selected, and nothing is fetched.
  */
 
 import { Computable } from "../core/Computable";
@@ -35,18 +35,18 @@ import { PackageFormat } from "./PackageFormat";
 import { resolveBarePackage, vendPackageRef } from "./PackageResolver";
 import { Requirement } from "./Types";
 
-/** A constraint read for compatibility: the floor it states, or none where it states no lower bound. */
+/** A constraint read for compatibility: the lower bound it states (`floor`), absent where it states none. */
 export interface CompatibilityConstraint<V> {
   readonly floor?: V;
 }
 
 /**
- * Make the compatibility reading of `format`: a constraint is its floor in
- * `format` (`minimumOf`), satisfied by that version and every older one, and
- * versions order newest first, so the highest floor in that order, which a
- * resolution selects, is the lowest version required. A constraint with no
- * floor (`*`) requires nothing. Only the floor counts: an upper bound states
- * nothing about what must be supported.
+ * Make the compatibility reading of `format`: a constraint is its lower bound
+ * in `format` (`minimumOf`), satisfied by that version and every older one,
+ * and versions are ordered newest first, so the version a resolution selects,
+ * the highest in that order, is the lowest version any requirement states. A
+ * constraint with no lower bound (`*`) requires nothing, and an upper bound is
+ * ignored.
  */
 export function compatibilityFormat<V, C>(format: PackageFormat<V, C>): PackageFormat<V, CompatibilityConstraint<V>> {
   const read = (constraint: C): CompatibilityConstraint<V> =>
@@ -134,7 +134,7 @@ class CompatibilityReader<V, C> implements RepositoryReader<V, CompatibilityCons
     return this.registry.availableVersions?.(name) ?? Computable.resolve(undefined);
   }
 
-  /** Find the lowest version, in this reading's order, satisfying `versionConstraint`: the newest published at or below its floor. */
+  /** Find the lowest version, in this reading's order, satisfying `versionConstraint`: the newest published at or below its lower bound, or the newest of all where it states none. */
   public lowestAvailable(name: string, versionConstraint: string): Computable<V | undefined> {
     let constraint: CompatibilityConstraint<V>;
     try {
