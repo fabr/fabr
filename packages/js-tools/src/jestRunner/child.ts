@@ -33,12 +33,12 @@ import { inspect } from "node:util";
 import { handleFocus } from "../testRunner/Focus";
 import { endAfterReport, reportPathOf, sourcePathOf } from "../testRunner/Report";
 import type { FocusHandling } from "../testRunner/RunTests";
-import { DocblockPragmas, environmentFor, IFileEnvironment, installJsdom } from "./Environment";
+import { DocblockPragmas, environmentFor, IFileEnvironment, installJestGlobals, installJsdom } from "./Environment";
 import { installHoist } from "./Hoist";
 import { IFakeTimers, IMocker, makeJestObject } from "./JestObject";
 import { ILoaderModule, installSeams, MockRegistry } from "./Registry";
 import { IMockerControls, makeEnvironmentFacade, makeRuntimeFacade } from "./RuntimeFacade";
-import { jestLibrary, requireEnvironment } from "./Tools";
+import { jestLibrary, jestMajor, requireEnvironment } from "./Tools";
 import { makeJestConfig } from "./Config";
 import { formatExecError, formatFailures, IExecError, IFormattableResult } from "./Failures";
 
@@ -105,6 +105,7 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
   if (environment.env === "jsdom") {
     installJsdom(environment.options);
   }
+  installJestGlobals();
 
   const { globalConfig, projectConfig } = await makeJestConfig(request);
 
@@ -115,12 +116,28 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
   installSeams(registry);
   installHoist(request.root);
 
-  const timers = new (
-    jestLibrary("@jest/fake-timers") as {
-      ModernFakeTimers: new (opts: unknown) => IFakeTimers;
-    }
-  ).ModernFakeTimers({ global: globalThis, config: { rootDir: request.root, fakeTimers: {} } });
-  const env = { registry, mocker, timers, seed: (globalConfig as { seed?: number }).seed };
+  const fakeTimers = jestLibrary("@jest/fake-timers") as {
+    ModernFakeTimers: new (opts: unknown) => IFakeTimers;
+    LegacyFakeTimers: new (opts: unknown) => IFakeTimers;
+  };
+  const timerConfig = { rootDir: request.root, fakeTimers: {} };
+  const modern = new fakeTimers.ModernFakeTimers({ global: globalThis, config: timerConfig });
+  const legacy = new fakeTimers.LegacyFakeTimers({
+    global: globalThis,
+    moduleMocker: mocker,
+    config: timerConfig,
+    /* A timer's handle, as jest's environment makes it: the id under jsdom, an
+     * object like node's under node. */
+    timerConfig:
+      environment.env === "jsdom"
+        ? { idToRef: (id: number) => id, refToId: (ref: number) => ref }
+        : {
+            idToRef: (id: number) => ({ id, ref: () => undefined, unref: () => undefined }),
+            refToId: (timer: { id?: number } | undefined) => timer?.id,
+          },
+  });
+  const timers = { modern, legacy, current: modern };
+  const env = { registry, mocker, timers, seed: (globalConfig as { seed?: number }).seed, jestMajor: jestMajor() };
   /* The `jest` global resolves module specifiers relative to the test file;
    * `@jest/globals`, which the hoisted `jest.mock` calls require, serves each
    * module a `jest` resolving relative to it. A mock registered from another
@@ -147,7 +164,9 @@ export async function runTestFile(request: IChildRequest): Promise<IChildResult>
     /* Restore real timers, which circus does not (the environment facade has
      * no fakeTimers), so a file whose last test leaves fake timers installed
      * does not fake the clock for the reporting that follows. */
-    timers.dispose();
+    timers.current.useRealTimers();
+    modern.dispose();
+    legacy.dispose();
   }
   return {
     testFile: request.testFile,

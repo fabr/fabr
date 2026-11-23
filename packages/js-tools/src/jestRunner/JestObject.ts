@@ -19,9 +19,11 @@
 
 /**
  * The `jest` object. Every public method of jest-mock's `ModuleMocker` (`fn`,
- * `spyOn`, `mocked`, the clear/reset/restore family) and of `@jest/fake-timers`'
- * `ModernFakeTimers` is copied onto it, bound, so a member the installed jest
- * release lacks is absent here too (`jest.advanceTimersToNextFrame` on jest 29).
+ * `spyOn`, `mocked`, the clear/reset/restore family) is copied onto it, bound,
+ * and every public method of `@jest/fake-timers`' `ModernFakeTimers` and
+ * `LegacyFakeTimers` forwards to the one `useFakeTimers` last chose, so a
+ * member the installed jest release lacks is absent here too
+ * (`jest.advanceTimersToNextFrame` on jest 29).
  * The module-registry operations (`mock`, `unmock`, `requireActual`,
  * `resetModules`, …) are written out over fabr's registry (Registry.ts).
  *
@@ -40,22 +42,34 @@ export interface IMocker {
   generateFromMetadata(metadata: unknown): unknown;
 }
 
-/** The members of @jest/fake-timers' ModernFakeTimers called by name. */
+/** The members of @jest/fake-timers' ModernFakeTimers and LegacyFakeTimers
+ * called by name. */
 export interface IFakeTimers {
   useFakeTimers(config?: unknown): void;
+  useRealTimers(): void;
   /** Restore the real timers and clock. Not on the jest object: the run calls
    * it once circus returns, so a file whose last test leaves fake timers
    * installed does not fake the clock the run's reporting reads. */
   dispose(): void;
 }
 
+/** jest's two fake timer implementations, and the one `jest.useFakeTimers`
+ * last chose, which the `jest` object's timer methods call. */
+export interface ITimers {
+  modern: IFakeTimers;
+  legacy: IFakeTimers;
+  current: IFakeTimers;
+}
+
 /** The per-process machinery every `jest` object shares. */
 export interface IJestEnvironment {
   registry: MockRegistry;
   mocker: IMocker;
-  timers: IFakeTimers;
+  timers: ITimers;
   /** The run's seed from the normalized jest config (`jest.getSeed`). */
   seed: number | undefined;
+  /** The installed jest's major version, for the members only some releases have. */
+  jestMajor: number;
 }
 
 /*
@@ -80,11 +94,11 @@ interface IRetryOptions {
 const circusGlobals = globalThis as Record<symbol, unknown>;
 
 /**
- * Public methods of ModuleMocker and ModernFakeTimers that are not on jest's
+ * Public methods of ModuleMocker and the fake timers that are not on jest's
  * `jest` object: the automock metadata pair Registry.ts calls, and lifecycle
  * jest does not expose. Every other public method is copied.
  */
-const NOT_JEST_API = new Set(["generateFromMetadata", "getMetadata", "clearMocksOnScope", "dispose", "reset"]);
+const NOT_JEST_API = new Set(["generateFromMetadata", "getMetadata", "clearMocksOnScope", "dispose", "reset", "runWithRealTimers"]);
 
 /**
  * Make the `jest` object for one module. Module specifiers given to it resolve
@@ -96,7 +110,7 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
 
   /* Mock functions and spies, and the timer methods. */
   adopt(jest, env.mocker);
-  adopt(jest, timers);
+  adoptTimers(jest, timers);
 
   /* Get the `jest` object, which jest's module operations return for
    * chaining. */
@@ -128,15 +142,27 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
     autoMockOff: () => (registry.setAutomockAll(false), chain()),
     requireActual: (moduleName: string) => registry.requireActual(moduleName, caller),
     requireMock: (moduleName: string) => registry.requireMock(moduleName, caller),
-    createMockFromModule: (moduleName: string) => registry.requireMock(moduleName, caller),
-    /* Removed in jest 30; declared by jest 29. */
-    genMockFromModule: (moduleName: string) => registry.requireMock(moduleName, caller),
+    createMockFromModule: (moduleName: string) => registry.createMockFromModule(moduleName, caller),
+    /* jest 29's alias, removed in 30. */
+    ...(env.jestMajor < 30 ? { genMockFromModule: (moduleName: string) => registry.createMockFromModule(moduleName, caller) } : {}),
     resetModules: () => (registry.resetModules(), chain()),
     isolateModules: (fn: () => void) => (registry.isolateModules(fn), chain()),
     isolateModulesAsync: (fn: () => Promise<void>) => registry.isolateModulesAsync(fn),
 
-    /* Replaces the copied method, to apply withTimerDefaults. */
-    useFakeTimers: (config?: unknown) => (timers.useFakeTimers(withTimerDefaults(config)), chain()),
+    /* Choose the implementation, as jest-runtime does, restoring the real
+     * timers from the other first: under jest they share the test's window
+     * alone, here they share the runner's global object, whose timers each
+     * would otherwise leave faked or delete. */
+    useFakeTimers: (config?: { legacyFakeTimers?: boolean }) => {
+      const next = config?.legacyFakeTimers ? timers.legacy : timers.modern;
+      if (next !== timers.current) {
+        timers.current.useRealTimers();
+        timers.current = next;
+      }
+      next.useFakeTimers(next === timers.modern ? config : undefined);
+      return chain();
+    },
+    useRealTimers: () => (timers.current.useRealTimers(), chain()),
 
     /* Set the globals circus reads, as jest-runtime does. */
     setTimeout: (ms: number) => ((circusGlobals[TEST_TIMEOUT] = ms), chain()),
@@ -162,7 +188,6 @@ export function makeJestObject(env: IJestEnvironment, caller: ILoaderModule | un
     /* jest API not implemented here: present, and throws saying so. A member
      * jest does not have is left absent, so feature detection works. */
     onGenerateMock: notSupported("jest.onGenerateMock", "customizing generated automocks"),
-    runAllImmediates: notSupported("jest.runAllImmediates", "it exists only for jest's legacy fake timers"),
     unstable_mockModule: notSupported("jest.unstable_mockModule", "ESM-mode mocking; tests compile to CommonJS here"),
     unstable_unmockModule: notSupported("jest.unstable_unmockModule", "ESM-mode mocking; tests compile to CommonJS here"),
   });
@@ -186,15 +211,34 @@ function adopt(target: Record<string, unknown>, source: object): void {
 }
 
 /**
- * Add the default `doNotFake: ["setImmediate", "nextTick"]` to a
- * `useFakeTimers` config that states no `doNotFake`; jest fakes both by default.
- * Circus and the child's report to its parent schedule through them, so with
- * them faked a test that times out is never reported and the run stops. A test
- * that wants them faked passes `doNotFake: []`.
+ * Give `target` each public timer method of the modern and legacy fake timers,
+ * calling it on the implementation `timers.current` names, or throwing jest's
+ * TypeError where that one lacks it (`jest.setSystemTime` under legacy timers,
+ * `jest.runAllImmediates` under modern ones).
  */
-function withTimerDefaults(config: unknown): unknown {
-  const given = (config ?? {}) as { doNotFake?: string[] };
-  return { doNotFake: ["setImmediate", "nextTick"], ...given };
+function adoptTimers(target: Record<string, unknown>, timers: ITimers): void {
+  const names = new Set<string>();
+  for (const implementation of [timers.modern, timers.legacy]) {
+    for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(implementation) as object)) {
+      if (name !== "constructor" && !name.startsWith("_") && !NOT_JEST_API.has(name)) {
+        names.add(name);
+      }
+    }
+  }
+  for (const name of names) {
+    target[name] = (...args: unknown[]): unknown => {
+      const current = timers.current as unknown as Record<string, unknown>;
+      const method = current[name];
+      if (typeof method !== "function") {
+        throw new TypeError(
+          timers.current === timers.legacy
+            ? `\`jest.${name}()\` is not available when using legacy fake timers.`
+            : `\`jest.${name}()\` is only available when using legacy fake timers.`
+        );
+      }
+      return (method as (...a: unknown[]) => unknown).apply(current, args);
+    };
+  }
 }
 
 function notSupported(name: string, what: string): () => never {

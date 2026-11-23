@@ -24,8 +24,10 @@
  * `test_deps`.
  */
 
+import * as fs from "node:fs";
 import { Module } from "node:module";
 import * as path from "node:path";
+import * as vm from "node:vm";
 import { readManifest } from "../pnp/PnPResolver";
 import { isJsonObject } from "../support/Json";
 import { userModule, userModuleFile } from "./Tools";
@@ -40,9 +42,18 @@ interface IJsdom {
   window: IJsdomWindow;
 }
 
+interface IVirtualConsole {
+  /** jsdom 27 and later. */
+  forwardTo?(target: Console): void;
+  /** jsdom 26 and earlier. */
+  sendTo?(target: Console, options: { omitJSDOMErrors: boolean }): void;
+  on(event: "jsdomError", listener: (error: Error) => void): void;
+}
+
 interface IJsdomModule {
   JSDOM: new (html: string, options: unknown) => IJsdom;
   ResourceLoader: new (options: { userAgent: string }) => unknown;
+  VirtualConsole: new () => IVirtualConsole;
 }
 
 /** A test file's docblock pragmas, as `jest-docblock` parses them: a pragma
@@ -121,6 +132,7 @@ const SHADOWED_NODE_GLOBALS = new Set([
   "MessageEvent",
   "MessagePort",
   "navigator",
+  "performance",
   "ReadableStream",
   "Request",
   "Response",
@@ -150,13 +162,12 @@ const KEEP_NODE = new Set([
   "structuredClone",
 ]);
 
-/**
- * Scheduling globals node provides, which jest's jsdom environment lacks and
- * which are removed where jsdom does not provide them. Code that picks its
- * scheduler by what exists (React's tries `setImmediate`, then
- * `MessageChannel`, then `setTimeout`) then picks what it picks under jest.
- */
-const NODE_ONLY_SCHEDULERS = ["setImmediate", "clearImmediate", "MessageChannel", "MessagePort"];
+/** The globals jest's jsdom environment adds to the window, which stay node's
+ * here: `installCommonGlobals`' and the test's console. */
+const JEST_ADDED_GLOBALS = new Set(["global", "globalThis", "process", "Buffer", "console"]);
+
+/** The ECMAScript built-ins, the globals of a fresh context. */
+const BUILT_INS = new Set(vm.runInNewContext("Object.getOwnPropertyNames(globalThis)") as string[]);
 
 /**
  * `window`'s self-references, each made to name the global object (see
@@ -190,11 +201,13 @@ export function inheritedMethods(window: IJsdomWindow): string[] {
  *
  * Each of the window's own properties becomes a global where node has none of
  * that name or it is in {@link SHADOWED_NODE_GLOBALS}, bar
- * {@link KEEP_NODE}'s; accessors are copied as accessors. The inherited methods
+ * {@link KEEP_NODE}'s; accessors are copied as accessors. Node's other
+ * globals are removed ({@link hideNodeGlobals}). The inherited methods
  * are bound to jsdom's window, which stays the DOM they act on. `window`,
  * `self`, `parent`, `top`, `frames`, `document.defaultView`, a UI event's
  * `view` and a message event's `source` all answer the global object, and
- * `location` is a writable property of it (see {@link patchLocation}).
+ * `location` is a writable property of it (see {@link patchLocation}). An
+ * error event at the window fails the running test ({@link reportUncaughtErrors}).
  *
  * `options` are jest's `testEnvironmentOptions` for jsdom, applied as
  * `jest-environment-jsdom` applies them: `html` is the document, `userAgent`
@@ -202,7 +215,7 @@ export function inheritedMethods(window: IJsdomWindow): string[] {
  * over the defaults. Throws where jsdom is not installed.
  */
 export function installJsdom(options: Record<string, unknown> = {}): void {
-  compileEnvironmentWithNodeSchedulers(userModuleFile("jsdom"));
+  compileEnvironmentWithNodeGlobals(userModuleFile("jsdom"));
   /* requireEnvironment has reported a missing jsdom already. */
   const jsdom = userModule("jsdom") as IJsdomModule | undefined;
   if (jsdom?.JSDOM === undefined) {
@@ -213,10 +226,12 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
     url: "http://localhost/",
     pretendToBeVisual: true,
     resources: typeof userAgent === "string" ? new jsdom.ResourceLoader({ userAgent }) : undefined,
+    virtualConsole: virtualConsoleOf(jsdom),
     ...options,
   });
   const globals = globalThis as unknown as Record<string, unknown>;
   const window = dom.window;
+  runScriptsInTestContext(window);
   for (const key of Object.getOwnPropertyNames(window)) {
     if (KEEP_NODE.has(key)) {
       continue;
@@ -225,7 +240,7 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
       define(globals, key, window, key);
     }
   }
-  hideNodeSchedulers(globals, window);
+  hideNodeGlobals(globals, window);
   /* jsdom's symbol-keyed members (its implementation link among them), so
    * that jsdom takes the global object for a Window: as an event's `view`,
    * say. */
@@ -253,11 +268,138 @@ export function installJsdom(options: Record<string, unknown> = {}): void {
   answerWithGlobal(prototypeOf("UIEvent"), "view", window, globals);
   answerWithGlobal(prototypeOf("MessageEvent"), "source", window, globals);
   patchLocation(window);
+  reportUncaughtErrors(window, globals);
+  shareGlobals(window, globals);
 }
 
-/** The `Symbol.for` key of the global holding node's `setImmediate` and
- * `clearImmediate` for jsdom's modules. */
-const NODE_SCHEDULERS = "fabr.jest.nodeSchedulers";
+/**
+ * Make each of jsdom's window and the global object read the other's own
+ * properties where it has none of that name, through a fallback at the end of
+ * its prototype chain. Under jest the two are one object; here an `on…`
+ * attribute's handler runs within jsdom's window, whose `window` is jsdom's
+ * own (jsdom makes it unforgeable), so what it sets on `window` is jsdom's,
+ * and what the test sets there is the global object's. An assignment stays
+ * on the object it is made to.
+ */
+function shareGlobals(window: IJsdomWindow, globals: Record<string, unknown>): void {
+  const fallBackTo = (object: object, other: object): void => {
+    const end = Object.getPrototypeOf(object) as object;
+    Object.setPrototypeOf(
+      object,
+      new Proxy(end, {
+        get: (target, key, receiver) =>
+          !Reflect.has(target, key) && Object.prototype.hasOwnProperty.call(other, key)
+            ? (other as Record<string | symbol, unknown>)[key]
+            : Reflect.get(target, key, receiver),
+        has: (target, key) => Reflect.has(target, key) || Object.prototype.hasOwnProperty.call(other, key),
+      })
+    );
+  };
+  fallBackTo(globals, window);
+  /* At the end of the chain of jsdom's Window, whose instance is the window. */
+  fallBackTo(Object.getPrototypeOf(window) as object, globals);
+}
+
+/** node's `vm` module itself, whose functions jsdom looks up at each call. */
+const nodeVm = Module.createRequire(__filename)("node:vm") as typeof vm;
+
+/**
+ * Have jsdom run page scripts, as `jest-environment-jsdom` does, in the
+ * test's own context, where jest runs them: an inline `<script>`, an `on…`
+ * attribute and a `javascript:` URL. The window is made without
+ * `runScripts`, so it is no vm context and jsdom builds its objects from
+ * node's built-ins, as the test's are; it is then marked as running scripts,
+ * and node's `vm.runInContext`, which jsdom runs them with, runs code given
+ * this window in this context instead. Call before the window's properties
+ * are copied.
+ */
+function runScriptsInTestContext(window: IJsdomWindow): void {
+  window._runScripts = "dangerously";
+  const runInContext = nodeVm.runInContext;
+  nodeVm.runInContext = function (code: string, context: vm.Context, options?: vm.RunningScriptOptions | string): unknown {
+    return context === window ? nodeVm.runInThisContext(code, options) : runInContext.call(nodeVm, code, context, options);
+  } as typeof vm.runInContext;
+}
+
+/**
+ * Make the virtual console `jest-environment-jsdom` gives jsdom: what the
+ * page logs goes to the test's console, and each jsdom error (a feature it
+ * does not implement, an uncaught exception) is passed to `console.error`
+ * as the error.
+ */
+function virtualConsoleOf(jsdom: IJsdomModule): IVirtualConsole {
+  const virtualConsole = new jsdom.VirtualConsole();
+  if (typeof virtualConsole.forwardTo === "function") {
+    virtualConsole.forwardTo(console);
+  } else if (typeof virtualConsole.sendTo === "function") {
+    virtualConsole.sendTo(console, { omitJSDOMErrors: true });
+  }
+  virtualConsole.on("jsdomError", error => console.error(error));
+  return virtualConsole;
+}
+
+type Listener = (...args: unknown[]) => unknown;
+
+/**
+ * Report each error jsdom dispatches as an `error` event at the window (an
+ * exception thrown by an event listener or an `on…` handler) as an uncaught
+ * exception, which fails the running test, as `jest-environment-jsdom` does:
+ * unless the test has added an `error` listener of its own with
+ * `addEventListener`, in which case it handles them itself. An `onerror`
+ * handler does not count as one.
+ */
+function reportUncaughtErrors(window: IJsdomWindow, globals: Record<string, unknown>): void {
+  let userListeners = 0;
+  const addListener = window.addEventListener as (type: string, listener: Listener) => void;
+  addListener.call(window, "error", (event: unknown) => {
+    const error = (event as { error?: unknown }).error;
+    if (userListeners === 0 && error != null) {
+      process.emit("uncaughtException", error as Error);
+    }
+  });
+  const add = globals.addEventListener as Listener;
+  const remove = globals.removeEventListener as Listener;
+  globals.addEventListener = function (this: unknown, ...args: unknown[]): unknown {
+    if (args[0] === "error") {
+      userListeners++;
+    }
+    return add.apply(this, args);
+  };
+  globals.removeEventListener = function (this: unknown, ...args: unknown[]): unknown {
+    if (args[0] === "error") {
+      userListeners--;
+    }
+    return remove.apply(this, args);
+  };
+}
+
+/**
+ * Set up what jest sets up for a test file under either environment: the
+ * global entries `installCommonGlobals` keeps for jest and for libraries
+ * (`Symbol.for("jest-native-now")`, the real `Date.now` under fake timers,
+ * and the others), `Error.stackTraceLimit` at 100, `NODE_ENV` as `test`
+ * where it is unset, as jest's command line sets it, and `JEST_WORKER_ID` as
+ * the one worker running the file. Call after the environment is installed.
+ */
+export function installJestGlobals(): void {
+  const define = (key: string | symbol, value: unknown): void => {
+    Object.defineProperty(globalThis, key, { value, enumerable: false, writable: false, configurable: true });
+  };
+  define(Symbol.for("jest-native-promise"), Promise);
+  define(Symbol.for("jest-native-now"), Date.now.bind(Date));
+  define(Symbol.for("jest-native-read-file"), fs.readFileSync.bind(fs));
+  define(Symbol.for("jest-native-write-file"), fs.writeFileSync.bind(fs));
+  define(Symbol.for("jest-native-exists-file"), fs.existsSync.bind(fs));
+  define("jest-symbol-do-not-touch", Symbol);
+  Error.stackTraceLimit = 100;
+  process.env.NODE_ENV ??= "test";
+  process.env.JEST_WORKER_ID ??= "1";
+}
+
+/** The `Symbol.for` key of the global holding node's `setImmediate`,
+ * `clearImmediate`, `setInterval`, `clearInterval` and `performance` for
+ * jsdom's modules. */
+const NODE_GLOBALS = "fabr.jest.nodeGlobals";
 
 interface ICompilingModule {
   parent?: { filename?: string } | null;
@@ -266,18 +408,25 @@ interface ICompilingModule {
 
 /**
  * Compile jsdom's modules, and every module one of them is the first to load,
- * with node's `setImmediate` and `clearImmediate` bound in them, though
- * {@link hideNodeSchedulers} removes both from the global object. Under jest
- * these modules run outside the test's vm context, where node's globals are.
+ * with node's own globals that jsdom reads bound in them, as under jest, where
+ * these modules run outside the test's vm context: `setImmediate` and
+ * `clearImmediate`, which {@link hideNodeGlobals} removes from the global
+ * object; `performance`, whose global is jsdom's, which reads node's; and the
+ * real `setInterval` and `clearInterval`, which fake timers do not replace
+ * there: jsdom's `requestAnimationFrame` runs on an interval, which a test
+ * switching back to real timers would otherwise leave stopped. Give them no
+ * other timer: jsdom's timeouts must be the ones a test fakes.
  * Call before jsdom is loaded; does nothing where jsdom is not found.
  */
-function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): void {
+function compileEnvironmentWithNodeGlobals(jsdomMain: string | undefined): void {
   const root = jsdomMain === undefined ? undefined : packageRootOf(jsdomMain, "jsdom");
   if (root === undefined) {
     return;
   }
   const jsdomRoot = root + path.sep;
-  Object.defineProperty(globalThis, Symbol.for(NODE_SCHEDULERS), { value: [setImmediate, clearImmediate] });
+  Object.defineProperty(globalThis, Symbol.for(NODE_GLOBALS), {
+    value: [setImmediate, clearImmediate, setInterval, clearInterval, performance],
+  });
   const environment = new Set<string>();
   const compiling = Module as unknown as { prototype: ICompilingModule };
   const original = compiling.prototype._compile;
@@ -285,7 +434,7 @@ function compileEnvironmentWithNodeSchedulers(jsdomMain: string | undefined): vo
     const requirer = this.parent?.filename;
     if (filename.startsWith(jsdomRoot) || (requirer !== undefined && environment.has(requirer))) {
       environment.add(filename);
-      content = withNodeSchedulers(content);
+      content = withNodeGlobals(content);
     }
     return original.call(this, content, filename);
   };
@@ -307,23 +456,28 @@ export function packageRootOf(file: string, name: string): string | undefined {
 }
 
 /**
- * Wrap a CommonJS module's source so that `setImmediate` and `clearImmediate`
- * inside it name node's functions, whatever the global object holds. Line
- * numbers are unchanged, and a leading `"use strict"` still applies.
+ * Wrap a CommonJS module's source so that `setImmediate`, `clearImmediate`,
+ * `setInterval`, `clearInterval` and `performance` inside it name node's,
+ * whatever the global object holds. Line numbers are unchanged, and a leading
+ * `"use strict"` still applies.
  */
-export function withNodeSchedulers(content: string): string {
+export function withNodeGlobals(content: string): string {
   const body = content.startsWith("#!") ? "//" + content.slice(2) : content;
-  return `(function (setImmediate, clearImmediate) {${body}\n}).apply(this, globalThis[Symbol.for(${JSON.stringify(NODE_SCHEDULERS)})]);`;
+  return `(function (setImmediate, clearImmediate, setInterval, clearInterval, performance) {${body}\n}).apply(this, globalThis[Symbol.for(${JSON.stringify(NODE_GLOBALS)})]);`;
 }
 
 /**
- * Remove from `globals` each of node's scheduling globals that `window` does not
- * provide itself.
+ * Remove from `globals` each global that a test under `jest-environment-jsdom`
+ * does not see: one that `window` does not provide, that is no ECMAScript
+ * built-in, and that jest's environment does not add itself (`process`,
+ * `Buffer`, `global`, `console`). Code that picks what to use by what exists
+ * (`fetch` or `XMLHttpRequest`; React's scheduler, `setImmediate` or
+ * `MessageChannel`) then picks what it picks under jest.
  */
-export function hideNodeSchedulers(globals: Record<string, unknown>, window: object): void {
-  for (const key of NODE_ONLY_SCHEDULERS) {
-    if (!(key in window)) {
-      delete globals[key];
+export function hideNodeGlobals(globals: Record<string, unknown>, window: object): void {
+  for (const key of Object.getOwnPropertyNames(globals)) {
+    if (!(key in window) && !BUILT_INS.has(key) && !JEST_ADDED_GLOBALS.has(key)) {
+      Reflect.deleteProperty(globals, key);
     }
   }
 }

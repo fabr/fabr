@@ -122,6 +122,22 @@ const TIMER_METHODS = [
   "getTimerCount",
 ];
 const TIMER_METHODS_30 = [...TIMER_METHODS, "advanceTimersToNextFrame", "setTimerTickMode"];
+const LEGACY_TIMER_METHODS = [
+  "clearAllTimers",
+  "dispose",
+  "reset",
+  "now",
+  "runAllTicks",
+  "runAllImmediates",
+  "runAllTimers",
+  "runOnlyPendingTimers",
+  "advanceTimersToNextTimer",
+  "advanceTimersByTime",
+  "runWithRealTimers",
+  "useRealTimers",
+  "useFakeTimers",
+  "getTimerCount",
+];
 
 /** Members jest 30 has that jest 29's libraries cannot provide — and which real
  * jest 29 equally does not have. */
@@ -146,13 +162,17 @@ function library(methods: string[], calls: string[]): Record<string, unknown> {
 function jestObject(
   mockerMethods = MOCKER_METHODS_30,
   timerMethods = TIMER_METHODS_30,
-  calls: string[] = []
+  calls: string[] = [],
+  jestMajor = 30
 ): Record<string, unknown> {
+  const modern = library(timerMethods, calls) as unknown as IFakeTimers;
+  const legacy = library(LEGACY_TIMER_METHODS, calls) as unknown as IFakeTimers;
   const env: IJestEnvironment = {
     registry: new MockRegistry(process.cwd(), { getMetadata: () => ({}), generateFromMetadata: () => ({}) }),
     mocker: library(mockerMethods, calls) as unknown as IMocker,
-    timers: library(timerMethods, calls) as unknown as IFakeTimers,
+    timers: { modern, legacy, current: modern },
     seed: 1234,
+    jestMajor,
   };
   return makeJestObject(env, undefined);
 }
@@ -164,9 +184,13 @@ describe("the jest global", () => {
     expect(missing, `not provided by the layer: ${missing.join(", ")}`).to.deep.equal([]);
   });
 
-  it("claims nothing jest does not have, bar the alias 29 still declares", () => {
+  it("claims nothing jest does not have", () => {
     const surface = new Set(JEST_30_SURFACE);
-    expect(Object.keys(jestObject()).filter(name => !surface.has(name))).to.deep.equal(["genMockFromModule"]);
+    expect(Object.keys(jestObject()).filter(name => !surface.has(name))).to.deep.equal([]);
+  });
+
+  it("has the alias jest 29 declares under jest 29 alone", () => {
+    expect(typeof jestObject(MOCKER_METHODS, TIMER_METHODS, [], 29).genMockFromModule).to.equal("function");
   });
 
   it("adopts the libraries' methods rather than reimplementing them", () => {
@@ -197,18 +221,22 @@ describe("the jest global", () => {
     expect(ADDED_IN_30.filter(name => typeof on30[name] !== "function")).to.deep.equal([]);
   });
 
-  it("overrides the adopted useFakeTimers to keep the runner's reporter alive", () => {
-    const calls: string[] = [];
-    const jest = jestObject(MOCKER_METHODS_30, TIMER_METHODS_30, calls);
-    (jest.useFakeTimers as () => void)();
-    expect(calls[0]).to.contain("setImmediate");
-    expect(calls[0]).to.contain("nextTick");
-  });
-
   it("makes an unimplemented member throw a fabr message, not 'is not a function'", () => {
-    for (const name of ["onGenerateMock", "unstable_mockModule", "runAllImmediates"]) {
+    for (const name of ["onGenerateMock", "unstable_mockModule"]) {
       expect(() => (jestObject()[name] as () => void)(), name).to.throw(/not supported by fabr's jest compatibility layer/);
     }
+  });
+
+  it("calls the fake timers useFakeTimers last chose, legacy where its config says so", () => {
+    const calls: string[] = [];
+    const jest = jestObject(MOCKER_METHODS_30, TIMER_METHODS_30, calls);
+    (jest.useFakeTimers as (config: unknown) => void)({ legacyFakeTimers: true });
+    (jest.runAllImmediates as () => void)();
+    expect(() => (jest.setSystemTime as () => void)()).to.throw(TypeError, "is not available when using legacy fake timers");
+    (jest.useFakeTimers as () => void)();
+    expect(() => (jest.runAllImmediates as () => void)()).to.throw(TypeError, "is only available when using legacy fake timers");
+    /* Each switch restores the real timers from the one in use first. */
+    expect(calls).to.deep.equal(["useRealTimers()", "useFakeTimers()", "runAllImmediates()", "useRealTimers()", "useFakeTimers()"]);
   });
 
   it("returns itself from a module operation, for chaining", () => {

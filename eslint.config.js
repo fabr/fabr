@@ -21,7 +21,7 @@ const tslint = require("typescript-eslint");
 const eslint = require("@eslint/js");
 
 module.exports = tslint.config(
-  { ignores: ["**/build/**", "**/node_modules/**", "coverage/**"] },
+  { ignores: ["**/build/**", "**/node_modules/**", "coverage/**", "test/jest-compat/**/*.js"] },
   eslint.configs.recommended,
   ...tslint.configs.recommended,
   {

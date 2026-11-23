@@ -40,7 +40,11 @@ So how far it gets you depends on how your packages build:
   close to complete. Add the [source-mode flags](/reference/js/typescript/#coming-from-tsconfigjson)
   your `tsconfig.json` relies on, such as `ts/no_strict_null_checks` for `"strictNullChecks": false`.
   Where your Jest configuration says `testEnvironment: "jsdom"`, add the `dom` flag and `jsdom` to
-  `test_deps` (see [DOM tests](/reference/js/testing/#dom-tests)). Your Jest or Vitest
+  `test_deps` (see [DOM tests](/reference/js/testing/#dom-tests)). Where your `tsconfig.json`'s
+  `lib` includes `"DOM"` but Jest runs the tests under `node`, its default, add `dom` to
+  `compile_deps` instead. In `deps`, `dom` says the code runs in a DOM, so its tests run under
+  jsdom; in `compile_deps` it only gives the compiler the DOM's types, and the tests run under
+  Node.js as they do under Jest. Your Jest or Vitest
   configuration isn't read, so a `setupFilesAfterEnv` file must be named `src/setupTests.ts` (see
   [a setup file](/reference/js/testing/#a-setup-file)). A `moduleNameMapper` entry that stubs
   stylesheets or images isn't needed, since fabr's test runners

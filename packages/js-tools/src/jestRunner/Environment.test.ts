@@ -21,14 +21,7 @@ import { expect } from "chai";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  answerWithGlobal,
-  environmentFor,
-  hideNodeSchedulers,
-  inheritedMethods,
-  packageRootOf,
-  withNodeSchedulers,
-} from "./Environment";
+import { answerWithGlobal, environmentFor, hideNodeGlobals, inheritedMethods, packageRootOf, withNodeGlobals } from "./Environment";
 
 /* installJsdom itself needs a real jsdom, which fabr's own tests do not carry
  * (it comes from the TARGET's test_deps); what is testable here is the part
@@ -153,47 +146,59 @@ describe("environmentFor", () => {
   });
 });
 
-describe("hideNodeSchedulers", () => {
-  it("removes node's scheduling globals that the window lacks, as jest's jsdom environment has none", () => {
+describe("hideNodeGlobals", () => {
+  it("removes node's globals that the window lacks, as jest's jsdom environment has none", () => {
     const globals: Record<string, unknown> = {
       setImmediate() {},
-      clearImmediate() {},
-      MessageChannel() {},
-      MessagePort() {},
+      fetch() {},
+      structuredClone() {},
       setTimeout() {},
+      Array,
+      process: {},
+      Buffer: {},
     };
-    hideNodeSchedulers(globals, {});
-    expect(Object.keys(globals)).to.deep.equal(["setTimeout"]);
+    hideNodeGlobals(globals, { setTimeout() {} });
+    expect(Object.keys(globals)).to.deep.equal(["setTimeout", "Array", "process", "Buffer"]);
   });
 
   it("keeps one the window provides", () => {
     const own = (): void => {};
     const globals: Record<string, unknown> = { MessageChannel: own, setImmediate() {} };
-    hideNodeSchedulers(globals, { MessageChannel: own });
+    hideNodeGlobals(globals, { MessageChannel: own });
     expect(globals).to.deep.equal({ MessageChannel: own });
   });
 });
 
-describe("withNodeSchedulers", () => {
-  const key = Symbol.for("fabr.jest.nodeSchedulers");
+describe("withNodeGlobals", () => {
+  const key = Symbol.for("fabr.jest.nodeGlobals");
   const scheduled = (): void => {};
   const cleared = (): void => {};
+  const repeated = (): void => {};
+  const stopped = (): void => {};
+  const clock = { now: () => 0 };
 
   function load(source: string): Record<string, unknown> {
     const exports: Record<string, unknown> = {};
-    Object.defineProperty(globalThis, key, { value: [scheduled, cleared], configurable: true });
+    Object.defineProperty(globalThis, key, { value: [scheduled, cleared, repeated, stopped, clock], configurable: true });
     try {
-      new Function("exports", withNodeSchedulers(source)).call(exports, exports);
+      new Function("exports", withNodeGlobals(source)).call(exports, exports);
     } finally {
       delete (globalThis as Record<symbol, unknown>)[key];
     }
     return exports;
   }
 
-  it("binds the module's setImmediate and clearImmediate to the functions kept for it", () => {
-    const exports = load("exports.set = setImmediate; exports.clear = clearImmediate;");
+  it("binds the module's setImmediate, clearImmediate, setInterval, clearInterval and performance to the ones kept for it", () => {
+    const exports = load(
+      "exports.set = setImmediate; exports.clear = clearImmediate; exports.every = setInterval; exports.stop = clearInterval; exports.perf = performance; exports.once = setTimeout;"
+    );
+    expect(exports.perf).to.equal(clock);
     expect(exports.set).to.equal(scheduled);
     expect(exports.clear).to.equal(cleared);
+    expect(exports.every).to.equal(repeated);
+    expect(exports.stop).to.equal(stopped);
+    /* Timeouts stay the global object's, which a test fakes. */
+    expect(exports.once).to.equal(setTimeout);
   });
 
   it("keeps the module strict, its `this`, and its line numbers", () => {
@@ -201,12 +206,12 @@ describe("withNodeSchedulers", () => {
     const exports = load(source);
     expect(exports.strict).to.equal(true);
     expect(exports.self).to.equal(exports);
-    expect(withNodeSchedulers(source).split("\n").length).to.equal(source.split("\n").length + 1);
-    expect(withNodeSchedulers(source).split("\n")[1]).to.equal(source.split("\n")[1]);
+    expect(withNodeGlobals(source).split("\n").length).to.equal(source.split("\n").length + 1);
+    expect(withNodeGlobals(source).split("\n")[1]).to.equal(source.split("\n")[1]);
   });
 
   it("turns a leading hashbang into a comment of the same line", () => {
-    expect(withNodeSchedulers("#!/usr/bin/env node\nexports.x = 1;").split("\n")[0]).to.contain("///usr/bin/env node");
+    expect(withNodeGlobals("#!/usr/bin/env node\nexports.x = 1;").split("\n")[0]).to.contain("///usr/bin/env node");
   });
 });
 

@@ -333,6 +333,12 @@ export class MockRegistry {
     }
   }
 
+  /** Make an automock of the actual module `request` names, whatever mock is
+   * registered for it, a new one on each call (`jest.createMockFromModule`). */
+  public createMockFromModule(request: string, caller: ILoaderModule | undefined): unknown {
+    return this.automockOf(this.resolve(request, caller) ?? this.unresolvedKey(request, caller));
+  }
+
   /** Get the mocked module, even where nothing registered one
    * (`jest.requireMock`). */
   public requireMock(request: string, caller: ILoaderModule | undefined): unknown {
@@ -569,6 +575,12 @@ export function makeResolveHook(
     /* The hooks run for `require` as well as `import`: pass the registry's own
      * resolutions through, or looking a mock up would resolve to the mock. */
     if (bypassing > 0) {
+      return nextResolve(specifier, context);
+    }
+    /* A CommonJS require is served by the CommonJS seam before it resolves, so
+     * a resolution for one here is `require.resolve`, which names the real
+     * file, as under jest. */
+    if ((context as { conditions?: readonly string[] }).conditions?.includes("require")) {
       return nextResolve(specifier, context);
     }
     /* Never serve a mock to the runner's own modules, as in serve(). */

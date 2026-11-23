@@ -189,22 +189,7 @@ export function runFabr(
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
   try {
     writeFixture(dir, files);
-    const result = spawnSync(NODE, [FABR, ...args], {
-      cwd: subdir ? path.join(dir, subdir) : dir,
-      env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR, ...env },
-      encoding: "utf8",
-      /* stdin from /dev/null: these runs are non-interactive, so a fabr verb that
-       * spawns a stdin-reading child with inherited stdio (`fabr shell`'s shell)
-       * gets an immediate EOF and exits, rather than blocking on a stdin that
-       * never closes — which would hang the whole test with no timeout to catch it. */
-      stdio: ["ignore", "pipe", "pipe"],
-      /* Hard cap: spawnSync blocks the worker's event loop, so a fabr that hangs
-       * (a regression in the no-hung-builds guarantee) would freeze the whole
-       * runner with no per-test timeout able to fire. SIGKILL because a hung
-       * fabr may be beyond signal handlers; the null status reads as -1. */
-      timeout: 180_000,
-      killSignal: "SIGKILL",
-    });
+    const result = spawnFabr(subdir ? path.join(dir, subdir) : dir, args, env);
     let read: Record<string, string> | undefined;
     if (readback) {
       read = {};
@@ -215,10 +200,49 @@ export function runFabr(
         }
       }
     }
-    return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? -1, files: read };
+    return { ...result, files: read };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Write `files` into a fresh temp project dir and run fabr there once for each
+ * of `commands`, in order, in the same project and cache.
+ * @return each run's captured streams and exit status, in order.
+ */
+export function runFabrSequence(files: Record<string, string>, commands: string[][], timeoutMs = 180_000): FabrResult[] {
+  if (!fs.existsSync(FABR)) {
+    throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
+  try {
+    writeFixture(dir, files);
+    return commands.map(args => spawnFabr(dir, args, undefined, timeoutMs));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Run `fabr <args>` in `cwd`, as {@link runFabr} describes. */
+function spawnFabr(cwd: string, args: string[], env?: Record<string, string>, timeoutMs = 180_000): FabrResult {
+  const result = spawnSync(NODE, [FABR, ...args], {
+    cwd,
+    env: { PATH: CHILD_PATH, FABR_CACHE_DIR: CACHE_DIR, ...env },
+    encoding: "utf8",
+    /* stdin from /dev/null: these runs are non-interactive, so a fabr verb that
+     * spawns a stdin-reading child with inherited stdio (`fabr shell`'s shell)
+     * gets an immediate EOF and exits, rather than blocking on a stdin that
+     * never closes — which would hang the whole test with no timeout to catch it. */
+    stdio: ["ignore", "pipe", "pipe"],
+    /* Hard cap: spawnSync blocks the worker's event loop, so a fabr that hangs
+     * (a regression in the no-hung-builds guarantee) would freeze the whole
+     * runner with no per-test timeout able to fire. SIGKILL because a hung
+     * fabr may be beyond signal handlers; the null status reads as -1. */
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+  });
+  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? -1 };
 }
 
 /**

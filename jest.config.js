@@ -65,5 +65,5 @@ module.exports = {
    * tests are not among them: each requires its tool lazily inside main(), so
    * nothing at load needs esbuild or sass, and the parts under test are either
    * pure or drive a tool declared as a test dependency. */
-  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/"],
+  testPathIgnorePatterns: ["/node_modules/", "/build/", "/packages/js-tools/src/testRunner/", "/test/jest-compat/"],
 };

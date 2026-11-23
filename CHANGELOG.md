@@ -4,6 +4,12 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
+## Fabr 0.4.4
+
+@fabr-build/js
+
+- Jest jsdom compatibility fixes.
+
 ## Fabr 0.4.3
 
 @fabr-build/cli
@@ -44,6 +50,19 @@ together and share a version number.
   `playwright test` with the arguments given (`--ui`, `--headed`, `--debug`), or `cypress open`.
 - Add TEST_ONLY_HANDLING (allow | ignore | forbid) to specify handling of 'only' in test frameworks
   that support it.
+- The jest framework matches jest more closely:
+  - A jsdom test sees only the globals it would see under jest. Node.js globals that jsdom lacks,
+    such as `fetch`, `TextEncoder` and `structuredClone`, are gone; add one in `setupTests` where a
+    test needs it.
+  - An exception thrown by an event listener or `on…` handler in a jsdom test fails the test.
+  - `NODE_ENV` is `test` and `JEST_WORKER_ID` is `1` unless `test_env` sets them.
+  - Legacy fake timers work: `jest.useFakeTimers({ legacyFakeTimers: true })`.
+  - `jest.useFakeTimers()` fakes `process.nextTick` and `setImmediate` too, as jest does.
+  - A jsdom test runs page scripts: a `<script>` added to the document, and an `onclick="…"`
+    attribute in markup.
+  - Fixed: `jest.createMockFromModule` returned a module's registered mock rather than an
+    automock of the real module, and `require.resolve` of a mocked module returned an internal
+    path.
 
 @fabr-build/java
 

@@ -110,6 +110,11 @@ export function assertSupportedHost(): void {
   }
 }
 
+/** @return the installed jest's major version, NaN where it cannot be read. */
+export function jestMajor(): number {
+  return Number(jestVersion()?.split(".")[0]);
+}
+
 function jestVersion(): string | undefined {
   try {
     const { version } = parseJson(

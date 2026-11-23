@@ -243,9 +243,10 @@ them all. Changing `NODE` runs the tests again.
 
 ### Environment variables
 
-A test process starts with an empty environment: no `PATH`, no `HOME`, no `CI`, and no `NODE_ENV`
-(jest and vitest normally set `NODE_ENV=test`). Declare the variables your tests need with
-`test_env`:
+A test process starts with an empty environment: no `PATH`, no `HOME` and no `CI`. Under the
+`jest` framework `NODE_ENV` is `test` and `JEST_WORKER_ID` is `1` unless you set them, as under
+jest; under the others `NODE_ENV` is unset (vitest normally sets it to `test`). Declare the
+variables your tests need with `test_env`:
 
 ```
 js_package mylib {
@@ -362,9 +363,11 @@ js_test recorder_tests {
 }
 ```
 
-Under the `jest` framework, a jsdom test has no `setImmediate`, `clearImmediate`, `MessageChannel`
-or `MessagePort`, as under jest itself, so code that picks a scheduler by what exists (React does)
-behaves as it does under jest.
+Under the `jest` framework, a jsdom test sees the globals it would see under jest: jsdom's window,
+plus `process`, `Buffer` and `global`. Node.js's own globals that jsdom lacks, such as `fetch`,
+`TextEncoder`, `structuredClone`, `setImmediate` and `MessageChannel`, aren't there, so code that
+picks what to use by what exists (React's scheduler, a `fetch` polyfill) behaves as it does under
+jest. Where your tests need one, add it in [`setupTests`](#a-setup-file), as you would under jest.
 
 Both jest and vitest also accept their usual per-file comment, `@jest-environment jsdom` or
 `// @vitest-environment jsdom`, which overrides the environment for that file. The comment
@@ -597,7 +600,9 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
   factory. The mock files must be compiled with the tests, so match them with `srcs` or
   `test_deps`, not `tests`.
 - Fake timers (`jest.useFakeTimers`, `jest.advanceTimersByTime`, `jest.setSystemTime` and the
-  rest).
+  rest), and legacy fake timers with `jest.useFakeTimers({ legacyFakeTimers: true })`.
+- In a jsdom test, an exception thrown by an event listener or an `on…` handler fails the test,
+  unless the test listens for `error` events at the window itself.
 - Snapshots with `toMatchSnapshot()`; see [Snapshots](#snapshots).
 - The `@jest-environment` and `@jest-environment-options` comments at the top of a test file.
 - Packages published only as ES modules can be imported from tests and from the code under test
@@ -606,8 +611,10 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
 
 ### What differs from jest
 
-- **`setImmediate` and `process.nextTick` aren't faked by default.** `jest.useFakeTimers()` leaves
-  them real. To fake them as jest does, pass `jest.useFakeTimers({ doNotFake: [] })`.
+- **Node.js's objects are instances of the test's classes.** Under jest a jsdom test runs in a
+  context of its own, so a `Buffer` is no `Uint8Array` there and an error from `fs` is no `Error`.
+  Here both are.
+- **`window.location` can be redefined** with `Object.defineProperty`, which jest's jsdom refuses.
 - **A module you mock must be one the test can resolve.** `jest.mock("x")` finds `x` from the
   test file, as an import there would, and a test resolves only the packages its target declares.
   Mocking a package your code reaches only through another one, such as the SDK a configuration
@@ -618,11 +625,8 @@ No jest configuration is read: not `jest.config.js`, and not the `jest` key of a
 - **Variables used in a `jest.mock` factory needn't be named `mock…`.** Jest's Babel plugin
   rejects a factory that refers to other outer variables; fabr doesn't apply that rule, so code
   that jest rejects for this reason runs.
-- **Not available:** `jest.unstable_mockModule`, `jest.unstable_unmockModule`,
-  `jest.onGenerateMock`, and legacy fake timers (`jest.runAllImmediates`). Calling one fails the
-  test with a message saying it isn't supported.
-- **`NODE_ENV` isn't set to `test`.** Set it in [`test_env`](#environment-variables) if your code
-  reads it.
+- **Not available:** `jest.unstable_mockModule`, `jest.unstable_unmockModule` and
+  `jest.onGenerateMock`. Calling one fails the test with a message saying it isn't supported.
 - **Tests must use jest's globals or `@jest/globals`.** A file that imports `describe` and `it`
   from `node:test` registers nothing with jest and fails with
   `This test file registered no tests`.

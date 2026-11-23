@@ -1,0 +1,25 @@
+# Probes of jest compatibility: the same test files run under fabr's jest runner
+# and under real jest with jest-environment-jsdom. Run ./sweep.sh to compare.
+plugin @fabr-build/js;
+JS_TEST_FRAMEWORK = jest;
+
+# The probes under fabr's jest runner.
+js_test fabr_side {
+  tests = probes:**/*.test.js;
+  deps = probes:lib/**/*.js probes:__mocks__/*.js dom @npm:jsdom:26.1.0 @npm:uuid:9.0.1;
+}
+
+# The probes under real jest, its JSON results and the probes' observations
+# collected. jest-environment-jsdom 30.3.0 takes jsdom 26.
+js_script realjest {
+  entry = ./runjest.js;
+  deps = @npm:jest:30.3.0 @npm:jest-environment-jsdom:30.3.0 @npm:uuid:9.0.1
+         @npm:@types/babel__generator:7.27.0 @npm:@types/babel__template:7.4.4
+         @npm:@types/babel__traverse:7.28.0 @npm:@types/istanbul-lib-report:3.0.3
+         @npm:@types/node:22.15.3 @npm:@types/tough-cookie:4.0.5 @npm:@types/yargs-parser:21.0.3;
+}
+generate jest_side {
+  srcs = probes:**;
+  run = realjest > jest-out.txt 2> jest-err.txt;
+  output = *;
+}
