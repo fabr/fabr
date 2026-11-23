@@ -13,6 +13,7 @@ together and share a version number.
   the cache stops at them.
 - `fabr test -T <glob>` runs only the test files whose paths match, under every framework and
   for Java tests, alongside `-t` for test names.
+- `-t` and `-T` may be given more than once, to run what any of their patterns matches.
 - `fabr build` of a target that can only be tested, such as a `js_test`, builds everything its
   test run needs (the compiled tests, packages, runner and browsers) without running a test, and
   `fabr shell` on one opens its test run.

@@ -879,6 +879,12 @@ fs.appendFileSync(process.env.MARKER, [fs.existsSync("build/a.spec.js"), fs.exis
     const none = runFabr(files, ["-DJS_TARGET=es2020", "test", "-t", "nothing like it", "thing"]);
     expect(none.status).to.not.equal(0);
     expect(none.stderr).to.contain("No test's name matches the pattern 'nothing like it'");
+    /* Given twice, a test runs where either matches; a pattern's own `|` stays its own. */
+    const either = runFabr(files, ["-DJS_TARGET=es2020", "test", "-t", "dates parse", "-t", "^nothing$|other zzz", "thing"]);
+    expect(either.status, either.stderr).to.equal(0);
+    expect(either.stderr).to.contain("1 test passed (filtered)");
+    const neither = runFabr(files, ["-DJS_TARGET=es2020", "test", "-t", "nothing", "-t", "zzz", "thing"]);
+    expect(neither.stderr).to.contain("No test's name matches any of the patterns 'nothing' and 'zzz'");
   });
 
   it("runs only the test files whose source paths match -T, composing with -t, and fails where none does", () => {
@@ -898,6 +904,15 @@ fs.appendFileSync(process.env.MARKER, [fs.existsSync("build/a.spec.js"), fs.exis
     const none = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "**/nothing*", "suite"]);
     expect(none.status).to.not.equal(0);
     expect(none.stderr).to.contain("No test file matches the pattern '**/nothing*'");
+    /* Given twice, a file runs where either matches, as with a -D of patterns separated by spaces. */
+    const either = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "src/dates/**", "-T", "**/b.test.ts", "suite"]);
+    expect(either.status).to.not.equal(0);
+    expect(either.stderr).to.contain("1 of 3 tests failed");
+    const spelled = runFabr(files, ["-DJS_TARGET=es2020", "-DTEST_FILE_PATTERN=src/dates/** **/nothing*", "test", "suite"]);
+    expect(spelled.status, spelled.stderr).to.equal(0);
+    expect(spelled.stderr).to.contain("2 tests passed (filtered)");
+    const neither = runFabr(files, ["-DJS_TARGET=es2020", "test", "-T", "**/x*", "-T", "**/y*", "suite"]);
+    expect(neither.stderr).to.contain("No test file matches any of the patterns '**/x*' and '**/y*'");
   });
 
   it("runs the tests with the declared environment, and nothing else", () => {

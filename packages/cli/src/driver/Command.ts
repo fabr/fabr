@@ -117,8 +117,12 @@ const LIST_LONG = "Show where each is declared";
 const OPTION_SPECS: OptionSpec[] = [
   { flag: "-w", usage: "-w", summary: "Watch mode: rebuild or re-run as inputs change" },
   { flag: "-u", usage: "-u, --update", summary: "Update recorded test expectations (snapshots) from the run" },
-  { flag: "-t", usage: "-t PATTERN", summary: "Run only the tests whose names match the regular expression PATTERN" },
-  { flag: "-T", usage: "-T PATTERN", summary: "Run only the test files whose source paths match the glob PATTERN" },
+  {
+    flag: "-t",
+    usage: "-t PATTERN",
+    summary: "Run only the tests whose names match the regular expression PATTERN (repeatable: any)",
+  },
+  { flag: "-T", usage: "-T PATTERN", summary: "Run only the test files whose source paths match the glob PATTERN (repeatable: any)" },
   { flag: "--coverage", usage: "--coverage[=DIR]", summary: "Measure code coverage and write DIR/lcov.info, coverage/ by default" },
   {
     flag: "--artifacts",
@@ -412,8 +416,11 @@ export interface Options {
    * filesystem path resolved against the invocation cwd. */
   traceFile?: string;
   /** The properties set on the command line, by key: each `-D`, and those
-   * `-u`, `-t` and `--coverage` set. */
+   * `-u`, `-t`, `-T` and `--coverage` set. */
   properties: Map<string, string>;
+  /** Each `-t`'s pattern as written, in order; TEST_NAME_PATTERN is the one
+   * pattern matching where any of them does. */
+  testNamePatterns: string[];
   /** The invocation as source text, which a name given on it is written in. */
   commandLine: CommandLineSource;
   /**
@@ -603,6 +610,11 @@ const DEFAULT_TRACE_FILE = "fabr-trace.json";
 /** Where `--coverage` writes its report when not given a directory. */
 const DEFAULT_COVERAGE_DIR = "coverage";
 
+/** @return the regular expression matching where any of `patterns` matches: the one pattern, or each grouped as an alternative. */
+export function anyOf(patterns: readonly string[]): string {
+  return patterns.length === 1 ? patterns[0] : patterns.map(pattern => `(?:${pattern})`).join("|");
+}
+
 /**
  * Apply one `-`-leading argument to `options`, recording a command-specific
  * flag in `seenFlags` to be checked against the command once it is known.
@@ -618,11 +630,18 @@ const DEFAULT_COVERAGE_DIR = "coverage";
  */
 function applyOption(arg: string, next: string | undefined, options: Options, seenFlags: SeenFlag[], command?: string): number {
   if (arg === "-t" || arg === "-T") {
-    /* Sets TEST_NAME_PATTERN or TEST_FILE_PATTERN, as a -D would. */
+    /* Sets TEST_NAME_PATTERN or TEST_FILE_PATTERN, as a -D would. Given again,
+     * either selects what any of its patterns selects. */
     if (next === undefined) {
       usageError(`Option '${arg}' requires a pattern`, command);
     }
-    options.properties.set(arg === "-t" ? TEST_NAME_PATTERN : TEST_FILE_PATTERN, next);
+    if (arg === "-t") {
+      options.testNamePatterns.push(next);
+      options.properties.set(TEST_NAME_PATTERN, anyOf(options.testNamePatterns));
+    } else {
+      const earlier = options.properties.get(TEST_FILE_PATTERN);
+      options.properties.set(TEST_FILE_PATTERN, earlier === undefined || earlier === "" ? next : `${earlier} ${next}`);
+    }
     seenFlags.push({ raw: arg, flag: arg });
     return 1;
   } else if (arg === "-w") {
@@ -776,6 +795,7 @@ export function parseCommandLine(args: string[]): Options {
     retryFailed: false,
     targets: [],
     properties: new Map(),
+    testNamePatterns: [],
     commandLine: new CommandLineSource(args.slice(2)),
   };
   const opts = args.slice(2);

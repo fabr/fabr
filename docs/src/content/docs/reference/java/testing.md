@@ -160,7 +160,8 @@ fabr test -T 'src/test/java/com/example/dates/**' app
 runs only the test classes in the source files whose paths in your project match the glob
 pattern, `**/DateTest.java` matching that file wherever it is. The tests are still compiled
 together, so a filtered run reuses the compile of a full one. With `-t` as well, only the matching
-methods of those classes run. If no test file in any target matches, the run fails with
+methods of those classes run. Either option may be given more than once, to run what any of its
+patterns matches. If no test file in any target matches, the run fails with
 `No test file matches the pattern '…'`.
 
 ## Flaky and unstable tests

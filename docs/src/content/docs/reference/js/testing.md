@@ -121,16 +121,19 @@ the `describe` blocks it is in and its own, joined by spaces, as `dates parse is
 `it("parse iso")` inside `describe("dates")`. Each framework does the matching, so its own rules
 apply: jest ignores case, and `node:test` also matches a test's own name alone. Under jest and
 vitest the tests not selected are counted as skipped. The summary ends `(filtered)`, and if no
-test in any target matches, the run stops with `No test's name matches the pattern '…'`. The
-pattern is part of what is cached, so a filtered run and a full one are cached separately.
+test in any target matches, the run stops with `No test's name matches the pattern '…'`. Give `-t`
+more than once to run the tests any of the patterns matches (`-t 'dates parse' -t 'formats'`).
+The pattern is part of what is cached, so a filtered run and a full one are cached separately.
 
 `-T` takes a glob pattern, matched against each test file's path in your project, as test results
 name it: `src/dates/**` runs the test files under `src/dates`, and `**/login.spec.ts` that file
 wherever it is. The test files it leaves out don't run at all, under every framework; the tests
 are still compiled together, so a filtered run reuses the compile of a full one. With `-t` as
 well, only the tests in the selected files whose names match run. If no test file in any target
-matches, the run stops with `No test file matches the pattern '…'`. A run after a filtered one
-runs every test file of the target once, rather than only those a change reaches.
+matches, the run stops with `No test file matches the pattern '…'`. Give `-T` more than once to run
+the files any of the patterns matches (`-T 'src/dates/**' -T '**/login.spec.ts'`), or set
+`TEST_FILE_PATTERN` to the patterns separated by spaces. A run after a filtered one runs every test
+file of the target once, rather than only those a change reaches.
 
 A test written with `.only` (`it.only`, `test.only`, `describe.only`, jest's `fit` and
 `fdescribe`) is a **focused** test: by default it runs alone in its file, so you can work on one

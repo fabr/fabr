@@ -113,6 +113,8 @@ import {
   TEST_FILE_PATTERN,
   TEST_FLAKE_RETRIES,
   TEST_NAME_PATTERN,
+  testFilePatternsOf,
+  patternsText,
   TEST_ONLY_HANDLING,
   TEST_REPORT_FILENAME,
   toEnvironment,
@@ -607,7 +609,9 @@ export function compileAndRunTests(
     const selected = selectTestFiles(tests, filePattern);
     if (selected.isEmpty()) {
       if (interactive) {
-        return Computable.reject(new FabrError(`No test file matches the pattern '${filePattern.toDisplayString()}'`));
+        return Computable.reject(
+          new FabrError(`No test file matches ${patternsText(testFilePatternsOf(filePattern.toDisplayString()))}`)
+        );
       }
       return Computable.resolve(EMPTY_FILESET);
     }

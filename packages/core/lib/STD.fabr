@@ -20,7 +20,8 @@ default TEST_EXPECTATIONS = check;
 # The regular expression selecting the tests a test run runs: a test runs where
 # it matches part of the test's name as its runner names it, such as suite and
 # test names joined by spaces, or `Class#method`. Empty runs every test.
-# `fabr test -t PATTERN` sets it for one run.
+# `fabr test -t PATTERN` sets it for one run; given more than once, the
+# pattern matching where any of them does.
 default TEST_NAME_PATTERN = "";
 
 # What a test run does with focused tests, those written with `.only`
@@ -29,10 +30,10 @@ default TEST_NAME_PATTERN = "";
 # a test file that has one.
 default TEST_ONLY_HANDLING = allow;
 
-# The glob pattern selecting the test files a test run runs: a file runs where
-# the pattern matches its source path, relative to the project
-# (`packages/app/src/date.test.ts`). Empty runs every file.
-# `fabr test -T PATTERN` sets it for one run.
+# The glob patterns selecting the test files a test run runs, separated by
+# spaces: a file runs where any of them matches its source path, relative to
+# the project (`packages/app/src/date.test.ts`). Empty runs every file.
+# `fabr test -T PATTERN` sets it for one run, each `-T` adding a pattern.
 default TEST_FILE_PATTERN = "";
 
 # How many more times a test file of a target whose `test_stability` includes `flaky`

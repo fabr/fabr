@@ -328,14 +328,29 @@ function isCtrfReport(document: unknown): document is ITestReport {
 }
 
 /** @return the test files among `tests` whose source path, relative to the
- * project (their name where they have none), the glob `pattern` matches; all
- * of them where `pattern` is empty. */
+ * project (their name where they have none), any of the glob patterns in
+ * `pattern` matches ({@link testFilePatternsOf}); all of them where it holds
+ * none. */
 export function selectTestFiles(tests: FileSet, pattern: SecureString): FileSet {
-  if (pattern.length === 0) {
+  const globs = testFilePatternsOf(pattern.toUnmaskedString());
+  if (globs.length === 0) {
     return tests;
   }
-  const matches = globMatcher(pattern.toUnmaskedString());
-  return tests.remap(name => (matches(testFilePathOf(tests, name)) ? name : undefined));
+  const matchers = globs.map(glob => globMatcher(glob));
+  return tests.remap(name => (matchers.some(matches => matches(testFilePathOf(tests, name))) ? name : undefined));
+}
+
+/** @return `patterns` as a message names them: `the pattern 'a'`, or `any of the patterns 'a' and 'b'`. */
+export function patternsText(patterns: readonly string[]): string {
+  const quoted = patterns.map(pattern => `'${pattern}'`);
+  return quoted.length === 1
+    ? `the pattern ${quoted[0]}`
+    : `any of the patterns ${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
+/** @return the glob patterns of a TEST_FILE_PATTERN value: its words, separated by whitespace. */
+export function testFilePatternsOf(value: string): string[] {
+  return value.split(/\s+/).filter(word => word !== "");
 }
 
 /** @return the path in the project of the file `name` of `tests`, as test

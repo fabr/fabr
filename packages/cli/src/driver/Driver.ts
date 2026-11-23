@@ -95,6 +95,8 @@ import {
   SyncSource,
   targetsReadWithin,
   TEST_FILE_PATTERN,
+  testFilePatternsOf,
+  patternsText,
   TEST_NAME_PATTERN,
   testOperation,
   TestsFailedError,
@@ -434,8 +436,8 @@ function runTest(
         names,
         reports,
         tested.map(({ failures }) => failures.length > 0),
-        options.properties.get(TEST_NAME_PATTERN) || undefined,
-        options.properties.get(TEST_FILE_PATTERN) || undefined
+        options.testNamePatterns.length > 0 ? options.testNamePatterns : nonEmpty([options.properties.get(TEST_NAME_PATTERN) ?? ""]),
+        testFilePatternsOf(options.properties.get(TEST_FILE_PATTERN) ?? "")
       );
       const failures = [...unbuilt, ...(failure === undefined ? [] : [failure])];
       return (
@@ -1749,6 +1751,11 @@ function renderListing(files: FileSet, longListing: boolean): Computable<string[
   });
 }
 
+/** @return `values` without its empty strings. */
+function nonEmpty(values: readonly string[]): string[] {
+  return values.filter(value => value !== "");
+}
+
 /**
  * Log the test summary of each name a run tested, from its report (whether
  * freshly run or cached), and return the failure of the names whose tests
@@ -1763,9 +1770,11 @@ function reportTestResults(
   names: string[],
   reports: (ITestReport | undefined)[],
   unbuilt: boolean[],
-  namePattern: string | undefined,
-  filePattern: string | undefined
+  namePatterns: readonly string[],
+  filePatterns: readonly string[]
 ): TestsFailedError | undefined {
+  const namePattern = namePatterns.length === 0 ? undefined : patternsText(namePatterns);
+  const filePattern = filePatterns.length === 0 ? undefined : patternsText(filePatterns);
   const filtered = namePattern === undefined && filePattern === undefined ? "" : " (filtered)";
   const failures: string[] = [];
   let failed = 0;
@@ -1796,10 +1805,10 @@ function reportTestResults(
   if ((namePattern !== undefined || filePattern !== undefined) && ran === 0 && !unbuilt.some(failed => failed)) {
     throw new FabrError(
       filePattern === undefined
-        ? `No test's name matches the pattern '${namePattern}'`
+        ? `No test's name matches ${namePattern}`
         : namePattern === undefined
-          ? `No test file matches the pattern '${filePattern}'`
-          : `No test matches both the file pattern '${filePattern}' and the name pattern '${namePattern}'`
+          ? `No test file matches ${filePattern}`
+          : `No test matches both the file ${filePattern} and the name ${namePattern}`
     );
   }
   return failures.length === 0 ? undefined : new TestsFailedError(failures.join("\n"), failed, tests);
