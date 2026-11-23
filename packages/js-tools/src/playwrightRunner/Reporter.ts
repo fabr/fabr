@@ -25,6 +25,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { ITestResult } from "@fabr-build/core";
 import { buildReport } from "../testRunner/Report";
 import {
@@ -36,6 +37,12 @@ import {
   toTestResult,
   withReportedFile,
 } from "./PlaywrightRun";
+
+/** Playwright's notice that a run stopped at its config's `maxFailures`, its colour stripped. */
+const STOPPED_EARLY = /^Testing stopped early after \d+ maximum allowed failures?\.?$/;
+
+/** The prefix of the scratch directory each Playwright worker makes in the output directory. */
+const WORKER_SCRATCH = ".playwright-artifacts-";
 
 /** The name and type of the attachment Playwright writes a failed test's error context to. */
 const ERROR_CONTEXT = { name: "error-context", contentType: "text/markdown" };
@@ -89,14 +96,18 @@ export default class FabrReporter {
   }
 
   public onError(error: IReportedError): void {
-    this.errors.push(error);
+    /* The failures that stopped the run are reported as themselves. */
+    if (!STOPPED_EARLY.test(stripVTControlCharacters(error.message ?? ""))) {
+      this.errors.push(error);
+    }
   }
 
   /**
    * Write the report: a result per test, and a failure for each error raised
    * outside every test, for each file no project of the config runs, for each
    * file where the run registered no tests and none are selected by name, and
-   * for a run that did not pass where nothing else failed.
+   * for a run that did not pass where nothing else failed. Then remove the
+   * workers' scratch directories from the artifacts directory.
    */
   public onEnd(result: { status: string }): void {
     const { files, named, unmatched = [] } = this.options;
@@ -113,12 +124,18 @@ export default class FabrReporter {
       tests.push(toRunFailure({ message: `The run ended ${result.status}` }, file));
     }
     fs.writeFileSync(this.options.report, JSON.stringify(buildReport(tests, this.start, Date.now()), undefined, 2));
+    const dir = this.options.artifacts;
+    if (dir !== undefined && fs.existsSync(dir)) {
+      for (const entry of fs.readdirSync(dir).filter(name => name.startsWith(WORKER_SCRATCH))) {
+        fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
+      }
+    }
   }
 
   /**
    * @return `result` with the attachments of `run` (the run it reports) kept
    * in the artifacts directory, each named within it: a file already there as
-   * it is, a file elsewhere copied in, and one held in memory written there. A
+   * it is, a file elsewhere or in a worker's scratch directory copied in, and one held in memory written there. A
    * file that no longer exists (Playwright removes what it does not retain) is
    * left out. A kept error context names the test's file as the report does
    * ({@link withReportedFile}). Unchanged where there is no artifacts
@@ -154,7 +171,7 @@ export default class FabrReporter {
         return undefined;
       }
       const within = path.relative(dir, attachment.path);
-      if (!within.startsWith("..") && !path.isAbsolute(within)) {
+      if (!within.startsWith("..") && !path.isAbsolute(within) && !within.startsWith(WORKER_SCRATCH)) {
         return within.split(path.sep).join("/");
       }
       const copied = path.join("attachments", `${this.placed++}-${path.basename(attachment.path)}`);
