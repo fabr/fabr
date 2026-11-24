@@ -94,6 +94,7 @@ import {
   IPropertyDecl,
   isMapValue,
   isNameValue,
+  isPropertyDecl,
   ITargetDecl,
   ITargetDefDecl,
   guardText,
@@ -261,6 +262,9 @@ export class BuildContextImpl implements InternalBuildContext {
   private readonly resolvedTargets = new Map<string, Computable<ResolvedTarget>>();
   /** The resolved requirements of each repository declaration, by its name. */
   private readonly resolvedRepositories = new Map<string, Computable<ResolvedRequirements>>();
+  /** The value of each property found constant here ({@link constantValue}),
+   * by name; null where it is not constant. */
+  private readonly constantValues = new Map<string, string | null>();
 
   constructor(model: IBuildModel, constraints: Constraints, execution: ExecutionContext) {
     this.model = model;
@@ -517,11 +521,100 @@ export class BuildContextImpl implements InternalBuildContext {
   }
 
   public runOverrides(extra?: Constraints): Constraints {
-    const host = this.getConstraint(HOST) ?? hostTriple();
-    const measured = this.getConstraint(COVERAGE) !== undefined;
-    return RUN_OVERRIDE.with(Constraints.of({ ...(measured ? { [COVERAGE]: "off" } : {}), ...(host ? { [TARGET]: host } : {}) })).with(
-      extra
-    );
+    const host = this.constantValue(HOST) ?? hostTriple();
+    /* A key is pinned only where it would read otherwise, so a run hop over a
+     * configuration that already reads these values makes no configuration of
+     * its own. */
+    const pins = new Map([
+      [TARGET, host],
+      [COVERAGE, "off"],
+    ]);
+    const changed = [...pins].filter(([key, value]) => value !== "" && this.constantValue(key) !== value);
+    return RUN_OVERRIDE.with(Constraints.of(Object.fromEntries(changed))).with(extra);
+  }
+
+  /**
+   * Get the value the property `name` reads in this configuration and in every
+   * configuration below it, where the model alone says so; otherwise
+   * undefined. Such a property is a **constant property**: one a constraint
+   * gives a value, or one answered by a single unguarded declaration (an
+   * ordinary one, else a `default`) whose value is text substituting only
+   * constant properties and the entries of constant MAP properties. Reads
+   * nothing. A configuration below that constrains a property the value
+   * substitutes reads the value afresh.
+   */
+  public constantValue(name: string): string | undefined {
+    if (this.constrains(name)) {
+      return this.constraints.get(name);
+    }
+    const known = this.constantValues.get(name);
+    if (known !== undefined) {
+      return known ?? undefined;
+    }
+    /* Not constant while it is being decided, so a substitution cycle is not. */
+    this.constantValues.set(name, null);
+    const key = mapKeyOf(name);
+    const value = key !== undefined ? this.constantMapEntry(key.map, key.key) : this.constantDeclValue(this.soleUnguardedDecl(name));
+    this.constantValues.set(name, value ?? null);
+    return value;
+  }
+
+  /** @return the one declaration answering the property `name` in every
+   * configuration, where it has one unguarded declaration in the tier that
+   * answers (its ordinary declarations, else its `default` ones), otherwise
+   * undefined. */
+  private soleUnguardedDecl(name: string): IPropertyDecl | undefined {
+    const def = this.lookupDecl(name);
+    if (def?.kind !== DeclKind.Property) {
+      return undefined;
+    }
+    const tier = def.decls.length > 0 ? def.decls : def.defaults;
+    return tier.length === 1 && !tier[0].name.hasConstraints() ? tier[0] : undefined;
+  }
+
+  /** @return the text `decl`'s values read as where each is constant
+   * ({@link constantValue}), otherwise undefined. */
+  private constantDeclValue(decl: IPropertyDecl | IMapItemDecl | undefined): string | undefined {
+    if (decl === undefined || !isPropertyDecl(decl) || !decl.values.every(isNameValue)) {
+      return undefined;
+    }
+    const scope = this.inFile(decl.source.file);
+    const words = decl.values.map(value => scope.constantText(value.value));
+    return words.every(word => word !== undefined) ? words.join(" ") : undefined;
+  }
+
+  /** @return the text the written `name` substitutes to where every name it
+   * substitutes is constant ({@link constantValue}), otherwise undefined. */
+  private constantText(name: Name): string | undefined {
+    if (name.hasConstraints() || name.getRenameTo() !== undefined || name.getMarker() !== undefined) {
+      return undefined;
+    }
+    const resolved = new Map<NamePart, SecureString>();
+    for (const part of name.getSubstitutions()) {
+      const value = part.kind === NamePartKind.VarSubst && part.constraints === undefined ? this.constantValue(part.value) : undefined;
+      if (value === undefined) {
+        return undefined;
+      }
+      resolved.set(part, SecureString.of(value));
+    }
+    return name.substitute(resolved).toUnmaskedString();
+  }
+
+  /** @return the text of the entry `key` of the MAP property `map` where the
+   * map is answered by one unguarded declaration of one block holding no
+   * splice, and the entry is declared once there and is constant, otherwise
+   * undefined. */
+  private constantMapEntry(map: string, key: string): string | undefined {
+    const decl = this.constrains(map) ? undefined : this.soleUnguardedDecl(map);
+    if (decl === undefined || decl.values.length !== 1 || !isMapValue(decl.values[0])) {
+      return undefined;
+    }
+    const items = decl.values[0].entries;
+    if (!items.every(isPropertyDecl)) {
+      return undefined;
+    }
+    const entries = items.filter(item => !item.name.hasConstraints() && item.name.toUnmaskedString() === key);
+    return entries.length === 1 ? this.constantDeclValue(entries[0]) : undefined;
   }
 
   public getConstraint(name: string): string | undefined {

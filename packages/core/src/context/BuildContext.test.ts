@@ -71,7 +71,16 @@ import script from "../rules/RunScript";
 import { BuildContext, InternalBuildContext } from "./BuildContext";
 import { ResolvedRequirements } from "./Collection";
 import { isWords, mapEntryOrigin, PropertyMap, PropertyMapValue } from "./PropertyMap";
-import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints, FILES_OPERATION, FILES_OVERRIDE, HOST, TARGET } from "../model/Constraints";
+import {
+  BUILD_OPERATION,
+  BUILD_OVERRIDE,
+  Constraints,
+  COVERAGE,
+  FILES_OPERATION,
+  FILES_OVERRIDE,
+  HOST,
+  TARGET,
+} from "../model/Constraints";
 import { PERMISSIVE_RESOLUTION, sidedNodes } from "./CollectionPoint";
 import { DESCRIPTION_FILE, describeTarget, descriptionFile, toDescription } from "./Description";
 import { SEMVER, SemverConstraint, SemverVersion, versionToString } from "../resolver/Semver";
@@ -3629,6 +3638,41 @@ describe("BuildContext", () => {
       ).to.equal(hostTriple());
       const overridden = model.getConfig(Constraints.of({ [HOST]: "riscv64-unknown-linux-gnu" }), execution);
       expect(internal(overridden).runOverrides().get(TARGET)).to.equal("riscv64-unknown-linux-gnu");
+    });
+
+    it("pins a run's TARGET and COVERAGE only where they are not constant at the pinned value", () => {
+      const host = "aarch64-apple-darwin";
+      const pinsOf = (
+        text: string,
+        constraints: Record<string, string> = {},
+        environment = new Map<string, string>()
+      ): Array<string | undefined> => {
+        const errors: string[] = [];
+        const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+        const files = [
+          ...hostDeclarations(host, environment),
+          parseBuildString(EMPTY_FILESET, "TEST.fabr", "default TARGET = ${HOST};\ndefault COVERAGE = off;\n" + text, logger),
+        ];
+        const model = toBuildModel(files, logger, testContributions);
+        expect(errors).to.deep.equal([]);
+        const overrides = internal(model.getConfig(Constraints.of(constraints), execution)).runOverrides();
+        expect(overrides.get(BUILD_OPERATION)).to.equal("run");
+        return [overrides.get(TARGET), overrides.get(COVERAGE)];
+      };
+      /* The defaults read the pinned values in every configuration. */
+      expect(pinsOf("")).to.deep.equal([undefined, undefined]);
+      expect(pinsOf("", { [HOST]: "riscv64-unknown-linux-gnu" })).to.deep.equal([undefined, undefined]);
+      expect(pinsOf("", { [TARGET]: host })).to.deep.equal([undefined, undefined]);
+      /* Text substituting constant MAP entries, the environment's included. */
+      expect(pinsOf("ARCH = { a = aarch64; };\nTARGET = ${ARCH.a}-apple-darwin;\n")).to.deep.equal([undefined, undefined]);
+      expect(pinsOf("TARGET = ${ENV.T};\n", {}, new Map([["T", host]]))).to.deep.equal([undefined, undefined]);
+      /* Pinned where the value read would differ, or is not known from the model. */
+      expect(pinsOf("", { [TARGET]: "x86_64-unknown-linux-gnu" })).to.deep.equal([host, undefined]);
+      expect(pinsOf("COVERAGE = on;\n")).to.deep.equal([undefined, "off"]);
+      expect(pinsOf("", { [COVERAGE]: "on" })).to.deep.equal([undefined, "off"]);
+      expect(pinsOf("TARGET<BUILD_TYPE=release> = x86_64-unknown-linux-gnu;\n")).to.deep.equal([host, undefined]);
+      expect(pinsOf("TARGET = ${X};\nX = ${TARGET};\n")).to.deep.equal([host, undefined]);
+      expect(pinsOf("TARGET = `echo " + host + "`;\n")).to.deep.equal([host, undefined]);
     });
 
     it("reads an entry of any MAP property, and refuses one that is a map", async () => {
