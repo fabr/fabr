@@ -24,7 +24,7 @@ import { edgeBinding, nodeId, MVSResolution } from "./MVSResolution";
 import { parseVersion, SEMVER, SemverConstraint, SemverVersion, versionToString } from "./Semver";
 import { MetadataFetchError, VersionNotFoundError } from "../core/Errors";
 import { RequirementSource, Requirement, Selected, VersionDomain } from "./Types";
-import { serializeResolutionDoc, toResolutionDoc } from "./ResolutionDoc";
+import { renameBuildVersions, serializeResolutionDoc, toResolutionDoc } from "./ResolutionDoc";
 import { expect } from "chai";
 
 /**
@@ -1914,6 +1914,29 @@ describe("persisted resolution documents", () => {
     const doc = serializeResolutionDoc(roots, resolve({ app: "1.0.0", lib: "1.2.0" }, data), versionToString);
     const written = JSON.parse(JSON.stringify(doc));
     expect(toResolutionDoc(written)).to.deep.equal(written);
+  });
+
+  it("renames every build version, in versions, constraints and node ids, and back to the same document", () => {
+    const domain = allowingBuilds(SEMVER);
+    const build = buildKey("chai=@npm:chai:5.0.0", "cccccccc");
+    const named = buildKey("", "1");
+    const builds = new Map<string, Requirement[]>([[build, [{ name: "lib", versionConstraint: "^1.0.0" }]]]);
+    const base = mockRegistry(data);
+    const registry: RequirementSource<SemverVersion | string> = {
+      getRequirements: (pkg, version) =>
+        isBuildVersion(version) ? Computable.resolve(builds.get(version)!) : base.getRequirements(pkg, version),
+    };
+    const roots: Requirement[] = [{ name: "tool", versionConstraint: build }];
+    let result: MVSResolution<SemverVersion | string> | undefined;
+    resolveMVS(roots, domain, registry).then(resolution => {
+      result = resolution;
+    });
+    const doc = JSON.parse(JSON.stringify(serializeResolutionDoc(roots, result!, domain.versionToString)));
+    const renamed = renameBuildVersions(doc, version => (version === build ? named : version));
+    expect(JSON.stringify(renamed)).to.not.contain("cccccccc");
+    expect(renamed.selections.map(sel => `${sel.name}@${sel.version}`)).to.contain(`tool@${named}`);
+    expect(renamed.requirements.map(entry => entry.node)).to.contain(`tool@${named}`);
+    expect(renameBuildVersions(renamed, version => (version === named ? build : version))).to.deep.equal(doc);
   });
 
   it("refuses a damaged document", () => {

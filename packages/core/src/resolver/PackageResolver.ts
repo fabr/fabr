@@ -70,9 +70,16 @@ import {
   violationKeys,
   exactConstraintOf,
 } from "./Requirement";
-import { deserializeResolutionDoc, serializeResolutionDoc, toResolutionDoc } from "./ResolutionDoc";
+import {
+  deserializeResolutionDoc,
+  IResolutionDoc,
+  renameBuildVersions,
+  serializeResolutionDoc,
+  toResolutionDoc,
+} from "./ResolutionDoc";
 import { parseJson } from "../support/Json";
-import { nodeId, MVSResolution } from "./MVSResolution";
+import { compareText } from "../support/Functional";
+import { nodeId, nodeIdOf, MVSResolution } from "./MVSResolution";
 import { IResolutionOrigin, PACKAGE_RESOLUTION_PROVENANCE } from "./ResolutionProvenance";
 import type { CheckedResolution, ResolvedBatch } from "./StrictCollection";
 import { completeRepairSet, RefRenderer, SuggestSources, unrepairableError } from "./ResolutionReport";
@@ -428,6 +435,21 @@ function buildOf(pkg: Package): string {
   const content = contentOf(pkg);
   const configuration = pkg instanceof ResolvedNode ? (pkg.content.configuration ?? "") : "";
   return buildKey(configuration, hashString(content.key).slice(0, 8));
+}
+
+/**
+ * Make the name each of `builds` has in a resolution memo, by its build key:
+ * a build key whose digest is its place among the builds, ordered by package
+ * name and then by key, zero-padded to one width so that the builds of a name
+ * order as their keys do. A memo so named is shared by every configuration
+ * whose builds rank alike and require the same.
+ */
+function memoNames(builds: Builds): Map<string, string> {
+  const ranked = [...builds.built.values()]
+    .map(node => ({ name: node.pkg.packageName, build: node.build }))
+    .sort((a, b) => compareText(a.name, b.name) || compareText(a.build, b.build));
+  const width = String(ranked.length).length;
+  return new Map(ranked.map(({ build }, rank) => [build, buildKey("", String(rank + 1).padStart(width, "0"))]));
 }
 
 /** @return true if `pkg` may be a candidate of a resolution in `format`, otherwise false: a package built in the project declared in another format may not. */
@@ -1690,7 +1712,11 @@ function suggestSourcesFor<V, C>(
  * The memo key is the registry's identity (a registry's url, a
  * `repository_group`'s whole route table), its environment key for the
  * collection's operation (npm: the target platform), the roots, and what each
- * build requires. A miss runs the resolution as a `repository-resolve` task
+ * build requires, every build named by its place among the builds
+ * ({@link memoNames}) rather than by its key, so one entry serves every
+ * configuration whose builds require the same. The stored resolution names
+ * builds and orders its roots the same way, and is read back with this
+ * collection's build keys and roots. A miss runs the resolution as a `repository-resolve` task
  * naming the consumer and the roots it wrote (all but `pinnedKeys`).
  * Unsatisfied requirements, raised lower bounds and forks are recorded in the
  * result, not refused.
@@ -1715,50 +1741,85 @@ function getJointResolution<V, C>(
   const { format } = registry;
   /* The registry's versions and the builds, as candidates. */
   const domain = allowingBuilds(format);
+  /* The memo names each build by its place among the builds (memoNames),
+   * not by its key, which carries its configuration. Its roots
+   * are in the order of their keys so named (`order`: the index in `roots`
+   * of each). */
+  const toMemo = memoNames(builds);
+  const fromMemo = new Map([...toMemo].map(([build, named]) => [named, build]));
+  const memoRequirement = (req: Requirement): Requirement =>
+    req.versionConstraint === undefined
+      ? req
+      : { ...req, versionConstraint: toMemo.get(req.versionConstraint) ?? req.versionConstraint };
+  const memoRootKeys = roots.map(req => requirementKey(memoRequirement(req)));
+  const order = memoRootKeys.map((_, index) => index).sort((a, b) => compareText(memoRootKeys[a], memoRootKeys[b]));
   /* What each build requires is part of the memo key. */
-  const builtKeys = [...builds.built]
-    .map(([id, node]) => `built ${id}: ${node.requirements.map(requirementKey).sort().join(", ")}`)
+  const builtKeys = [...builds.built.values()]
+    .map(
+      node =>
+        `built ${nodeIdOf(node.pkg.packageName, toMemo.get(node.build) ?? node.build)}: ${node.requirements
+          .map(req => requirementKey(memoRequirement(req)))
+          .sort()
+          .join(", ")}`
+    )
     .sort();
+  /* Write a resolution as it is stored: builds by their memo names, roots in `order`. */
+  const stored = (doc: IResolutionDoc): IResolutionDoc => ({
+    ...renameBuildVersions(doc, build => toMemo.get(build) ?? build),
+    roots: order.map(index => memoRequirement(roots[index])),
+    rootBindings: order.map(index => doc.rootBindings[index] ?? null),
+  });
+  /* Read a stored resolution back for this collection: each build by its key, roots as given. */
+  const restored = (doc: IResolutionDoc): IResolutionDoc => {
+    const rootBindings = roots.map((): number | null => null);
+    order.forEach((index, at) => (rootBindings[index] = doc.rootBindings[at] ?? null));
+    return { ...renameBuildVersions(doc, named => fromMemo.get(named) ?? named), roots, rootBindings };
+  };
   return registry.environmentKey(context.operation).then(environment => {
     return (
       context
         /* Join the roots with newlines: a version constraint may contain
          * spaces (`1.2.3 - 2.3.4`), and neither a package name nor a
          * constraint contains a newline. */
-        .memoize(format.resolutionTag, `${registry.identity} ${environment}\n${[...rootKeys, ...builtKeys].join("\n")}`, () =>
-          /* A miss is resolution work for the consumer: run as a task, so the
-           * metadata reads it makes are shown under it. */
-          context.runTask(
-            {
-              kind: "repository-resolve",
-              repository: repositoryName ?? registry.identity,
-              consumer: context.name,
-              requirements: rootKeys.filter(key => !pinnedKeys.has(key)),
-            },
-            () =>
-              resolveMVS(roots, domain, withBuilds(registry, builds, context.operation)).then(result => {
-                /* Errors of the walk (an unparseable constraint, a package
-                 * required only without a lower bound) are refused in every
-                 * mode. Each failure keeps its root package, by which
-                 * attributeResolutionFailure names the written references
-                 * that brought it in, and, unless `enrich` is false, gets a
-                 * suggested pin. */
-                if (result.errors.length > 0) {
-                  if (!enrich) {
-                    throw new ResolutionWalkError(result.errors);
-                  }
-                  return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, repositoryName, builds)).then(
-                    failures => {
-                      throw new ResolutionWalkError(failures);
+        .memoize(
+          format.resolutionTag,
+          `${registry.identity} ${environment}\n${[...order.map(index => memoRootKeys[index]), ...builtKeys].join("\n")}`,
+          () =>
+            /* A miss is resolution work for the consumer: run as a task, so the
+             * metadata reads it makes are shown under it. */
+            context.runTask(
+              {
+                kind: "repository-resolve",
+                repository: repositoryName ?? registry.identity,
+                consumer: context.name,
+                requirements: rootKeys.filter(key => !pinnedKeys.has(key)),
+              },
+              () =>
+                resolveMVS(roots, domain, withBuilds(registry, builds, context.operation)).then(result => {
+                  /* Errors of the walk (an unparseable constraint, a package
+                   * required only without a lower bound) are refused in every
+                   * mode. Each failure keeps its root package, by which
+                   * attributeResolutionFailure names the written references
+                   * that brought it in, and, unless `enrich` is false, gets a
+                   * suggested pin. */
+                  if (result.errors.length > 0) {
+                    if (!enrich) {
+                      throw new ResolutionWalkError(result.errors);
                     }
-                  );
-                }
-                return validatedResolutionDoc(registry, roots, result);
-              })
-          )
+                    return completeRepairSet(result.errors, roots, suggestSourcesFor(context, registry, repositoryName, builds)).then(
+                      failures => {
+                        throw new ResolutionWalkError(failures);
+                      }
+                    );
+                  }
+                  return validatedResolutionDoc(registry, roots, result, stored);
+                })
+            )
         )
         .then(files => files.readFile(RESOLUTION_FILE))
-        .then(data => deserializeResolutionDoc(parseJson(data, `the resolution memo ${RESOLUTION_FILE}`, toResolutionDoc), domain))
+        .then(data =>
+          deserializeResolutionDoc(restored(parseJson(data, `the resolution memo ${RESOLUTION_FILE}`, toResolutionDoc)), domain)
+        )
     );
   });
 }
@@ -1766,19 +1827,20 @@ function getJointResolution<V, C>(
 /**
  * Run the registry's check of the final selections (`validateSelections`:
  * npm's platform check; a group's per route) over every published selection,
- * forks included, then serialize the resolution as its memo's files. A
- * refusal rejects, in every mode.
+ * forks included, then serialize the resolution as its memo's files,
+ * written by `stored`. A refusal rejects, in every mode.
  */
 function validatedResolutionDoc<V, C>(
   registry: RepositoryReader<V, C>,
   roots: Requirement[],
-  result: MVSResolution<V | string>
+  result: MVSResolution<V | string>,
+  stored: (doc: IResolutionDoc) => IResolutionDoc
 ): Computable<FileSet> {
   /* The registry's policy is over what it publishes. */
   const domain = allowingBuilds(registry.format);
   const published = result.selections.filter((sel): sel is Selected<V> => !isBuildVersion(sel.version));
   return (registry.validateSelections?.(published) ?? Computable.resolve(undefined)).then(() => {
-    const doc = serializeResolutionDoc(roots, result, domain.versionToString);
+    const doc = stored(serializeResolutionDoc(roots, result, domain.versionToString));
     return new FileSet(new Map([[RESOLUTION_FILE, MemoryFile.from(JSON.stringify(doc, undefined, 2))]]));
   });
 }

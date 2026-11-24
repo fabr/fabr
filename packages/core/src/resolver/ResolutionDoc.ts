@@ -20,6 +20,7 @@
 import { FabrError } from "../core/Errors";
 import { isJsonObject, toStringList } from "../support/Json";
 import { MVSResolution, nodeIdOf } from "./MVSResolution";
+import { isBuildVersion } from "./Requirement";
 import { IRequirementEdge, Requirement, Selected, Violation } from "./Types";
 
 /** One selection (`Selected`) in a persisted resolution document. */
@@ -131,6 +132,54 @@ export function serializeResolutionDoc<V>(
       });
     }),
     rootBindings: result.rootBindings.map(target => target ?? null),
+  };
+}
+
+/**
+ * Make a copy of `doc` with every build version in it renamed by `rename`:
+ * wherever a selection's version, a constraint, a selected, declared or
+ * raised version, or the version in a node id is a build's key. Registry
+ * versions and the positional tables (`edges`, `rootBindings`) are kept.
+ */
+export function renameBuildVersions(doc: IResolutionDoc, rename: (build: string) => string): IResolutionDoc {
+  const version = (text: string): string => (isBuildVersion(text) ? rename(text) : text);
+  const constraint = (text: string | undefined): string | undefined => (text === undefined ? undefined : version(text));
+  /* A node id is `<name>@<version>`, and a package name holds an `@` only as
+   * its first character. */
+  const id = (node: string): string => {
+    const at = node.indexOf("@", 1);
+    return at < 0 ? node : `${node.slice(0, at + 1)}${version(node.slice(at + 1))}`;
+  };
+  const edge = (entry: IRequirementEdge | undefined): IRequirementEdge | undefined =>
+    entry === undefined ? undefined : { requiredBy: id(entry.requiredBy), versionConstraint: constraint(entry.versionConstraint) };
+  const requirement = (req: Requirement): Requirement => ({ ...req, versionConstraint: constraint(req.versionConstraint) });
+  const violation = (entry: IViolationEntry): IViolationEntry => ({
+    name: entry.name,
+    versionConstraint: version(entry.versionConstraint),
+    requiredBy: id(entry.requiredBy),
+    selected: version(entry.selected),
+  });
+  return {
+    roots: doc.roots.map(requirement),
+    selections: doc.selections.map(entry => ({
+      ...entry,
+      version: version(entry.version),
+      ...optional("selectedBy", edge(entry.selectedBy)),
+      ...optional("reachedVia", edge(entry.reachedVia)),
+    })),
+    violations: doc.violations.map(violation),
+    ...optional("coerced", doc.coerced?.map(violation)),
+    ...optional("shared", doc.shared?.map(violation)),
+    raises: doc.raises.map(entry => ({
+      name: entry.name,
+      versionConstraint: version(entry.versionConstraint),
+      declared: version(entry.declared),
+      raised: version(entry.raised),
+      requiredBy: id(entry.requiredBy),
+    })),
+    requirements: doc.requirements.map(entry => ({ node: id(entry.node), requires: entry.requires.map(requirement) })),
+    edges: doc.edges,
+    rootBindings: doc.rootBindings,
   };
 }
 

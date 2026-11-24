@@ -757,6 +757,10 @@ class TestVersionedRegistry extends TestRegistry {
 registerRepositoryProvider("test_versioned_registry", context =>
   Computable.resolve(new TestVersionedRegistry(`${context.name}#${++registries}`, context.operation, context.name))
 );
+/* A registry of one identity in every configuration, as a registry's url is. */
+registerRepositoryProvider("test_url_registry", context =>
+  Computable.resolve(new TestRegistry(`url:${context.name}`, context.operation, context.name))
+);
 
 /** A repository answering every name with the package of that name, marked as
  * its answer, and a bare scope with the namespace of it — a stand-in for
@@ -1222,6 +1226,39 @@ describe("BuildContext", () => {
       expect(described?.getFile(DESCRIPTION_FILE)).to.not.equal(undefined);
     } finally {
       registryRequirements.delete("cx-raiser@1.0.0");
+    }
+  });
+
+  it("resolves a collection holding a build once for configurations that differ in a key the build does not read", async () => {
+    const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), "fabr-memo-builds-test-"));
+    try {
+      const run = new ExecutionContext(new BuildCache(root, testLog), testLog, EMPTY_FILESET, EMPTY_FILESET);
+      const errors: string[] = [];
+      const logger = new LogFormatter(LogLevel.Info, msg => errors.push(msg));
+      const input =
+        "MODE = m;\ntargetdef test_url_registry { }\ntest_url_registry @reg { }\n" +
+        "targetdef test_carrier { deps = PACKAGES; }\ntargetdef test_holds { deps = PACKAGES; }\n" +
+        "test_carrier lib { deps = @reg:util:^1.0.0; }\ntest_holds app { deps = lib @reg:dep:^1.0.0; }\n";
+      const model = toBuildModel([parseBuildString(EMPTY_FILESET, "TEST.fabr", input, logger)], logger, testContributions);
+      expect(errors).to.deep.equal([]);
+      const build = (unrelated: string): Promise<string[]> => {
+        requirementsAsked.length = 0;
+        return Promise.resolve(
+          model
+            .getConfig(Constraints.of({ [BUILD_OPERATION]: "build", UNRELATED: unrelated }), run)
+            .materialize(writtenOnCommandLine("app"))
+        ).then(() => requirementsAsked.filter(asked => asked.startsWith("dep@") || asked.startsWith("util@")).sort());
+      };
+      /* lib's own collection and app's, which resolves what lib carries, both ask for util. */
+      expect(await build("one")).to.deep.equal(["dep@1.0.0 build", "util@1.0.0 build", "util@1.0.0 build"]);
+      expect(await build("two")).to.deep.equal([]);
+      /* The resolution read back names this configuration's build of lib. */
+      expect(heldDeps.map(deps => (deps instanceof PackageFileSet ? deps.packageName : undefined)).sort()).to.deep.equal([
+        "dep",
+        "lib",
+      ]);
+    } finally {
+      deleteTreeSync(root);
     }
   });
 
