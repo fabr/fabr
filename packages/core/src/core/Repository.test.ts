@@ -219,6 +219,7 @@ const RESOLUTION_CONTEXT: ResolutionContext = {
   getGlobalString: () => Computable.resolve(SecureString.of("build")),
   launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
   memoize: (_tag, _key, create) => create("unused"),
+  reshape: (_tag, file, convert) => file.readString().then(convert),
   runTask: (_task, run) => run(SILENT_REPORT),
 };
 

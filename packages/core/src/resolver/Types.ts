@@ -20,9 +20,9 @@
 import type { SecureString } from "../core/SecureString";
 import type { RunnableArgument, RunnableFileSet } from "../core/RunnableFileSet";
 import { Computable } from "../core/Computable";
-import type { FileSet } from "../core/FileSet";
+import type { FileSet, IFile } from "../core/FileSet";
 import type { Package, PackageFileSet, RegistrySelection } from "../core/PackageFileSet";
-import type { RefSource, RepositoryReader, RepositoryRef } from "../core/Repository";
+import type { RefSource, RepositoryReader, RepositoryRef, Resolved } from "../core/Repository";
 import type { IRepositoryResolveTask } from "../support/Tasks";
 import type { ITaskReport } from "../support/Execute";
 
@@ -396,6 +396,10 @@ export interface ResolutionContext {
   /** Get the result of `create` from the build cache under `memo:<tag>
    *  <key>`, running it in a work directory only where it is not there. */
   memoize(tag: string, key: string, create: (targetDir: string) => Computable<FileSet>): Computable<FileSet>;
+  /** Read `file`, a file of an entry stored under `tag`, as the value `convert`
+   *  makes of its text, shared with every other reshape of the same content
+   *  (see `BuildCache.reshape`). */
+  reshape<T>(tag: string, file: IFile, convert: (text: string) => T): Computable<T>;
   /** Run `run` as one task reported to the build's progress. */
   runTask<T>(task: IRepositoryResolveTask, run: (report: ITaskReport) => Computable<T>): Computable<T>;
 }
@@ -437,6 +441,10 @@ export interface ResolvedCollection {
    * catalog resolved it, made when first asked for. Undefined where the
    * member is answered by its files alone. */
   readonly resolvedMembers: Map<RepositoryRef, Computable<Package | undefined>>;
+  /** Each of this collection's own sources that a catalog answers with as a
+   * member, resolved alone, by source: made when a collection first asks for
+   * it, and shared by every collection that asks. */
+  readonly resolvedEntries: Map<RepositoryRef | Package, Computable<Resolved>>;
 }
 
 /** A member of a collection a repository resolved, as

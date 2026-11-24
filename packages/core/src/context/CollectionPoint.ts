@@ -514,8 +514,9 @@ function resolveMember(
 /**
  * Resolve the member of `source`'s collection that `request` names as the
  * collection did: its package, wired to that selection, made once per
- * reference (`resolvedMembers`). Undefined where the member is answered by
- * its files alone (the `files` operation).
+ * reference (`resolvedMembers`), the member itself resolved once for every
+ * collection asking (the catalog collection's `resolvedEntries`). Undefined
+ * where the member is answered by its files alone (the `files` operation).
  */
 function memberPackage(
   context: ResolutionContext,
@@ -530,8 +531,17 @@ function memberPackage(
       if (isFilesOperation(operation)) {
         return Computable.resolve(undefined);
       }
+      /* What the member resolves to reads only the catalog's collection and
+       * entry: `context` selects the side alone, and a package carries no
+       * asker's provenance, so one resolution serves every asker. */
+      let resolved = collection.resolvedEntries.get(entry);
+      if (resolved === undefined) {
+        resolved = resolveSources(context, collection, [entry]).then(({ delivered: [pkg] }) => pkg);
+        collection.resolvedEntries.set(entry, resolved);
+      }
+      const shared = resolved;
       return attributedTo(reference, () =>
-        resolveSources(context, collection, [entry]).then(({ delivered: [pkg] }): Package => {
+        shared.then((pkg): Package => {
           if (!isPackage(pkg)) {
             throw new FabrError(`internal: '${reference.toString()}' resolved to no package`);
           }
@@ -615,6 +625,7 @@ export function withOperation(context: ResolutionContext, operation: string): Re
         getGlobalString: name => context.getGlobalString(name),
         launchedBy: (runnable, interpreter, interpreterArgs) => context.launchedBy(runnable, interpreter, interpreterArgs),
         memoize: (tag, key, create) => context.memoize(tag, key, create),
+        reshape: (tag, file, convert) => context.reshape(tag, file, convert),
         runTask: (task, run) => context.runTask(task, run),
       };
 }
@@ -839,6 +850,7 @@ export function resolveCollection(
     members,
     instances: held,
     resolvedMembers,
+    resolvedEntries: new Map(),
   };
 }
 
@@ -1047,7 +1059,15 @@ function mergeResolutions(
   collection: ResolvedCollection,
   bind?: (requirer: Package | undefined, dep: Package) => Bound
 ): Map<Package, Package> {
-  const isBuildVersion = (pkg: Package): boolean => collection.locals.has(contentOf(pkg).key) && !isPlainNode(pkg);
+  const builds = new Map<Package, boolean>();
+  const isBuildVersion = (pkg: Package): boolean => {
+    let build = builds.get(pkg);
+    if (build === undefined) {
+      build = collection.locals.has(contentOf(pkg).key) && !isPlainNode(pkg);
+      builds.set(pkg, build);
+    }
+    return build;
+  };
   const answer = (reference: Reference): Package | undefined => {
     const resolved = reference instanceof RepositoryRef ? finished.get(reference) : undefined;
     return isPackage(resolved) ? resolved : undefined;
@@ -1065,14 +1085,20 @@ function mergeResolutions(
       isRepositoryCollection(reference.source) && collection.requests.get(reference)?.as === "package" ? (packageIn(value) ?? []) : []
     )
   );
-  const own = new Set(
-    reachableNodes(
-      [...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? [] : (packageIn(value) ?? [])))
-    ).filter(pkg => !isBuildVersion(pkg))
-  );
-  const foreign = new Set(
-    reachableNodes([...catalogued, ...roots]).filter(pkg => !asked.has(pkg) && !own.has(pkg) && !isBuildVersion(pkg))
-  );
+  /* Read only by `member`, which replaces a package with one of the
+   * collection's builds: empty, unwalked, where it has none. */
+  const own =
+    collection.members.size === 0
+      ? new Set<Package>()
+      : new Set(
+          reachableNodes(
+            [...finished].flatMap(([reference, value]) => (isRepositoryCollection(reference.source) ? [] : (packageIn(value) ?? [])))
+          ).filter(pkg => !isBuildVersion(pkg))
+        );
+  const foreign =
+    collection.members.size === 0
+      ? new Set<Package>()
+      : new Set(reachableNodes([...catalogued, ...roots]).filter(pkg => !asked.has(pkg) && !own.has(pkg) && !isBuildVersion(pkg)));
   /** The build of this collection that stands for `pkg`, where another
    * collection resolved it under that build's name. */
   const member = (pkg: Package): Package | undefined => {
@@ -1544,15 +1570,16 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
       }
     }
   }
-  const present = new Map<string, Array<{ pkg: Package; signature: string }>>();
+  const present = new Map<string, Package[]>();
   for (const pkg of held) {
-    present.set(pkg.packageName, [...(present.get(pkg.packageName) ?? []), { pkg, signature: packageNodeSignature(pkg) }]);
+    present.set(pkg.packageName, [...(present.get(pkg.packageName) ?? []), pkg]);
   }
   /** Find the package the installation holds that answers `reference` under
    * `name`: of several, the one with the lowest node signature. */
   const answering = (name: string, reference: RepositoryRef): Package | undefined =>
     (present.get(name) ?? [])
-      .filter(({ pkg }) => answers(reference, pkg))
+      .filter(pkg => answers(reference, pkg))
+      .map(pkg => ({ pkg, signature: packageNodeSignature(pkg) }))
       .reduce<{ pkg: Package; signature: string } | undefined>(
         (lowest, candidate) => (lowest === undefined || candidate.signature < lowest.signature ? candidate : lowest),
         undefined
@@ -1618,8 +1645,10 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
   /** Copy `pkg` as its dependent's `scope` wires it: one node per distinct
    * wiring ({@link wiredAlike}). */
   const copy = (pkg: Package, scope: IScope): Package => {
-    /* A package the collection takes as it stands keeps its bindings. */
-    if (taken?.has(pkg)) {
+    /* A package the collection takes as it stands keeps its bindings, and one
+     * with no provided requirement at or below it is wired alike in every
+     * scope, as it stands. */
+    if (taken?.has(pkg) || wanted.get(pkg)!.length === 0) {
       return pkg;
     }
     const made = copies.get(pkg) ?? [];
@@ -1691,17 +1720,27 @@ export function bindProvided<S extends Resolved>(sources: S[], taken?: ReadonlyS
  */
 function providedNamesBelow(packages: Package[]): Map<Package, string[]> {
   const names = new Map(packages.map(pkg => [pkg, new Set(pkg.provided.keys())]));
-  for (let changed = true; changed;) {
-    changed = false;
-    for (const pkg of packages) {
-      const own = names.get(pkg)!;
-      for (const dep of pkg.packages) {
-        for (const name of names.get(dep) ?? []) {
-          if (!own.has(name)) {
-            own.add(name);
-            changed = true;
-          }
-        }
+  const dependents = new Map<Package, Package[]>();
+  for (const pkg of packages) {
+    for (const dep of pkg.packages) {
+      const held = dependents.get(dep);
+      if (held === undefined) {
+        dependents.set(dep, [pkg]);
+      } else {
+        held.push(pkg);
+      }
+    }
+  }
+  /* Carry each package's names up to its dependents, again from each that gains one. */
+  const pending = packages.filter(pkg => pkg.provided.size > 0);
+  for (let pkg = pending.pop(); pkg !== undefined; pkg = pending.pop()) {
+    const own = names.get(pkg)!;
+    for (const dependent of dependents.get(pkg) ?? []) {
+      const theirs = names.get(dependent)!;
+      const before = theirs.size;
+      own.forEach(name => theirs.add(name));
+      if (theirs.size > before) {
+        pending.push(dependent);
       }
     }
   }

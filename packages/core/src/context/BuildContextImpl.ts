@@ -319,6 +319,7 @@ export class BuildContextImpl implements InternalBuildContext {
           .then(launcher => runnable.launchedBy(launcher, this.execution.buildCache, interpreterArgs)),
       memoize: (tag, key, create) =>
         this.getCachedOrBuild(`memo:${tag} ${key}`, ctx => create(ctx.workDir).then(result => ({ result }))),
+      reshape: (tag, file, convert) => this.execution.buildCache.reshape(tag, file, convert),
       runTask: (task, run) => this.execution.runTask(task, run),
     };
     return context;

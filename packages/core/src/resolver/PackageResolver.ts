@@ -1180,6 +1180,9 @@ function attributeResolutionFailure(err: unknown, references: RepositoryRef[], r
  */
 class ResolutionGraph<V, C> {
   private readonly nodes = new Map<string, ResolvedNode>();
+  /** The provenance of each selection whose `reachedVia` chain has been
+   * walked to its end without a cycle (see {@link originOf}), by node id. */
+  private readonly origins = new Map<string, IProvenanceStep | undefined>();
 
   constructor(
     private readonly registry: RepositoryReader<V, C>,
@@ -1310,8 +1313,14 @@ class ResolutionGraph<V, C> {
     const optional = graph.optionalProvidedNames(id);
     /* The node's requirement under each name, and that requirement as a
      * reference to this registry. */
-    const declaredAs = (name: string): Requirement | undefined =>
-      graph.requirements.get(id)?.find(req => dependencyNameOf(req) === name);
+    const declared = new Map<string, Requirement>();
+    for (const req of graph.requirements.get(id) ?? []) {
+      const name = dependencyNameOf(req);
+      if (!declared.has(name)) {
+        declared.set(name, req);
+      }
+    }
+    const declaredAs = (name: string): Requirement | undefined => declared.get(name);
     const asked = (name: string): RepositoryRef =>
       requirementReference(registry, declaredAs(name) ?? { name, versionConstraint: undefined });
     /* The reference a provided requirement is offered: an exact pin of the
@@ -1366,22 +1375,37 @@ class ResolutionGraph<V, C> {
   private originOf(selection: Selected<V | string>): IProvenanceStep | undefined {
     const { graph, builds, roots } = this.resolution;
     const format = allowingBuilds(this.registry.format);
+    /* Every selection on a chain walked to its end shares that end's answer,
+     * filed for each; a walk ending at a cycle or at a requirer the graph does
+     * not hold files nothing. */
+    const path: string[] = [];
+    const ended = (origin: IProvenanceStep | undefined): IProvenanceStep | undefined => {
+      path.forEach(id => this.origins.set(id, origin));
+      return origin;
+    };
     const seen = new Set<string>();
     let at = selection;
     for (let edge = at.reachedVia; edge !== undefined && !seen.has(edge.requiredBy); edge = at.reachedVia) {
+      const id = graph.id(at);
+      if (this.origins.has(id)) {
+        return ended(this.origins.get(id));
+      }
+      path.push(id);
       const requirement: Requirement = { name: at.name, versionConstraint: edge.versionConstraint };
       if (edge.requiredBy === ROOT_REQUIRER) {
         const root =
           roots.find(each => each.name === at.name && each.reference.versionConstraint === edge!.versionConstraint) ??
           roots.find(each => each.name === at.name);
-        return root === undefined
-          ? resolutionOrigin(format, this.registry.format, requirement, graph.selections)
-          : this.rootOrigin(root.reference);
+        return ended(
+          root === undefined
+            ? resolutionOrigin(format, this.registry.format, requirement, graph.selections)
+            : this.rootOrigin(root.reference)
+        );
       }
       const from = edge.requiredBy;
       if (builds.built.has(from)) {
         const carried = builds.carriedFrom.get(from)?.get(at.name);
-        return chainSteps(carried?.steps ?? [], resolutionOrigin(format, this.registry.format, requirement, graph.selections));
+        return ended(chainSteps(carried?.steps ?? [], resolutionOrigin(format, this.registry.format, requirement, graph.selections)));
       }
       seen.add(from);
       const up = graph.node(from);
@@ -1390,12 +1414,14 @@ class ResolutionGraph<V, C> {
       }
       at = up;
     }
-    return resolutionOrigin(
+    const origin = resolutionOrigin(
       format,
       this.registry.format,
       { name: at.name, versionConstraint: at.selectedBy?.versionConstraint },
       graph.selections
     );
+    const cycled = at.reachedVia !== undefined && seen.has(at.reachedVia.requiredBy);
+    return cycled ? origin : ended(origin);
   }
 }
 
@@ -1816,10 +1842,14 @@ function getJointResolution<V, C>(
                 })
             )
         )
-        .then(files => files.readFile(RESOLUTION_FILE))
-        .then(data =>
-          deserializeResolutionDoc(restored(parseJson(data, `the resolution memo ${RESOLUTION_FILE}`, toResolutionDoc)), domain)
-        )
+        .then(files => {
+          /* Parsed once per document content, and shared: `restored` makes a new
+           * document from it. */
+          const file = files.getFile(RESOLUTION_FILE);
+          const parse = (data: string): IResolutionDoc => parseJson(data, `the resolution memo ${RESOLUTION_FILE}`, toResolutionDoc);
+          return file === undefined ? files.readFile(RESOLUTION_FILE).then(parse) : context.reshape(format.resolutionTag, file, parse);
+        })
+        .then(doc => deserializeResolutionDoc(restored(doc), domain))
     );
   });
 }

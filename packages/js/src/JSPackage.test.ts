@@ -78,6 +78,7 @@ const NODE_CONTEXT: ResolutionContext = {
   launchedBy: (runnable, interpreter) =>
     interpreter === "NODE" ? runnable.launchedBy(NODE, POOL) : Computable.reject(new Error(interpreter)),
   memoize: (_tag, _key, create) => create("unused"),
+  reshape: (_tag, file, convert) => file.readString().then(convert),
   runTask: (_task, run) => run(SILENT_REPORT),
 };
 

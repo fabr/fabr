@@ -55,6 +55,7 @@ describe("Flag", () => {
           getGlobalString: () => Computable.resolve(SecureString.of("build")),
           launchedBy: (_runnable, name) => Computable.reject(new Error(`no global '${name}' in this test`)),
           memoize: (_t, _k, create) => create("unused"),
+          reshape: (_t, file, convert) => file.readString().then(convert),
           runTask: (_task, run) => run(SILENT_REPORT),
         },
         [[flag]]

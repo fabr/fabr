@@ -92,6 +92,7 @@ const emptyCatalog = new CatalogRepository(
           members: new Map(),
           instances: new Set(),
           resolvedMembers: new Map(),
+          resolvedEntries: new Map(),
         },
       },
     ],

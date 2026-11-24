@@ -74,7 +74,7 @@ export interface PackageMetadata {
   /** `name@version`, the package's identity. */
   readonly packageId: string;
   /** The packages its dependencies are bound to. */
-  readonly packages: Package[];
+  readonly packages: readonly Package[];
 }
 
 /** A package at either level: resolved, or resolved and holding its files. */
@@ -158,6 +158,17 @@ export interface PackageContent {
   metadata?(): Computable<IVersionMetadata>;
 }
 
+/** @return the packages `dependencies` are bound to, in order. */
+function packagesOf<P extends Package>(dependencies: ReadonlyArray<Dependency<P>>): P[] {
+  return dependencies.flatMap(dep => (dep.package === undefined ? [] : [dep.package]));
+}
+
+/** @return the packages `dependencies` are bound to, frozen, where
+ * `dependencies` is frozen and so can no longer change; otherwise undefined. */
+function boundPackages<P extends Package>(dependencies: ReadonlyArray<Dependency<P>>): readonly P[] | undefined {
+  return Object.isFrozen(dependencies) ? Object.freeze(packagesOf(dependencies)) : undefined;
+}
+
 /** What a {@link ResolvedNode} is made of. */
 export interface NodeFields {
   readonly content: PackageContent;
@@ -199,9 +210,16 @@ export class ResolvedNode implements PackageMetadata {
     return selection?.format ?? (declared === undefined || declared === "files" ? undefined : declared.format);
   }
 
-  public get packages(): Package[] {
-    return this.dependencies.flatMap(dep => (dep.package === undefined ? [] : [dep.package]));
+  /** The packages its dependencies are bound to, provided ones included: made
+   *  once, and kept, once its dependencies are frozen (a builder's node,
+   *  sealed); read-only. The freeze is of the list, not of each
+   *  {@link Dependency}: a dependency's `package` is never set after it. */
+  public get packages(): readonly Package[] {
+    return (this.bound ??= boundPackages(this.dependencies)) ?? packagesOf(this.dependencies);
   }
+
+  /** {@link packages}, once its dependencies are frozen. */
+  private bound?: readonly Package[];
 
   public withOrigin(origin: IProvenanceStep): ResolvedNode {
     return this.copy({ origin });
@@ -341,10 +359,16 @@ export class PackageFileSet extends FileSet {
     return `${this.packageName}@${this.version ?? "*"}`;
   }
 
-  /** The packages its dependencies are bound to, provided ones included. */
-  public get packages(): PackageFileSet[] {
-    return this.dependencies.flatMap(dep => (dep.package === undefined ? [] : [dep.package]));
+  /** The packages its dependencies are bound to, provided ones included: made
+   *  once, and kept, once its dependencies are frozen (a builder's package,
+   *  sealed); read-only. The freeze is of the list, not of each
+   *  {@link Dependency}: a dependency's `package` is never set after it. */
+  public get packages(): readonly PackageFileSet[] {
+    return (this.bound ??= boundPackages(this.dependencies)) ?? packagesOf(this.dependencies);
   }
+
+  /** {@link packages}, once its dependencies are frozen. */
+  private bound?: readonly PackageFileSet[];
 
   public withOrigin(origin: IProvenanceStep): PackageFileSet {
     return this.remade(this.packageName, origin);
@@ -437,9 +461,13 @@ export function reachableNodes(roots: ReadonlyArray<Package>): Package[] {
  * until no class splits.
  */
 function structuralClasses(packages: ReadonlyArray<Package>): Map<Package, string> {
-  const children = (pkg: Package): Package[] => pkg.packages;
+  const children = (pkg: Package): readonly Package[] => pkg.packages;
   let color = new Map(packages.map(pkg => [pkg, `${pkg.packageId} ${contentOf(pkg).key}`]));
   let groups = new Set(color.values()).size;
+  /* Each package alone in its class: the classes as they start. */
+  if (groups === packages.length) {
+    return color;
+  }
   for (;;) {
     const refined = new Map(
       packages.map(pkg => [
@@ -515,10 +543,16 @@ export function nodeNaming(sets: ReadonlyArray<FileSet | ResolvedNode>): (pkg: P
     held.add(color.get(pkg)!);
     groupsById.set(pkg.packageId, held);
   }
+  const names = new Map<Package, string>();
   return pkg => {
-    const line = packageNodeSignature(pkg);
-    const group = color.get(pkg);
-    return group !== undefined && groupsById.get(pkg.packageId)!.size > 1 ? `${line} ~${hashString(group).slice(0, 16)}` : line;
+    let name = names.get(pkg);
+    if (name === undefined) {
+      const line = packageNodeSignature(pkg);
+      const group = color.get(pkg);
+      name = group !== undefined && groupsById.get(pkg.packageId)!.size > 1 ? `${line} ~${hashString(group).slice(0, 16)}` : line;
+      names.set(pkg, name);
+    }
+    return name;
   };
 }
 

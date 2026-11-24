@@ -184,7 +184,7 @@ export function assembleNodeModules(sets: FileSet[]): FileSet {
   const instance = instanceNames(collected);
   const homeOf = (pkg: PackageFileSet, name: string): string => `${INSTANCE_AREA}/${instance.get(nodeOf(pkg))!}/node_modules/${name}`;
   const dependenciesOf = (pkg: PackageFileSet): PackageFileSet[] =>
-    pkg.packages.sort((a, b) => compareText(a.packageName, b.packageName));
+    [...pkg.packages].sort((a, b) => compareText(a.packageName, b.packageName));
 
   const top = new Map<string, PackageFileSet>();
   for (const root of roots) {

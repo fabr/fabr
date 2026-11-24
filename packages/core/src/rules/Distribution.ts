@@ -20,7 +20,7 @@
 import type { SecureString } from "../core/SecureString";
 import { Computable } from "../core/Computable";
 import { FabrError } from "../core/Errors";
-import { FileSet, IFile } from "../core/FileSet";
+import { CANONICAL, FileSet, IFile } from "../core/FileSet";
 import { Name } from "../core/Name";
 import { PackageFileSet, ResolvedNode } from "../core/PackageFileSet";
 import { PartialRepositoryRef } from "../core/PartialRepositoryRef";
@@ -33,6 +33,7 @@ import { TARGET } from "../model/Constraints";
 import { markerOnProjection } from "../resolver/PackageResolver";
 import { VersionDomain } from "../resolver/Types";
 import { fetchArchive, IDownloadSource, stripArchiveRoot } from "../support/FetchDocument";
+import { isCanonicalFileName } from "../support/Paths";
 import { MemoryCache } from "../support/MemoryCache";
 
 /** The suffix a Windows command carries, which a release's surface leaves off its name. */
@@ -294,5 +295,13 @@ export function releaseRunnable(release: FileSet, binDirectories: readonly strin
             const command = name.substring(bin.length);
             return [command.endsWith(EXE) ? command.slice(0, -EXE.length) : command, new SymlinkFile(name)];
           });
-  return new RunnableFileSet(release, [], undefined, "", new FileSet(new Map([...files, ...commands])));
+  /* The release's names are canonical already; only the commands' need checking. */
+  const canonical = commands.every(([command]) => isCanonicalFileName(command));
+  return new RunnableFileSet(
+    release,
+    [],
+    undefined,
+    "",
+    new FileSet(new Map([...files, ...commands]), undefined, canonical ? CANONICAL : undefined)
+  );
 }

@@ -818,8 +818,8 @@ export class BuildCache {
   }
 
   /**
-   * Reshape `file`, a file of an entry fetched under `tag` (see {@link getOrFetch}),
-   * into the value `convert` reads from its text, sharing the value with every
+   * Reshape `file`, a file of an entry fetched or memoised under `tag` (see
+   * {@link getOrFetch}, {@link getOrCreate}), into the value `convert` reads from its text, sharing the value with every
    * other reshape of the same content under `tag` while anything holds it.
    * `convert` must be what reads the files kept under `tag`, so one tag reshapes
    * one content into one value. A value that is no object is not shared.
