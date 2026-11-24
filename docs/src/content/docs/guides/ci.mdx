@@ -181,7 +181,9 @@ once, so in CI you save the directory at the end of a run and restore it at the 
 A restored cache can't make a build produce the wrong result by being out of date. A cached
 result is used only when the inputs that produced it are unchanged, so a cache from an older
 commit, another branch or another machine is used where it still applies and ignored where it
-doesn't. A missing or damaged entry is rebuilt, and deleting the whole cache is always safe.
+doesn't. A missing or damaged entry is rebuilt, and deleting the whole cache is always safe. A
+file missing from a restored cache is found when a build reads it: fabr warns, discards the entry
+or source record that named the file, and builds again in the same run.
 
 Two things qualify that:
 

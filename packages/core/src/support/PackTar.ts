@@ -17,11 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import * as fs from "fs";
 import { pipeline, Readable } from "stream";
 import { createGzip } from "zlib";
 import { Computable } from "../core/Computable";
-import { stat } from "../core/FSWrapper";
+import { contentSize, contentStream } from "../core/FSWrapper";
 import { FileSet, IFile } from "../core/FileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import type { IOutputHandle } from "./Execute";
@@ -195,6 +194,6 @@ function writeEntry(pack: TarPack, entry: PackEntry, done: (err?: Error | null) 
 function contentOf(file: IFile): Computable<{ size: number; stream: Readable }> {
   const where = file.getAbsPath();
   return where !== undefined
-    ? stat(where).then(stats => ({ size: stats.size, stream: fs.createReadStream(where) }))
+    ? contentSize(file).then(size => contentStream(file).then(stream => ({ size, stream })))
     : file.getBuffer().then(buffer => ({ size: buffer.length, stream: Readable.from([buffer]) }));
 }

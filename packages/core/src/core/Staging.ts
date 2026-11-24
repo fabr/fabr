@@ -29,7 +29,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Computable } from "./Computable";
 import { mapComputable } from "../support/Functional";
-import { ConflictError, ExecutionError, FabrError } from "./Errors";
+import { CacheDamagedError, ConflictError, ExecutionError, FabrError } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { FSFile } from "./FSFileSource";
 import {
@@ -112,7 +112,8 @@ function rmTempTree(dir: string): void {
  * cannot write into a cache blob.
  *
  * A {@link SymlinkFile} whose target resolves outside `targetDir` is skipped
- * without a word; a {@link HostLink} is staged as a link to its program. Any
+ * without a word; a {@link HostLink} is staged as a link to its program. A
+ * file whose blob is missing rejects with a {@link CacheDamagedError}; any
  * other filesystem failure rejects as an {@link ExecutionError}.
  */
 export function writeFileSet(targetDir: string, files: FileSet, options?: { copy?: boolean }): Computable<void> {
@@ -124,6 +125,9 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
    * as `cp` does. */
   const stage = (op: Computable<void>, name: string): Computable<void> =>
     op.catch((err: unknown) => {
+      if (err instanceof CacheDamagedError) {
+        throw err;
+      }
       if (!options?.copy && (err as NodeJS.ErrnoException)?.code === "EEXIST") {
         /* Two staged names fold to one path on a case-insensitive filesystem.
          * Find the other name to report both, each attributed through the
@@ -176,8 +180,8 @@ export function writeFileSet(targetDir: string, files: FileSet, options?: { copy
          * given the file's own mode. */
         return stage(
           options?.copy
-            ? copyFile(filepath, targetName).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
-            : hardlink(filepath, targetName),
+            ? copyFile(filepath, targetName, file).then(() => fs.chmodSync(targetName, file.mode & 0o7777))
+            : hardlink(filepath, targetName, file),
           name
         );
       }
@@ -290,7 +294,7 @@ export function syncFileSet(targetDir: string, before: FileSet, after: FileSet):
         return stageWrite(temp, targetName, symlink(file.target, temp));
       }
       if (filepath) {
-        return stageWrite(temp, targetName, hardlink(filepath, temp));
+        return stageWrite(temp, targetName, hardlink(filepath, temp, file));
       }
       /* Read-only like the blobs beside it; chmod the temp before the rename so
        * the file never appears at another mode. */
@@ -377,9 +381,13 @@ function pruneEmptyDirs(root: string, candidates: Set<string>): void {
   }
 }
 
-/** Reject with an {@link ExecutionError} where `operation` fails. */
+/** Reject with an {@link ExecutionError} where `operation` fails, or with its
+ * {@link CacheDamagedError} where that is its failure. */
 function asExecutionError<T>(operation: Computable<T>): Computable<T> {
   return operation.catch(err => {
+    if (err instanceof CacheDamagedError) {
+      throw err;
+    }
     throw new ExecutionError(describeSystemError(err));
   });
 }

@@ -20,6 +20,7 @@
 import * as fs from "fs";
 import {
   Computable,
+  contentFailure,
   Dependency,
   FabrError,
   FileSet,
@@ -30,9 +31,9 @@ import {
   PackageFileSet,
   parseJson,
   Provided,
-  UsedFor,
   SymlinkFile,
   toJsonObject,
+  UsedFor,
 } from "@fabr-build/core";
 import { ILayerEntry, ILayerIndex } from "./LayerIndex";
 import { IImageConfig, toImageConfig, toLayerIndex } from "./OciProtocol";
@@ -322,7 +323,7 @@ class LayerEntryFile implements IFile {
       fs.createReadStream(where, { start: offset, end: offset + size - 1 })
         .on("data", chunk => chunks.push(chunk as Buffer))
         .on("end", () => resolve(Buffer.concat(chunks)))
-        .on("error", reject);
+        .on("error", err => reject(contentFailure(this.tar, err)));
     });
   }
 

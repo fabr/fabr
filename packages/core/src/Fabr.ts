@@ -19,11 +19,11 @@
 
 import { PROJECT_FILENAME } from "./core/Constants";
 import { BuildCache } from "./core/BuildCache";
-import { Computable } from "./core/Computable";
+import { Computable, ComputableSource, ComputableState } from "./core/Computable";
 import { AbsolutePathSource } from "./core/AbsolutePathSource";
 import { FSFileSource } from "./core/FSFileSource";
 import { IndexedFileSource } from "./core/IndexedFileSource";
-import { FabrError, toError } from "./core/Errors";
+import { cacheDamageIn, FabrError, MultiError, toError } from "./core/Errors";
 import { refuseNamespaces } from "./core/NamespaceRef";
 import { Dependency, isPackage, Package, ResolvedNode } from "./core/PackageFileSet";
 import { Reference } from "./core/Reference";
@@ -48,6 +48,7 @@ import { DESCRIPTION_FILE, type IDescription, toDescription } from "./context/De
 import { readJsonFile } from "./support/Json";
 
 const DIAG_WATCH_WARNING = Diagnostic.Warn<{ message: string }>("{message}");
+const DIAG_CACHE_REPAIRED = Diagnostic.Warn<{ damage: string }>("{damage}; removed what named it, and evaluating again");
 
 /** The time, in milliseconds, a watched tree must be free of filesystem
  *  events before a rebuild starts; each event restarts it. */
@@ -109,10 +110,13 @@ export class Fabr {
   public readonly controller?: WatchController;
   /** The run's build-cycle counter, which {@link maybeCollectGarbage} watches to stop early. */
   private readonly cycle: BuildCycle;
+  /** The run's diagnostic log. */
+  private readonly log: Log;
 
   constructor(options: IFabrOptions) {
     this.core = { ...coreContribution(), contents: hostDeclarations(hostTriple(), options.environment ?? new Map()) };
     this.loadOptions = { includeOptionalLibs: options.includeOptionalLibs };
+    this.log = options.log;
     const cache = new BuildCache(options.cacheRoot, options.log, undefined, options.refresh);
     /* The controller advances it per batch of changes applied; the execution
      * reads it to emit the cycle boundaries. */
@@ -173,19 +177,30 @@ export class Fabr {
 
   /**
    * Load the project and evaluate `operation` over its model, as the run's
-   * evaluation: each time the result settles (again, under watch) the current
-   * build cycle ends, with a cycle-end build event saying whether it failed.
+   * evaluation: each time it settles (again, under watch) the current build
+   * cycle ends, with a cycle-end build event saying whether it failed. Once it
+   * settles, the source and host indexes are saved.
    *
-   * The result is `operation`'s; it rejects where loading the project fails
-   * or `operation`'s result does. Once it settles, the source and host
-   * indexes are saved.
+   * The result is `operation`'s, or, with `after`, what `after` makes of it
+   * once the cycle has ended (a one-shot verb's takeover); it rejects where
+   * loading the project fails or either does.
+   *
+   * Where the evaluation or `after` fails holding a {@link CacheDamagedError},
+   * the damage is repaired and the project loaded and evaluated again, the
+   * damaged evaluation dropped; its failure is not the result (see
+   * {@link repairingEvaluation}).
    */
-  public evaluate<T>(operation: (model: BuildModel) => Computable<T>): Computable<T> {
-    const evaluation = loadProject(this.execution, PROJECT_FILENAME, this.core, this.loadOptions).then(operation);
+  public evaluate<T, R = T>(operation: (model: BuildModel) => Computable<T>, after?: (value: T) => Computable<R>): Computable<R> {
+    const { evaluation, result } = repairingEvaluation(
+      () => loadProject(this.execution, PROJECT_FILENAME, this.core, this.loadOptions).then(operation),
+      this.log,
+      after
+    );
     this.execution.observeEvaluation(evaluation);
-    return evaluation.finally(() =>
+    const persisted = evaluation.finally(() =>
       Computable.forAll([this.sourceFileSource.persistIndex(), this.persistHostIndexes()], () => undefined)
     );
+    return after === undefined ? (persisted as Computable<unknown> as Computable<R>) : persisted.then(() => result);
   }
 
   /**
@@ -309,7 +324,8 @@ export interface ITestedName {
  * report among it (`getTestReport` reads it). A target that fails to build is
  * left out of its name's sources, and its error is among the name's failures;
  * a name that fails as a whole has no sources and its error alone. Names are
- * refused as for {@link buildOperation}: rejects where any name is refused.
+ * refused as for {@link buildOperation}: rejects where any name is refused,
+ * and with the failures holding a {@link CacheDamagedError} where any does.
  */
 export function testOperation(config: BuildContext, refs: INameValue[]): Computable<ITestedName[]> {
   return requireAllDeclared(config, refs).then(() =>
@@ -320,7 +336,15 @@ export function testOperation(config: BuildContext, refs: INameValue[]): Computa
           .then(({ sources, failures }): ITestedName => ({ sources: refuseNamespaces(sources), failures }))
           .catch((err): ITestedName => ({ sources: [], failures: [toError(err)] }))
       ),
-      (...tested: ITestedName[]) => tested
+      (...tested: ITestedName[]): ITestedName[] => {
+        /* Damage to the cache is the evaluation's to repair, before anything
+         * reports what was built. */
+        const damaged = tested.flatMap(({ failures }) => failures).filter(failure => cacheDamageIn(failure).length > 0);
+        if (damaged.length > 0) {
+          throw MultiError.of(damaged);
+        }
+        return tested;
+      }
     )
   );
 }
@@ -730,4 +754,93 @@ function realiseNamespaces(sources: SourceRef[]): Computable<unknown> {
     sources.filter((source): source is SyncSource => source instanceof SyncSource).map(release => release.members()),
     (...realised: unknown[]) => realised
   );
+}
+
+/**
+ * Make an evaluation of `evaluate`'s result, and of what `after` makes of it,
+ * that recovers from damage to the cache: where either fails holding a
+ * {@link CacheDamagedError}, each damage is repaired (and logged on `log`)
+ * and `evaluate` called again, the failed evaluation dropped, and `after`
+ * called on its result. It evaluates again for damage not yet repaired, and
+ * once more for damage repaired already (found by work the repair
+ * superseded); otherwise, and for any other failure, it fails as it is. What
+ * has been repaired is forgotten whenever an evaluation settles holding no
+ * damage.
+ *
+ * @return the evaluation, and the result (`after`'s, or the evaluation itself
+ * where there is no `after`).
+ */
+export function repairingEvaluation<T, R = T>(
+  evaluate: () => Computable<T>,
+  log: Log,
+  after?: (value: T) => Computable<R>
+): { evaluation: Computable<T>; result: Computable<R> } {
+  const attempts = new EvaluationAttempts();
+  /* Since the last evaluation that held no damage: the damage repaired, and
+   * of that, the damage evaluated again for a second time. */
+  const repaired = new Set<string>();
+  const retried = new Set<string>();
+  /* Repair what `err` holds and start the next evaluation; rethrow `err`
+   * where it holds nothing to evaluate again for. */
+  const recover = <U>(err: Error): Computable<U> => {
+    const found = [...new Map(cacheDamageIn(err).map(damage => [damage.damage, damage])).values()];
+    const fresh = found.filter(damage => !repaired.has(damage.damage));
+    const again = found.filter(damage => repaired.has(damage.damage) && !retried.has(damage.damage));
+    if (found.length === 0) {
+      repaired.clear();
+      retried.clear();
+    }
+    if (fresh.length === 0 && again.length === 0) {
+      throw err;
+    }
+    again.forEach(damage => retried.add(damage.damage));
+    for (const damage of fresh) {
+      repaired.add(damage.damage);
+      damage.repair();
+      log.log(DIAG_CACHE_REPAIRED, { damage: damage.message });
+    }
+    /* Start the next evaluation outside the cascade settling this one, which
+     * holds the result unsettled until then. */
+    setImmediate(() => attempts.next());
+    return Computable.from<U>(() => undefined);
+  };
+  /* Forget what was repaired once the whole result succeeds: an `after`
+   * failing again on the same damage must not find it new. */
+  const succeeded = <U>(value: U): U => {
+    repaired.clear();
+    retried.clear();
+    return value;
+  };
+  const evaluation = attempts.then(() =>
+    evaluate().then(
+      value => (after === undefined ? succeeded(value) : value),
+      err => recover<T>(err)
+    )
+  );
+  const result =
+    after === undefined
+      ? (evaluation as Computable<unknown> as Computable<R>)
+      : evaluation.then(value => after(value).then(succeeded, err => recover<R>(err)));
+  return { evaluation, result };
+}
+
+/**
+ * The count of evaluations {@link repairingEvaluation} has begun:
+ * a raw source, settled with 0 when first demanded and with the next count by
+ * {@link next}, which its dependant evaluates again for.
+ */
+class EvaluationAttempts extends ComputableSource<number> {
+  private count = 0;
+
+  protected override attach(): void {
+    super.attach();
+    this.settle(ComputableState.Valid, this.count);
+  }
+
+  /** Begin the next evaluation. */
+  public next(): void {
+    this.count += 1;
+    this.invalidate();
+    this.settle(ComputableState.Valid, this.count);
+  }
 }

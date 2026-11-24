@@ -28,7 +28,7 @@ import { DEFAULT_FILE_MODE, FileSet, IFile, FileSource } from "./FileSet";
 import { hashFile, hashString, isDirectoryError, isNotFound, readFile, readFileBuffer, stat, walkTree } from "./FSWrapper";
 import type { BuildCache } from "./BuildCache";
 import { sniffMime } from "../support/Mime";
-import { FabrError, MultiError, toError } from "./Errors";
+import { CacheDamagedError, FabrError, MultiError, toError } from "./Errors";
 import {
   IProvenanceStep,
   namingDigest,
@@ -57,6 +57,13 @@ export function fileModeOf(stat: FSFileStats): number {
   return stat.mode !== undefined && (stat.mode & 0o100) !== 0 ? 0o755 : DEFAULT_FILE_MODE;
 }
 
+/** The index a snapshot was served from, which a damaged snapshot drops (see
+ * {@link FSFile.missingBlobError}). */
+export interface ISnapshotIndex {
+  /** Drop every row, so each file of the index's tree is read afresh. */
+  dropIndex(): void;
+}
+
 /** A file read from a directory on disk. */
 export class FSFile implements IFile {
   /** The host path the file was read from. */
@@ -78,7 +85,9 @@ export class FSFile implements IFile {
     stat: FSFileStats,
     hash: string,
     public readonly mime: string,
-    contentPath?: string
+    contentPath?: string,
+    /** The index whose row the snapshot at `contentPath` was served from. */
+    private readonly index?: ISnapshotIndex
   ) {
     this.hostPath = hostPath;
     this.name = name;
@@ -92,7 +101,7 @@ export class FSFile implements IFile {
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
-    return readFile(this.contentPath, encoding);
+    return readFile(this.contentPath, encoding, this);
   }
 
   public getDisplayName(): string {
@@ -108,7 +117,17 @@ export class FSFile implements IFile {
   }
 
   public getBuffer(): Computable<Buffer> {
-    return readFileBuffer(this.contentPath);
+    return readFileBuffer(this.contentPath, this);
+  }
+
+  /** Make the damage of this file's snapshot gone from the pool, repaired by
+   * dropping the whole index it was served from (where one snapshot is gone,
+   * others may be); undefined where the file is read where it lies. */
+  public missingBlobError(): CacheDamagedError | undefined {
+    if (this.contentPath === this.hostPath) {
+      return undefined;
+    }
+    return new CacheDamagedError(this.contentPath, `the snapshot of '${this.hostPath}'`, () => this.index?.dropIndex());
   }
 }
 

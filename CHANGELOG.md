@@ -6,6 +6,10 @@ together and share a version number.
 
 ## Fabr 0.4.4
 
+@fabr-build/core
+
+- Repair damaged cache entries when encountered.
+
 @fabr-build/js
 
 - Jest jsdom compatibility fixes.

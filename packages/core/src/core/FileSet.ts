@@ -35,7 +35,7 @@ import {
   sourcePathPrefixOf,
   sourcePathsDigestOf,
 } from "./Provenance";
-import { ConflictError, FabrError } from "./Errors";
+import { CacheDamagedError, ConflictError, FabrError } from "./Errors";
 import { canonicalFileName, isCanonicalFileName } from "../support/Paths";
 import { hashString } from "./FSWrapper";
 import { manifestLine } from "./Manifest";
@@ -96,6 +96,15 @@ export interface IFile {
    * @returns a Buffer containing the contents of the file.
    */
   getBuffer(): Computable<Buffer>;
+
+  /**
+   * Make the error for this file's content being missing from
+   * {@link getAbsPath}, where that is a blob of the cache's pool: the damage,
+   * with how to repair it. Undefined, or absent, for a file whose content is
+   * read where it lies, which missing is no damage to the cache. Read a missing
+   * file's error through `contentFailure` (FSWrapper).
+   */
+  missingBlobError?(): CacheDamagedError | undefined;
 }
 
 /** A container of files, looked up by name. */

@@ -34,7 +34,7 @@ import {
   MINIMUM_FRESHNESS_MS,
   ownerName,
 } from "./BuildCache";
-import { HttpStatusError } from "./Errors";
+import { cacheDamageIn, CacheDamagedError, FabrError, HttpStatusError, MultiError, toleratingFailure } from "./Errors";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps, purgeCache } from "./BuildCache";
@@ -54,6 +54,7 @@ import { SecureString } from "./SecureString";
 import { dependenciesOn } from "./Repository";
 import { ISourcePathStep, SOURCE_PATH_PROVENANCE } from "./Provenance";
 import { deleteTree, deleteTreeSync } from "./FSWrapper";
+import { writeFileSet } from "./Staging";
 
 const NULL_LOG: Log = { log: () => undefined };
 /** A unit test is its own observer: track transfers with the silent report. */
@@ -571,6 +572,126 @@ describe("BuildCache", () => {
     );
     const content = await toPromise(files.readFile("meta.json"));
     expect(content).to.equal('{"name":"test"}');
+  });
+
+  it("reports an entry's missing blob as damage, whose repair makes the entry a miss", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const make = (): Computable<BuildResult> => produced(new FileSet(new Map([["meta.json", MemoryFile.from("{}")]])));
+    const stored = await toPromise(cache.getOrCreate("damaged entry", make));
+    const blob = stored.getFile("meta.json")!.getAbsPath()!;
+    fs.rmSync(blob, { force: true });
+
+    /* Served as held, unchecked; the read finds the blob gone. */
+    const served = await toPromise(cache.getOrCreate("damaged entry", () => Computable.reject(new Error("must not rebuild"))));
+    const failure = await toPromise(served.readFile("meta.json")).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    expect(failure).to.be.instanceOf(CacheDamagedError);
+    expect((failure as CacheDamagedError).blob).to.equal(blob);
+
+    (failure as CacheDamagedError).repair();
+    let rebuilt = 0;
+    const again = await toPromise(
+      cache.getOrCreate("damaged entry", () => {
+        rebuilt++;
+        return make();
+      })
+    );
+    expect(rebuilt).to.equal(1);
+    expect(await toPromise(again.readFile("meta.json"))).to.equal("{}");
+  });
+
+  it("removes, with a damaged entry, every entry it has served whose blob is gone", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const make = (text: string) => (): Computable<BuildResult> => produced(new FileSet(new Map([["a.txt", MemoryFile.from(text)]])));
+    const stored = await Promise.all(["one", "two", "three"].map(text => toPromise(cache.getOrCreate(text, make(text)))));
+    /* "one" and "two" are damaged; "three" is not. */
+    for (const files of stored.slice(0, 2)) {
+      fs.rmSync(files.getFile("a.txt")!.getAbsPath()!, { force: true });
+    }
+    const failure = await toPromise(stored[0].readFile("a.txt")).then(
+      () => undefined,
+      (err: unknown) => err as CacheDamagedError
+    );
+    failure!.repair();
+
+    const rebuilt: string[] = [];
+    for (const text of ["one", "two", "three"]) {
+      await toPromise(
+        cache.getOrCreate(text, () => {
+          rebuilt.push(text);
+          return make(text)();
+        })
+      );
+    }
+    expect(rebuilt).to.deep.equal(["one", "two"]);
+  });
+
+  it("refuses to store a manifest naming another entry's blob that is gone, as that entry's damage", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const upstream = await toPromise(
+      cache.getOrCreate("upstream", () => produced(new FileSet(new Map([["a.txt", MemoryFile.from("a")]]))))
+    );
+    fs.rmSync(upstream.getFile("a.txt")!.getAbsPath()!, { force: true });
+    const failure = await toPromise(cache.getOrCreate("downstream", () => produced(upstream))).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    expect(failure).to.be.instanceOf(CacheDamagedError);
+    (failure as CacheDamagedError).repair();
+    let rebuilt = 0;
+    await toPromise(
+      cache.getOrCreate("upstream", () => {
+        rebuilt++;
+        return produced(new FileSet(new Map([["a.txt", MemoryFile.from("a")]])));
+      })
+    );
+    expect(rebuilt).to.equal(1);
+  });
+
+  it("stages a missing blob as damage, not an execution error", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const stored = await toPromise(
+      cache.getOrCreate("staged", () => produced(new FileSet(new Map([["a.txt", MemoryFile.from("a")]]))))
+    );
+    fs.rmSync(stored.getFile("a.txt")!.getAbsPath()!, { force: true });
+    const target = fs.mkdtempSync(path.join(root, "stage-"));
+    const failure = await toPromise(writeFileSet(target, stored)).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    expect(failure).to.be.instanceOf(CacheDamagedError);
+  });
+
+  it("names the entry a tree's renamed file came from, so the damage it finds is repaired", async () => {
+    const cache = new BuildCache(root, NULL_LOG);
+    const make = (): Computable<BuildResult> => produced(new FileSet(new Map([["a.txt", MemoryFile.from("a")]])));
+    const stored = await toPromise(cache.getOrCreate("mounted", make));
+    fs.rmSync(stored.getFile("a.txt")!.getAbsPath()!, { force: true });
+    const failure = await toPromise(cache.ensureTree(stored.mountedAt("node_modules/x"))).then(
+      () => undefined,
+      (err: unknown) => err as CacheDamagedError
+    );
+    expect(failure).to.be.instanceOf(CacheDamagedError);
+    failure!.repair();
+    let rebuilt = 0;
+    await toPromise(
+      cache.getOrCreate("mounted", () => {
+        rebuilt++;
+        return make();
+      })
+    );
+    expect(rebuilt).to.equal(1);
+  });
+
+  it("finds damage among a failure's causes, and a tolerant reader passes it on", () => {
+    const damage = new CacheDamagedError("/pool/abc", "named by 'm'", () => undefined);
+    const nested = MultiError.of([new FabrError("other"), new FabrError("wrapped", damage)]);
+    expect(cacheDamageIn(nested)).to.deep.equal([damage]);
+    expect(cacheDamageIn(new FabrError("plain"))).to.deep.equal([]);
+    expect(toleratingFailure(false)(new FabrError("plain"))).to.equal(false);
+    expect(() => toleratingFailure(false)(nested)).to.throw(MultiError);
   });
 
   it("classifies streamed content whose magic spans chunk boundaries", async () => {

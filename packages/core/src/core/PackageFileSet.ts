@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "./Computable";
-import { ConflictError, FabrError, TargetNotPackageError } from "./Errors";
+import { ConflictError, FabrError, TargetNotPackageError, toleratingFailure } from "./Errors";
 import { FileSet, IFile } from "./FileSet";
 import { hashString } from "./FSWrapper";
 import { IProvenanceStep, rootedAt } from "./Provenance";
@@ -793,12 +793,7 @@ function materializeGraph(
   const describing = (node: ResolvedNode): boolean => describe && node.content.describe !== undefined;
   return Computable.forAll(
     nodes.map(node =>
-      describing(node)
-        ? node.content.describe!().then(
-            description => description,
-            (): undefined => undefined
-          )
-        : node.content.files()
+      describing(node) ? node.content.describe!().then(description => description, toleratingFailure(undefined)) : node.content.files()
     ),
     (...files: Array<FileSet | ReadonlyArray<SourceRef> | undefined>) => {
       const content = new Map<Package, FileSet | ReadonlyArray<SourceRef>>();

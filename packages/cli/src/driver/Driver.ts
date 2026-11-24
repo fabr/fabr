@@ -77,6 +77,7 @@ import {
   parseJson,
   parseLcov,
   parseName,
+  patternsText,
   prepareOperation,
   Property,
   propertyTypeName,
@@ -95,9 +96,8 @@ import {
   SyncSource,
   targetsReadWithin,
   TEST_FILE_PATTERN,
-  testFilePatternsOf,
-  patternsText,
   TEST_NAME_PATTERN,
+  testFilePatternsOf,
   testOperation,
   TestsFailedError,
   toError,
@@ -964,12 +964,12 @@ async function runWith(options: Options, operation: Operation, watch = false, se
     });
 
     return fabr
-      .evaluate(model => operation(model, execution, site))
-      .then(takeover => {
+      .evaluate(
+        model => operation(model, execution, site),
         /* The evaluation has settled and its cycle closed: hand the process to
          * the takeover, if any, for its exit status. */
-        return takeover ? takeover() : Computable.resolve(0);
-      })
+        takeover => (takeover ? takeover() : Computable.resolve(0))
+      )
       .then(code =>
         /* Run the daily cache trim last, after a takeover's program has
          * exited; it skips itself when not due. */

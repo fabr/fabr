@@ -103,7 +103,7 @@ import {
 } from "../model/AST";
 import { EXPAND_TAG, expandOnce, findWithDescent } from "../support/Expand";
 import { DependencyFailedError, NameResolutionError, NoRuleFoundError, ReferenceFailedError } from "../model/Errors";
-import { ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
+import { cacheDamageIn, ConflictError, FabrError, IConflictSide, IConflictSource, toError } from "../core/Errors";
 import { hasTestFailures } from "../support/TestResult";
 import { createPipelineAction, stagePipeline } from "../core/PipelineAction";
 import { closestMatch } from "../support/Suggest";
@@ -781,6 +781,9 @@ export class BuildContextImpl implements InternalBuildContext {
         return new Property([...value], mapEntryOrigin(entries, key)?.entry);
       },
       err => {
+        if (cacheDamageIn(err).length > 0) {
+          throw err;
+        }
         throw this.unresolvedNameError(`${map}.${key}`, stack, `'${map}' cannot be read as a map: ${toError(err).message}`, []);
       }
     );

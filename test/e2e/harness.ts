@@ -208,17 +208,30 @@ export function runFabr(
 
 /**
  * Write `files` into a fresh temp project dir and run fabr there once for each
- * of `commands`, in order, in the same project and cache.
+ * of `commands`, in order, in the same project and cache. A command that is a
+ * function is called with the project dir instead, between the runs around
+ * it. `env` adds to each run's environment, as for {@link runFabr}.
  * @return each run's captured streams and exit status, in order.
  */
-export function runFabrSequence(files: Record<string, string>, commands: string[][], timeoutMs = 180_000): FabrResult[] {
+export function runFabrSequence(
+  files: Record<string, string>,
+  commands: Array<string[] | ((dir: string) => void)>,
+  timeoutMs = 180_000,
+  env?: Record<string, string>
+): FabrResult[] {
   if (!fs.existsSync(FABR)) {
     throw new Error(`fabr is not built at ${FABR} — run 'yarn build' (the 'yarn dist' gate does this)`);
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-e2e-proj-"));
   try {
     writeFixture(dir, files);
-    return commands.map(args => spawnFabr(dir, args, undefined, timeoutMs));
+    return commands.flatMap(command => {
+      if (typeof command === "function") {
+        command(dir);
+        return [];
+      }
+      return [spawnFabr(dir, command, env, timeoutMs)];
+    });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

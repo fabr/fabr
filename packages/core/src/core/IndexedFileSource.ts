@@ -19,7 +19,7 @@
 
 import { BuildCache } from "./BuildCache";
 import { Computable } from "./Computable";
-import { fileModeOf, FSFile, FSFileSource, TreeQuery } from "./FSFileSource";
+import { fileModeOf, FSFile, FSFileSource, ISnapshotIndex, TreeQuery } from "./FSFileSource";
 import { hashFileStreamed, hashString, isDirectoryError, isNotFound, readFileBuffer, stat } from "./FSWrapper";
 import { ISourceIndexRow } from "./Manifest";
 import { WatchController } from "./WatchController";
@@ -34,9 +34,10 @@ export interface IndexedReading {
   /**
    * `snapshot`: the one read that hashes a file also copies its bytes into the
    * blob pool, and the file is read from that copy from then on, so its hash
-   * and what is staged can never diverge; a row is trusted only while the pool
-   * holds its blob. `in-place`: a file is hashed where it lies, as it streams,
-   * and nothing is copied.
+   * and what is staged can never diverge. A row is trusted to name a blob the
+   * pool holds; a read that finds it missing drops the index (see
+   * {@link FSFile.missingBlobError}). `in-place`: a file is hashed where it
+   * lies, as it streams, and nothing is copied.
    */
   readonly read: "snapshot" | "in-place";
   /** `root`: one subscription for the whole tree. `queried`: one per directory a
@@ -51,7 +52,7 @@ export interface IndexedReading {
  * its row exactly, once two reads agreed, is served from the row with no read
  * and no hash. Builds are identical with the index present, absent or damaged.
  */
-export class IndexedFileSource extends FSFileSource {
+export class IndexedFileSource extends FSFileSource implements ISnapshotIndex {
   constructor(
     root: string,
     protected readonly cache: BuildCache,
@@ -63,9 +64,9 @@ export class IndexedFileSource extends FSFileSource {
 
   /**
    * Ingest the file `filename` (relative to the root) as an FSFile. A file whose
-   * stat matches its verified row (and, read as a snapshot, whose blob the pool
-   * still holds) is served from the row; anything else is read, hashed and, read
-   * as a snapshot, copied into the pool, and its row refreshed.
+   * stat matches its verified row is served from the row, read as a snapshot
+   * from the blob the row names, unchecked; anything else is read, hashed and,
+   * read as a snapshot, copied into the pool, and its row refreshed.
    */
   public override ingest(filename: string): Computable<FSFile | undefined> {
     const filepath = this.hostPathOf(filename);
@@ -81,15 +82,14 @@ export class IndexedFileSource extends FSFileSource {
            * read again here, which verifies it (see recordIndexRow) or catches
            * a write in the same filesystem timestamp tick as the recorded one. */
           if (held !== undefined && held.verified && held.size === fileStat.size && held.mtimeMs === fileStat.mtimeMs) {
-            const blobPath = this.reading.read === "snapshot" ? this.cache.presentBlob(held.hash) : filepath;
-            if (blobPath !== undefined) {
-              /* Call confirmIngested on every path here: which branch gave the
-               * hash must not decide whether a write fabr expects is checked. */
-              this.confirmIngested(filename, held.hash);
-              return Computable.resolve(
-                new FSFile(filepath, filename, fsStat, held.hash, held.mime, this.reading.read === "snapshot" ? blobPath : undefined)
-              );
-            }
+            /* Call confirmIngested on every path here: which branch gave the
+             * hash must not decide whether a write fabr expects is checked. */
+            this.confirmIngested(filename, held.hash);
+            return Computable.resolve(
+              this.reading.read === "snapshot"
+                ? new FSFile(filepath, filename, fsStat, held.hash, held.mime, this.cache.blobPathOf(held.hash), this)
+                : new FSFile(filepath, filename, fsStat, held.hash, held.mime)
+            );
           }
           if (this.reading.read === "in-place") {
             return hashFileStreamed(filepath).then(({ hash, mime }) => {
@@ -105,7 +105,7 @@ export class IndexedFileSource extends FSFileSource {
             this.recordIndexRow(rows, filename, fileStat.size, fileStat.mtimeMs, hash, mime);
             return this.cache
               .ensureBlob(hash, bytes, fileModeOf(fsStat))
-              .then(blobPath => new FSFile(filepath, filename, fsStat, hash, mime, blobPath));
+              .then(blobPath => new FSFile(filepath, filename, fsStat, hash, mime, blobPath, this));
           });
         })
       )
@@ -183,6 +183,14 @@ export class IndexedFileSource extends FSFileSource {
     }
     rows.set(filename, { name: filename, hash, size, mtimeMs, mime, verified: false });
     this.indexDirty = true;
+  }
+
+  public dropIndex(): void {
+    /* Cleared in place: an ingest in flight records into the map it loaded. */
+    if (this.indexRows !== undefined && this.indexRows.size > 0) {
+      this.indexRows.clear();
+      this.indexDirty = true;
+    }
   }
 
   /** Drop the row of a file found gone. Rows this run never consulted are kept,

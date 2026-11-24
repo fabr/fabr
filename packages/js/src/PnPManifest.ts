@@ -33,14 +33,15 @@ import {
   hashString,
   mapComputable,
   MemoryFile,
-  PACKAGE_RESOLUTION_PROVENANCE,
   nodeNaming,
-  packageNodeSignature,
+  PACKAGE_RESOLUTION_PROVENANCE,
   PackageFileSet,
   packageNameConflict,
+  packageNodeSignature,
   reachablePackages,
   readJsonFile,
   toJsonObject,
+  toleratingFailure,
   TREE_MOUNT,
 } from "@fabr-build/core";
 import { type IPnpPackageInfo, type IPnpSerializedState, type PnpDependencyTarget, virtualLocation } from "@fabr-build/js-tools";
@@ -237,7 +238,7 @@ function prefersUnplugged(pkg: PackageFileSet): Computable<boolean> {
   return pkg
     .get("package.json")
     .then(file => (file === undefined ? false : readJsonFile(file, toJsonObject).then(json => json.preferUnplugged === true)))
-    .catch(() => false);
+    .catch(toleratingFailure(false));
 }
 
 /**

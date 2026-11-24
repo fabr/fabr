@@ -183,6 +183,64 @@ export class IntegrityError extends FabrError {
  */
 export class ExecutionError extends FabrError {}
 
+/**
+ * A blob of the cache's pool found missing where a file's content was read
+ * from it. The run's evaluation recovers from it (see `Fabr.evaluate`): it
+ * calls `repair`, which removes the record that named the blob (an entry's
+ * manifest, a source index row), and evaluates again, so what the record
+ * answered is built or read afresh. `damage` names the blob and the record,
+ * the same text for the same damage.
+ */
+export class CacheDamagedError extends FabrError {
+  constructor(
+    public readonly blob: string,
+    public readonly damage: string,
+    public readonly repair: () => void
+  ) {
+    super(`The build cache is missing the blob '${blob}' (${damage})`);
+  }
+}
+
+/** List the {@link CacheDamagedError}s among `err` and its causes, nested
+ *  {@link MultiError}s included. */
+export function cacheDamageIn(err: unknown): CacheDamagedError[] {
+  const found: CacheDamagedError[] = [];
+  const pending: unknown[] = [err];
+  const seen = new Set<unknown>();
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    if (!(next instanceof Error) || seen.has(next)) {
+      continue;
+    }
+    seen.add(next);
+    if (next instanceof CacheDamagedError) {
+      found.push(next);
+    }
+    if (next instanceof MultiError) {
+      pending.push(...next.errors);
+    }
+    const { cause } = next as { cause?: unknown };
+    if (cause !== undefined) {
+      pending.push(cause);
+    }
+  }
+  return found;
+}
+
+/**
+ * Make a rejection handler that answers any failure with `fallback`, except
+ * one holding a {@link CacheDamagedError}, which it rethrows: for a reader
+ * that goes on without what it could not read, so that damage to the cache is
+ * repaired rather than read as an absence.
+ */
+export function toleratingFailure<T>(fallback: T): (err: Error) => T {
+  return err => {
+    if (cacheDamageIn(err).length > 0) {
+      throw err;
+    }
+    return fallback;
+  };
+}
+
 /** One line of a command's output, and the stream it arrived on. */
 export interface ICommandOutputLine {
   stream: OutputStream;

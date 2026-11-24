@@ -24,12 +24,13 @@ import * as path from "path";
 import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "./Constants";
 import { Computable, ComputableHandle } from "./Computable";
-import { FabrError, HttpStatusError, toError } from "./Errors";
+import { CacheDamagedError, FabrError, HttpStatusError, toError } from "./Errors";
 import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress, shownUrl } from "./Fetch";
 import type { SecureString } from "./SecureString";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
 
 import {
+  contentFailure,
   deleteFile,
   HASH_ALGORITHM,
   hashString,
@@ -327,10 +328,14 @@ const STEP_WORK_DIR = "work";
  * source indexes and a secrets store, and trims them all daily.
  *
  * Invariant: a manifest present implies its blobs present. Only the trim
- * ({@link maybeCollectGarbage}) ever deletes a blob, so a reader may trust an
- * entry's manifest without checking its blobs. A new record that names blobs
- * must be marked by the trim or check presence before use ({@link presentBlob}),
- * and a new store needs an expiry rule in the trim.
+ * ({@link maybeCollectGarbage}) ever deletes a blob, so a reader trusts an
+ * entry's manifest, and a source index row, without checking its blobs. Where
+ * the store is damaged regardless (a blob removed by hand, a row written while
+ * the trim swept), a file's read finds its blob missing and fails with a
+ * {@link CacheDamagedError}, whose repair removes the record that named it
+ * ({@link removeDamagedManifest}, a source index row). A new record that names
+ * blobs must be marked by the trim or give its files such a repair, and a new
+ * store needs an expiry rule in the trim.
  */
 export class BuildCache {
   private readonly root: string;
@@ -1222,7 +1227,8 @@ export class BuildCache {
      * names it in a case-collision error. */
     return (
       mkdir(this.treeRoot)
-        .then(() => this.storeContent(files))
+        /* writeFileSet's links report a blob found missing, so nothing is probed first. */
+        .then(() => this.storeContent(files, false))
         .then(backed => writeFileSet(temp, files.origin === undefined ? backed : backed.withOrigin(files.origin)))
         .then(() =>
           rename(temp, entry).then(
@@ -1469,12 +1475,9 @@ export class BuildCache {
     );
   }
 
-  /** Look up the path of the blob `hash`; undefined where the pool does not hold
-   * it. Use it before trusting a blob a record names that the trim does not
-   * keep alive, such as a source index row. */
-  public presentBlob(hash: string): string | undefined {
-    const blobPath = path.resolve(this.blobRoot, hash);
-    return fs.existsSync(blobPath) ? blobPath : undefined;
+  /** @return the path the blob `hash` has in the pool, which may not hold it. */
+  public blobPathOf(hash: string): string {
+    return path.resolve(this.blobRoot, hash);
   }
 
   /*
@@ -1752,6 +1755,52 @@ export class BuildCache {
   }
 
   /**
+   * Remove the manifest at `manifest`, which names a blob found missing, and
+   * every manifest of an entry this process has served or stored that names a
+   * blob the pool does not hold (where one blob is gone, others may be), and
+   * stop holding their entries: each entry, or the record holding the manifest
+   * (a build-state record's kept state, a kept work dir's contents), is then
+   * absent, and is made again. Best-effort.
+   */
+  public removeDamagedManifest(manifest: string): void {
+    this.removeManifest(manifest);
+    const present = new Map<string, boolean>();
+    const holds = (hash: string): boolean => {
+      let held = present.get(hash);
+      if (held === undefined) {
+        held = fs.existsSync(this.blobPathOf(hash));
+        present.set(hash, held);
+      }
+      return held;
+    };
+    for (const key of this.servedManifests) {
+      const file = this.manifestPath(key);
+      let entry: ICacheEntry;
+      try {
+        entry = this.parseManifest(fs.readFileSync(file, "utf8"));
+      } catch {
+        /* Gone, or damaged, which its next read deletes. */
+        continue;
+      }
+      if ([...entry.files].some(([, member]) => !(member instanceof SymlinkFile) && !holds(member.hash))) {
+        this.removeManifest(file);
+      }
+    }
+  }
+
+  /** Remove the manifest at `manifest` and stop holding its entry. Best-effort. */
+  private removeManifest(manifest: string): void {
+    try {
+      fs.rmSync(manifest, { force: true });
+    } catch {
+      /* A manifest that cannot be removed fails its next read again. */
+    }
+    if (path.dirname(manifest) === this.entryRoot) {
+      this.held.delete(path.basename(manifest, ".manifest"));
+    }
+  }
+
+  /**
    * Read the manifest at `file`, the reader for every manifest the cache
    * stores. Resolves to undefined where there is none (ENOENT, or ENOTDIR for a
    * path through a file) or it is damaged; a damaged manifest is deleted, by
@@ -1763,7 +1812,7 @@ export class BuildCache {
     return readFile(file).then<ICacheEntry | undefined>(
       data => {
         try {
-          return this.parseManifest(data);
+          return this.parseManifest(data, { manifest: file, cache: this });
         } catch {
           fs.rmSync(file, { force: true });
           return undefined;
@@ -1808,6 +1857,7 @@ export class BuildCache {
   private storeManifest(manifestPath: string, files: FileSet, meta?: ICacheControl, cls?: string): Computable<FileSet> {
     let manifest = `${META_PREFIX}${JSON.stringify({ entries: files.size, ...(cls === undefined ? {} : { class: cls }), ...meta })}\n`;
     const backed = new Map<string, IFile>();
+    const record: IManifestRecord = { manifest: manifestPath, cache: this };
     for (const [name, file] of files) {
       if (file instanceof SymlinkFile) {
         manifest += `${LINK_PREFIX}${encodeName(file.target)} ${encodeName(name)}\n`;
@@ -1816,7 +1866,7 @@ export class BuildCache {
       }
       /* The mime follows the name, which is encoded and so holds no space. */
       manifest += manifestLine(name, file.hash, file.mode, file.mime) + "\n";
-      backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime));
+      backed.set(name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime, record));
     }
     return this.writeFileAtomic(manifestPath, manifest).then(() => new FileSet(backed, undefined, CANONICAL));
   }
@@ -1845,10 +1895,12 @@ export class BuildCache {
   /**
    * Put every file of `files` into the blob pool (a file in memory by its
    * bytes, a file on disk by moving it) and return them as blob-backed files.
-   * Symlinks and files already in the pool pass through. Rejects where `files`
-   * holds a secret. A step's work dir may be removed afterwards.
+   * Symlinks and files already in the pool pass through; with `probe`, one
+   * another manifest names is checked to be there first, and rejects with its
+   * {@link CacheDamagedError} where it is not. Rejects where `files` holds a
+   * secret. A step's work dir may be removed afterwards.
    */
-  private storeContent(files: FileSet): Computable<FileSet> {
+  private storeContent(files: FileSet, probe = true): Computable<FileSet> {
     try {
       refuseSecrets(files, "stored in the build cache");
     } catch (err) {
@@ -1860,8 +1912,15 @@ export class BuildCache {
         return [name, file];
       }
       if (file instanceof BuildFile && file.getAbsPath() === path.resolve(this.blobRoot, file.hash)) {
-        /* Already a blob of this pool: nothing to store, not even a probe. */
-        return [name, file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime)];
+        /* Already a blob of this pool: nothing to store. A step's own output
+         * was just placed; a file another manifest names may be gone. */
+        if (probe && file.recordedIn !== undefined && !fs.existsSync(file.getAbsPath())) {
+          return Computable.reject(file.missingBlobError());
+        }
+        return [
+          name,
+          file.name === name ? file : new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime, file.recordedIn),
+        ];
       }
       const abspath = file.getAbsPath();
       const stored =
@@ -1869,7 +1928,12 @@ export class BuildCache {
           ? file.getBuffer().then(buffer => this.ensureBlob(file.hash, buffer, file.mode))
           : this.ingestFile(file.hash, abspath, file.mode);
       /* Keep the incoming file's mime: the store never reads content to sniff it. */
-      return stored.then((): [string, IFile] => [name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime)]);
+      return stored.then(
+        (): [string, IFile] => [name, new BuildFile(this.blobRoot, file.hash, name, file.mode, file.mime)],
+        err => {
+          throw contentFailure(file, err);
+        }
+      );
     }).then(entries => new FileSet(new Map(entries), undefined, CANONICAL));
   }
 
@@ -1884,7 +1948,7 @@ export class BuildCache {
    * read (a manifest cut short at a line boundary). The returned `meta` is the
    * header's freshness fields, absent for an immutable entry.
    */
-  private parseManifest(data: string): ICacheEntry {
+  private parseManifest(data: string, record?: IManifestRecord): ICacheEntry {
     const result = new Map();
     const end = data.length;
     if (!data.startsWith(META_PREFIX)) {
@@ -1923,7 +1987,7 @@ export class BuildCache {
       if (entry === undefined || entry.extra === undefined) {
         throw new FabrError(`Malformed cache manifest line: '${line}'`);
       }
-      result.set(entry.name, new BuildFile(this.blobRoot, entry.hash, entry.name, entry.mode, entry.extra));
+      result.set(entry.name, new BuildFile(this.blobRoot, entry.hash, entry.name, entry.mode, entry.extra, record));
     }
     if (header.entries !== result.size) {
       throw new FabrError(`Malformed cache manifest: header claims ${String(header.entries)} entries, read ${result.size}`);
@@ -2004,7 +2068,8 @@ export class BuildCache {
   /**
    * @return true if no entry attempt (a superseded one included), tree write or
    * build-state write is in flight, otherwise false. Source index writes do not
-   * count: a reader checks a row's blob with {@link presentBlob}.
+   * count: a read that finds a row's blob swept repairs the row
+   * ({@link CacheDamagedError}).
    */
   private storeQuiescent(): boolean {
     return this.inflight.size === 0 && this.inflightTrees.size === 0 && this.activeStateWrites === 0;
@@ -2671,6 +2736,13 @@ function isTransientFetchError(err: unknown): boolean {
   return false;
 }
 
+/** A manifest the cache stores, as the files read from or written to it
+ * name it: one per manifest, shared by its files. */
+interface IManifestRecord {
+  readonly manifest: string;
+  readonly cache: BuildCache;
+}
+
 /** A file whose content is a blob in the pool. */
 class BuildFile implements IFile {
   private readonly root: string;
@@ -2679,13 +2751,16 @@ class BuildFile implements IFile {
 
   /** `mode` is the file's own mode as the manifest records it, not the blob's
    * read-only one, and is applied when the file is written out. `mime` is
-   * likewise the manifest's, so reading it reads no content. */
+   * likewise the manifest's, so reading it reads no content. `recordedIn` is
+   * the manifest the file was read from or stored in; absent for a step's
+   * output not yet stored. */
   constructor(
     root: string,
     hash: string,
     name: string,
     public mode: number,
-    public readonly mime: string
+    public readonly mime: string,
+    public readonly recordedIn?: IManifestRecord
   ) {
     this.root = root;
     this.hash = hash;
@@ -2693,11 +2768,22 @@ class BuildFile implements IFile {
   }
 
   public readString(encoding?: BufferEncoding): Computable<string> {
-    return readFile(path.resolve(this.root, this.hash), encoding);
+    return readFile(path.resolve(this.root, this.hash), encoding, this);
   }
 
   public getBuffer(): Computable<Buffer> {
-    return readFileBuffer(path.resolve(this.root, this.hash));
+    return readFileBuffer(path.resolve(this.root, this.hash), this);
+  }
+
+  /** Make the damage of this file's blob gone from the pool, repaired by
+   * removing the manifest that names it. */
+  public missingBlobError(): CacheDamagedError {
+    const record = this.recordedIn;
+    return new CacheDamagedError(
+      this.getAbsPath(),
+      record === undefined ? `the content of '${this.name}', not yet stored` : `named by '${record.manifest}'`,
+      () => record?.cache.removeDamagedManifest(record.manifest)
+    );
   }
 
   public getDisplayName(): string {

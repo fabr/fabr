@@ -25,6 +25,7 @@ import { FSFileSource } from "./FSFileSource";
 import { WatchController } from "./WatchController";
 import { Computable, ComputableSource } from "./Computable";
 import { hashString } from "./FSWrapper";
+import { CacheDamagedError } from "./Errors";
 import { MemoryFile } from "./MemoryFS";
 import { parseSourceIndex } from "./Manifest";
 import { parseName } from "../model/Parser";
@@ -456,16 +457,30 @@ describe("SourceFileSource index trust", () => {
     expect(await toPromise(reread!.readString()), "the overwrite is served, not the stale row").to.equal("two\n");
   });
 
-  it("a swept blob falls back to the full path and restores it", async () => {
+  it("serves a verified row whose blob is gone unchecked; the read is damage whose repair drops the index", async () => {
     writeAged("src/a.ts", "export const a = 1;\n");
+    writeAged("src/b.ts", "export const b = 1;\n");
+    const [hash] = await ingestAndPersist(newSource(), "src/a.ts", "src/b.ts");
+    await ingestAndPersist(newSource(), "src/a.ts", "src/b.ts");
+    fs.rmSync(path.join(cacheRoot, "blob", hash!), { force: true });
+
     const source = newSource();
-    const first = await toPromise(source.ingest("src/a.ts"));
+    const served = await toPromise(source.ingest("src/a.ts"));
+    expect(served!.hash).to.equal(hash);
+    const failure = await toPromise(served!.readString()).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    expect(failure).to.be.instanceOf(CacheDamagedError);
+    (failure as CacheDamagedError).repair();
     await toPromise(source.persistIndex());
 
-    fs.rmSync(first!.getAbsPath()!, { force: true });
-    const reingested = await toPromise(newSource().ingest("src/a.ts"));
-    expect(reingested!.hash).to.equal(first!.hash);
-    expect(fs.existsSync(first!.getAbsPath()!)).to.equal(true);
+    /* Every row is gone, the undamaged file's too, so each file is read again
+     * and its blob restored. */
+    expect(parseSourceIndex(fs.readFileSync(recordPath()!, "utf8"))!.rows.size).to.equal(0);
+    const reread = await toPromise(newSource().ingest("src/a.ts"));
+    expect(await toPromise(reread!.readString())).to.equal("export const a = 1;\n");
+    expect(fs.existsSync(path.join(cacheRoot, "blob", hash!))).to.equal(true);
   });
 
   it("drops a consulted row whose file is gone, carries the unconsulted rest", async () => {

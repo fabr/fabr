@@ -28,7 +28,7 @@ import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { refuseSecrets } from "../core/SecretFile";
 import { Name, NAME_COMPONENT_SEPARATOR, NAME_LEVEL_SEPARATOR } from "../core/Name";
-import { FabrError, helpOf, toError } from "../core/Errors";
+import { cacheDamageIn, FabrError, helpOf, toError } from "../core/Errors";
 import { declPosn, IPropertyDecl } from "../model/AST";
 import { DependencyFailedError, NameResolutionError } from "../model/Errors";
 import { RuleImplementation, RuleResult } from "./Types";
@@ -429,7 +429,7 @@ function validateMember(context: TargetContext, prop: { key: Name; decl: IProper
     .lookupPublishRef(prop.key)
     .then((assigned): Member => ({ assigned, decl: prop.decl, content: contentKey(prop.decl) }))
     .catch(err => {
-      if (err instanceof DependencyFailedError) {
+      if (err instanceof DependencyFailedError || cacheDamageIn(err).length > 0) {
         throw err;
       }
       const error = toError(err);

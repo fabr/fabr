@@ -25,6 +25,7 @@ import { Name } from "../core/Name";
 import { isArchiveMime, sniffMime } from "./Mime";
 import { unpackStream } from "./Unpack";
 import { MemoryOutput } from "../core/MemoryFS";
+import { toleratingFailure } from "../core/Errors";
 
 /**
  * Archive descent: a projection that names a path inside an archive file
@@ -158,7 +159,7 @@ function descend(candidate: BoundaryCandidate, pattern: Name, prefix: string, ex
   }
   /* An archive a glob matched that cannot be expanded (a corrupt or unreadable
    * file) adds nothing; one the pattern names literally fails. */
-  const expansion = named ? expand(file) : expand(file).catch(() => EMPTY_FILESET);
+  const expansion = named ? expand(file) : expand(file).catch(toleratingFailure(EMPTY_FILESET));
   return expansion.then(expanded =>
     expanded.isEmpty() ? expanded : findWithDescent(FileSet.layout({ [at]: expanded }), pattern, prefix, expand)
   );

@@ -35,6 +35,7 @@ import { FileSet, IFile } from "../core/FileSet";
 import { MemoryFile, MemoryOutput } from "../core/MemoryFS";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { normalizeEntryName } from "./Paths";
+import { contentFailure, isNotFound } from "../core/FSWrapper";
 
 /** The name an archive arriving as a stream is written out under. */
 const SPOOL_NAME = "archive.zip";
@@ -53,7 +54,7 @@ function zipError(err: unknown, entry?: yauzl.Entry): Error {
 /** Open a zip archive: by path where it is on disk, else from memory. */
 function openZip(archive: IFile): Computable<yauzl.ZipFile> {
   const opened = (resolve: (zip: yauzl.ZipFile) => void, reject: (err: Error) => void) => (err: Error | null, zip: yauzl.ZipFile) =>
-    err ? reject(zipError(err)) : resolve(zip);
+    err ? reject(isNotFound(err) ? contentFailure(archive, err) : zipError(err)) : resolve(zip);
   const path = archive.getAbsPath();
   if (path !== undefined) {
     return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.open(path, ZIP_OPTIONS, opened(resolve, reject)));

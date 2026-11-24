@@ -103,7 +103,7 @@ describe("IndexedFileSource, read in place", () => {
     fs.writeFileSync(path.join(dir, "tool"), "big");
     const file = await toPromise(inPlace().get(path.join(dir, "tool")));
     expect(file?.getAbsPath()).to.equal(path.join(dir, "tool"));
-    expect(cache.presentBlob(hashString("big"))).to.equal(undefined);
+    expect(fs.existsSync(cache.blobPathOf(hashString("big")))).to.equal(false);
   });
 
   it("watches only the directory a file it reads lies in", async () => {

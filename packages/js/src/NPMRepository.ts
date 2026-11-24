@@ -73,6 +73,7 @@ import {
   TARGET,
   TargetContext,
   toJsonObject,
+  toleratingFailure,
   tripleToNpm,
   urlJoin,
   urlResolved,
@@ -632,7 +633,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
      * gates must be caught too. */
     return this.gatedMetadata(req.name, probeVersion, target)
       .then(meta => (matchesTargetPlatform(meta, target) ? req : undefined))
-      .catch(() => undefined);
+      .catch(toleratingFailure(undefined));
   }
 
   /**
@@ -653,7 +654,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
       this.packument(pkg, false)
         .then(versions => (entry(versions) !== undefined ? entry(versions) : this.packument(pkg, true).then(entry)))
         /* Where the packument cannot be read, read the version's own document. */
-        .catch(() => undefined)
+        .catch(toleratingFailure(undefined))
         .then(meta => meta ?? this.versionDocument(pkg, version))
     );
   }

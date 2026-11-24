@@ -18,7 +18,7 @@
  */
 
 import { Computable } from "../core/Computable";
-import { FabrError, MetadataFetchError, toError, VersionNotFoundError } from "../core/Errors";
+import { FabrError, MetadataFetchError, toError, toleratingFailure, VersionNotFoundError } from "../core/Errors";
 import { compareText } from "../support/Functional";
 import { constraintOf, dependencyNameOf, excludedBy, requiredAs, versionConstraintText } from "./Requirement";
 import { edgeBinding, MVSResolution, nodeId as idOf } from "./MVSResolution";
@@ -132,7 +132,7 @@ function forcedByBoms<V, C>(
         return Computable.resolve<Requirement[]>([]);
       }
       try {
-        return registry.getRequirements(root.name, version).catch(() => [] as Requirement[]);
+        return registry.getRequirements(root.name, version).catch(toleratingFailure<Requirement[]>([]));
       } catch {
         return Computable.resolve<Requirement[]>([]);
       }

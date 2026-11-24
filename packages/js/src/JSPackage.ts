@@ -52,6 +52,7 @@ import {
   SymlinkFile,
   TargetContext,
   toJsonObject,
+  toleratingFailure,
 } from "@fabr-build/core";
 import { IProgramLayout, nodeModulesLayout } from "./Layout";
 import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
@@ -208,7 +209,7 @@ export function hasPackageExport(pkg: PackageFileSet, subpath: string): Computab
       .then(manifest => (manifest === undefined ? false : publishedFile(pkg, manifest, subpath)))
       /* An unreadable manifest or invalid map answers false; it is reported
        * where the package is built or resolved. */
-      .catch(() => false)
+      .catch(toleratingFailure(false))
   );
 }
 

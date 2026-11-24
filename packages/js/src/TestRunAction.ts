@@ -50,6 +50,7 @@ import {
   IStagedStep,
   ITaskReport,
   ITestReport,
+  type ITestResult,
   joinDepsPath,
   lcovOf,
   linkTrees,
@@ -74,9 +75,9 @@ import {
   toArgv,
   toError,
   toJsonObject,
+  toleratingFailure,
   toStringList,
   toTestReport,
-  type ITestResult,
   variableEntry,
   writeFileSet,
 } from "@fabr-build/core";
@@ -612,7 +613,7 @@ function keptRunsOf(state: FileSet | undefined): Computable<Map<string, IKeptRun
           ];
         })
       ),
-    () => undefined
+    toleratingFailure(undefined)
   );
 }
 

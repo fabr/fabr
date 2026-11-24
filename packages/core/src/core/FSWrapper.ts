@@ -24,6 +24,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { Readable } from "stream";
 import { Computable } from "./Computable";
+import { toError } from "./Errors";
 import type { IFile } from "./FileSet";
 import { mapComputable } from "../support/Functional";
 import { SNIFF_LENGTH, sniffMime } from "../support/Mime";
@@ -60,11 +61,11 @@ export function isNotDirectoryError(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOTDIR";
 }
 
-export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): Computable<string> {
+export function readFile(filepath: string, encoding: BufferEncoding = "utf8", of?: IFile): Computable<string> {
   return Computable.from<string>((resolve, reject) => {
     fs.readFile(filepath, encoding, (err, data) => {
       if (err) {
-        reject(err);
+        reject(of === undefined ? err : contentFailure(of, err));
       } else {
         resolve(data);
       }
@@ -72,11 +73,11 @@ export function readFile(filepath: string, encoding: BufferEncoding = "utf8"): C
   });
 }
 
-export function readFileBuffer(filepath: string): Computable<Buffer> {
+export function readFileBuffer(filepath: string, of?: IFile): Computable<Buffer> {
   return Computable.from<Buffer>((resolve, reject) => {
     fs.readFile(filepath, (err, data) => {
       if (err) {
-        reject(err);
+        reject(of === undefined ? err : contentFailure(of, err));
       } else {
         resolve(data);
       }
@@ -345,11 +346,11 @@ export function readOnlyPermissions(mode: number): number {
   return mode & 0o111 ? 0o555 : 0o444;
 }
 
-export function hardlink(target: string, filepath: string): Computable<void> {
+export function hardlink(target: string, filepath: string, of?: IFile): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.link(target, filepath, err => {
       if (err) {
-        reject(err);
+        reject(of === undefined ? err : contentFailure(of, err));
       } else {
         resolve();
       }
@@ -360,11 +361,11 @@ export function hardlink(target: string, filepath: string): Computable<void> {
 /** Copy a file's contents to a new path, an independent copy where
  * {@link hardlink} shares the inode. Use it for a destination the user owns
  * (`fabr cp`), where an edit through a hardlink would change the cache blob. */
-export function copyFile(target: string, filepath: string): Computable<void> {
+export function copyFile(target: string, filepath: string, of?: IFile): Computable<void> {
   return Computable.from<void>((resolve, reject) => {
     fs.copyFile(target, filepath, err => {
       if (err) {
-        reject(err);
+        reject(of === undefined ? err : contentFailure(of, err));
       } else {
         resolve();
       }
@@ -414,16 +415,45 @@ export function hashString(data: string | Buffer): string {
   return crypto.createHash(HASH_ALGORITHM).update(data).digest("hex");
 }
 
-/** @return a stream of `file`'s content: read from disk where the file has a path, else from memory. */
+/**
+ * Make the error a read of `file`'s content from its path failed with: the
+ * file's {@link IFile.missingBlobError} where `err` is an ENOENT and the file
+ * has one (its content is a blob of the cache's pool), `err` otherwise. Call
+ * it where the filesystem call fails, before the error is wrapped: a rethrown
+ * fs error does not reliably keep its `code`.
+ */
+export function contentFailure(file: IFile, err: unknown): Error {
+  return (isNotFound(err) ? file.missingBlobError?.() : undefined) ?? toError(err);
+}
+
+/** @return a stream of `file`'s content: read from disk where the file has a
+ * path (opened before the stream is made, so a missing file rejects here),
+ * else from memory. */
 export function contentStream(file: IFile): Computable<Readable> {
   const where = file.getAbsPath();
-  return where !== undefined
-    ? Computable.resolve(fs.createReadStream(where))
-    : file.getBuffer().then(buffer => Readable.from([buffer]));
+  if (where === undefined) {
+    return file.getBuffer().then(buffer => Readable.from([buffer]));
+  }
+  return Computable.from<Readable>((resolve, reject) => {
+    fs.open(where, "r", (err, fd) => {
+      if (err) {
+        reject(contentFailure(file, err));
+      } else {
+        resolve(fs.createReadStream(where, { fd }));
+      }
+    });
+  });
 }
 
 /** @return the size of `file`'s content in bytes: from disk where the file has a path, else from memory. */
 export function contentSize(file: IFile): Computable<number> {
   const where = file.getAbsPath();
-  return where !== undefined ? stat(where).then(stats => stats.size) : file.getBuffer().then(buffer => buffer.length);
+  return where !== undefined
+    ? stat(where).then(
+        stats => stats.size,
+        err => {
+          throw contentFailure(file, err);
+        }
+      )
+    : file.getBuffer().then(buffer => buffer.length);
 }
