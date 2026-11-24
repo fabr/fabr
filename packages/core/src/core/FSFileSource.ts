@@ -542,6 +542,9 @@ export class FSFileSource implements FileSource {
   public readonly root: string;
   /** {@link root}, absolute and spelled with `/`, as a pattern names it. */
   private readonly posixRoot: string;
+  /** {@link root}, absolute and ending in a separator: what every normalized
+   * host path under the tree starts with. */
+  private readonly rootPrefix: string;
   /**
    * Where present, queries are kept current through the source's
    * subscriptions ({@link subscriptions}), batched by the controller; absent,
@@ -572,7 +575,9 @@ export class FSFileSource implements FileSource {
 
   constructor(root: string, watchController?: WatchController, pool?: BuildCache) {
     this.root = root;
-    this.posixRoot = toPosix(path.resolve(root));
+    const resolved = path.resolve(root);
+    this.posixRoot = toPosix(resolved);
+    this.rootPrefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
     this.watchController = watchController;
     this.pool = pool;
   }
@@ -582,9 +587,10 @@ export class FSFileSource implements FileSource {
     return path.resolve(this.root, name);
   }
 
-  /** @return the name of `hostPath`, a host path under this tree. */
+  /** @return the name of `hostPath`, a normalized host path under this tree
+   * (as `path.join` and `path.resolve` make one). */
   public nameOf(hostPath: string): string {
-    return toPosix(path.relative(this.root, hostPath));
+    return toPosix(hostPath.startsWith(this.rootPrefix) ? hostPath.slice(this.rootPrefix.length) : path.relative(this.root, hostPath));
   }
 
   /** @return `name` with this tree's root, where it starts with it (spelled

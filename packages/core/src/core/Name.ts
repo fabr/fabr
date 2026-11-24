@@ -394,12 +394,14 @@ export class Name {
        * flattens to its tail. Leave out the alias path itself (relative name
        * ""): a globstar remainder matches its own base (`a/**` matches `a`),
        * but `x:**` means the files under x, so a projection into an archive
-       * does not also select the archive. */
+       * does not also select the archive. Inputs are normalized, so one
+       * starting with the alias directory is named by what follows it. */
+      const aliasPrefix = aliasPath + NAME_COMPONENT_SEPARATOR;
       return input => {
         if (!matcher(input)) {
           return undefined;
         }
-        const rel = path.posix.relative(aliasPath, input);
+        const rel = input.startsWith(aliasPrefix) ? input.slice(aliasPrefix.length) : path.posix.relative(aliasPath, input);
         return rel === "" ? undefined : prefix + rel;
       };
     }
