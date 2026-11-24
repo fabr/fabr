@@ -9,6 +9,7 @@ together and share a version number.
 @fabr-build/core
 
 - Repair damaged cache entries when encountered.
+- Performance optimizations.
 
 @fabr-build/js
 

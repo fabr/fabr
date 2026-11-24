@@ -254,6 +254,7 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
              * report it wrote. */
             const tally = new RunTally(rerun.length, report.progress);
             const directories = new DirectoryRows();
+            const names = new Map<string, ReadName | undefined>();
             return Computable.forAll(
               /* All issued at once; each execution queues for a slot of the
                * process funnel. An invocation never rejects here, so a failed
@@ -269,7 +270,8 @@ function runTests(action: BuildAction, ctx: ActionContext, report: ITaskReport):
                   file,
                   index,
                   layout,
-                  directories
+                  directories,
+                  names
                 ).then(run => tally.add(run));
               }),
               (...runs) => concludeRun(workDir, testFiles, runs, reused, report)
@@ -737,7 +739,9 @@ function invocationReads(index: number): string {
 /**
  * Read an invocation's reads document ({@link IReadsDocument}) and name what it
  * says in the key's vocabulary ({@link IPackageLayout.nameRead}). The document
- * names paths relative to the runner's working directory, `cwd`.
+ * names paths relative to the runner's working directory, `cwd`; `names`
+ * holds each such path's name once it is made, for every document of one
+ * step run in that directory over that layout.
  *
  * - `reads`: the run's own files read, by name.
  * - `deps`: rows naming what was read of the packages: each file read; a probe
@@ -761,7 +765,8 @@ export function readsOf(
   document: string,
   cwd: string,
   layout: IPackageLayout,
-  directories: DirectoryRows = new DirectoryRows()
+  directories: DirectoryRows = new DirectoryRows(),
+  names = new Map<string, ReadName | undefined>()
 ): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
   let read: IReadsDocument;
   try {
@@ -769,7 +774,12 @@ export function readsOf(
   } catch {
     return undefined;
   }
-  const name = (relative: string): ReadName | undefined => layout.nameRead(join(cwd, ...relative.split("/")));
+  const name = (relative: string): ReadName | undefined => {
+    if (!names.has(relative)) {
+      names.set(relative, layout.nameRead(join(cwd, ...relative.split("/"))));
+    }
+    return names.get(relative);
+  };
   const reads = new Set<string>();
   const deps = new Set<string>();
   for (const file of read.files) {
@@ -868,11 +878,12 @@ function runRetried(
   file: string,
   index: number,
   layout: IPackageLayout,
-  directories: DirectoryRows
+  directories: DirectoryRows,
+  names: Map<string, ReadName | undefined>
 ): Computable<IFileRun> {
   const retries = flakeRetriesOf(action);
   const attempt = (earlier: Array<ITestReport | undefined>): Computable<IFileRun> => {
-    return runOneFile(ctx, action, taskReport, argv, env, file, index, layout, directories).then(
+    return runOneFile(ctx, action, taskReport, argv, env, file, index, layout, directories, names).then(
       (run): IFileRun | Computable<IFileRun> => {
         const failed = "error" in run || run.report.results.summary.failed > 0;
         if (failed && earlier.length < retries) {
@@ -898,7 +909,8 @@ function runOneFile(
   file: string,
   index: number,
   layout: IPackageLayout,
-  directories: DirectoryRows
+  directories: DirectoryRows,
+  names: Map<string, ReadName | undefined>
 ): Computable<IFileRun> {
   const reportName = invocationReport(index);
   const invocation = invocationOf(action, argv, file, index);
@@ -920,7 +932,7 @@ function runOneFile(
     .then((run): IFileRun => {
       const cwd = join(ctx.workDir, COMPILE_OUT_DIR);
       const named =
-        "error" in run || action.uncached ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout, directories);
+        "error" in run || action.uncached ? undefined : readsOf(join(cwd, invocationReads(index)), cwd, layout, directories, names);
       return named === undefined ? run : { ...run, reads: named.reads, deps: named.deps };
     });
 }
