@@ -25,7 +25,7 @@
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { Hash } from "@smithy/hash-node";
 import { SignatureV4 } from "@smithy/signature-v4";
-import { compareText, Computable, FabrError, SecureString, toError } from "@fabr-build/core";
+import { compareText, Computable, NoCredentialError, SecureString, toError } from "@fabr-build/core";
 
 /** A request to a service, before it is signed. */
 export interface IServiceRequest {
@@ -78,16 +78,16 @@ export class RequestSigner {
         .then(
           signed => resolve(signed.headers),
           err =>
-            reject(
-              new FabrError(`cannot sign a request to ${service} (${toError(err).message})`).withHelp(
-                "fabr finds AWS credentials as the AWS CLI does: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, a profile in ~/.aws " +
-                  "(AWS_PROFILE, or the account's `profile`), an SSO session (`aws sso login`), web identity, or the machine's role"
-              )
-            )
+            reject(new NoCredentialError(`cannot sign a request to ${service} (${toError(err).message})`).withHelp(CREDENTIALS_HELP))
         );
     });
   }
 }
+
+/** The remedy for a request with no usable AWS credential. */
+export const CREDENTIALS_HELP =
+  "fabr finds AWS credentials as the AWS CLI does: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, a profile in ~/.aws " +
+  "(AWS_PROFILE, or the account's `profile`), an SSO session (`aws sso login`), web identity, or the machine's role";
 
 /** Encode `text` as AWS's canonical requests encode a URI component: RFC 3986's unreserved characters as they are, everything else as UTF-8 `%XX`. */
 export function uriEncode(text: string): string {

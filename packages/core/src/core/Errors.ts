@@ -157,6 +157,14 @@ export class HttpStatusError extends FabrError {
 }
 
 /**
+ * A request that could not be signed in: no credential could be had (none
+ * configured, a sign-in session expired), or the origin refused the one given
+ * as expired or unknown. A held copy of what the request fetches is served in
+ * its place, as for a transient failure. A 401 is an {@link HttpStatusError}.
+ */
+export class NoCredentialError extends FabrError {}
+
+/**
  * Content that does not match the integrity digest stated for it (by registry
  * metadata, or a `fetch` declaration). Raised while a download streams, before
  * it is committed to the cache, and against stored content a declared digest

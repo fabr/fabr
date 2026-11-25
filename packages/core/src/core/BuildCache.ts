@@ -24,7 +24,7 @@ import * as path from "path";
 import { Readable, Transform } from "stream";
 import { PROJECT_FILENAME } from "./Constants";
 import { Computable, ComputableHandle } from "./Computable";
-import { CacheDamagedError, FabrError, HttpStatusError, toError } from "./Errors";
+import { CacheDamagedError, FabrError, HttpStatusError, NoCredentialError, toError } from "./Errors";
 import { FetchRole, headUrl, ICacheControl, openUrlStream, reportingProgress, shownUrl } from "./Fetch";
 import type { SecureString } from "./SecureString";
 import { CANONICAL, DEFAULT_FILE_MODE, FileSet, IFile } from "./FileSet";
@@ -417,6 +417,8 @@ export class BuildCache {
   private readonly servedManifests = new Set<string>();
   private readonly servedTargetKeys = new Set<string>();
   private readonly servedDepsRecords = new Set<string>();
+  /** The secret records served this session (see {@link servedManifests}). */
+  private readonly servedSecretRecords = new Set<string>();
   private readonly servedTrees = new Set<string>();
   /** The working directories of the kept work dirs this process holds — see
    * {@link holdKeptWorkDir}. */
@@ -790,8 +792,9 @@ export class BuildCache {
    * the entry follows HTTP caching (see {@link FetchOptions}), and under the
    * cache's `refresh` is revalidated the first time it is asked for. A fetch
    * with no copy to fall back on is retried twice where it fails transiently;
-   * one with a held copy serves that copy with a warning instead. Any other
-   * failure rejects.
+   * one with a held copy serves that copy with a warning instead, as it does
+   * where the request could not be signed in (a 401, or a
+   * {@link NoCredentialError}). Any other failure rejects.
    */
   public getOrFetch(
     cacheKey: string,
@@ -859,24 +862,27 @@ export class BuildCache {
   /*
    * ── Secrets store ───────────────────────────────────────────
    * Records whose content must not enter the shared pools, each a file of its
-   * own named by its key, readable by this user alone. Fresh for
-   * MINIMUM_FRESHNESS_MS, and trimmed once past it.
+   * own named by its key, readable by this user alone. A record is fresh for
+   * MINIMUM_FRESHNESS_MS from its fetch; its mtime is when it was last
+   * served, and the trim removes one unused for GC_MAX_AGE_MS.
    */
 
   /**
    * Get the record `cacheKey` and `tag` name (see {@link getOrFetch}) from the
-   * secrets store, or fetch it with `fetch` where the store holds none, the one
-   * it holds is over {@link MINIMUM_FRESHNESS_MS} old, or `--refresh` has not
-   * yet refetched it this run. A concurrent demand joins the fetch in flight.
-   * With no held record, a transient failure is retried twice; with one, a
-   * transient failure serves it, with a warning naming `resource`. Any other
-   * failure rejects.
+   * secrets store, or fetch it with `fetch` where the store holds none, or,
+   * unless `immutable` (the source's content at `cacheKey` never changes), the
+   * one it holds was fetched over {@link MINIMUM_FRESHNESS_MS} ago or
+   * `--refresh` has not yet refetched it this run. A concurrent demand joins
+   * the fetch in flight. With no held record, a transient failure is retried twice; with
+   * one, a transient failure or a missing or refused credential serves it, with
+   * a warning naming `resource`. Any other failure rejects.
    */
   public getOrFetchSecret(
     cacheKey: string,
     tag: string,
     resource: string,
-    fetch: () => Computable<ISecretRecord>
+    fetch: () => Computable<ISecretRecord>,
+    immutable = false
   ): Computable<ISecretRecord> {
     const key = hashString(`secret:${tag} ${cacheKey}`);
     const running = this.inflightSecrets.get(key);
@@ -885,7 +891,11 @@ export class BuildCache {
     }
     const file = path.resolve(this.secretsRoot, key);
     const held = readSecretRecord(file);
-    if (held !== undefined && this.now() - held.mtimeMs < MINIMUM_FRESHNESS_MS && !(this.refresh && !this.refreshed.has(key))) {
+    if (
+      held !== undefined &&
+      (immutable || (this.now() - held.fetched < MINIMUM_FRESHNESS_MS && !(this.refresh && !this.refreshed.has(key))))
+    ) {
+      this.noteSecretServed(file);
       return Computable.resolve(held.record);
     }
     if (this.refresh) {
@@ -895,8 +905,9 @@ export class BuildCache {
       (held === undefined ? retryingTransient(fetch) : fetch()).then(
         record => this.writeSecretRecord(file, record).then(() => record),
         err => {
-          if (held !== undefined && isTransientFetchError(err)) {
+          if (held !== undefined && servesHeldCopy(err)) {
             this.log.log(DIAG_SERVING_STALE, { url: resource, reason: err instanceof Error ? err.message : String(err) });
+            this.noteSecretServed(file);
             return held.record;
           }
           throw err;
@@ -918,11 +929,24 @@ export class BuildCache {
     } catch (err) {
       return Computable.reject(toError(err));
     }
-    const text = JSON.stringify({ identity: record.identity, secret: record.secret, value: record.value.toString("base64") });
-    /* Stamp it with the cache's clock, which freshness and the trim read it against. */
+    const text = JSON.stringify({
+      identity: record.identity,
+      secret: record.secret,
+      value: record.value.toString("base64"),
+      fetched: this.now(),
+    });
+    /* Stamp it with the cache's clock, which the trim reads it against. */
     return writeFile(tmp, text, { mode: SECRET_RECORD_MODE })
       .then(() => updateFileTime(tmp, new Date(this.now())))
       .then(() => rename(tmp, file));
+  }
+
+  /** Record that the secret record `file` was served: touch it the first time this session. */
+  private noteSecretServed(file: string): void {
+    if (!this.servedSecretRecords.has(file)) {
+      this.servedSecretRecords.add(file);
+      this.touchForRecency(file);
+    }
   }
 
   /**
@@ -988,7 +1012,7 @@ export class BuildCache {
     /* Retry the whole attempt, request and body, so a transfer that failed part
      * way starts again. With a held copy, serve it at once instead. */
     return (entry ? attempt() : retryingTransient(attempt)).catch(err => {
-      if (entry && isTransientFetchError(err)) {
+      if (entry && servesHeldCopy(err)) {
         /* Stale-if-error (RFC 9111), with a warning. Touch the copy as served,
          * so it does not age out while the origin cannot replace it. */
         this.log.log(DIAG_SERVING_STALE, { url: shownUrl(url), reason: err instanceof Error ? err.message : String(err) });
@@ -2170,6 +2194,7 @@ export class BuildCache {
       ...[...this.servedManifests].map(key => this.manifestPath(key)),
       ...[...this.servedTargetKeys].map(key => this.buildStatePath(key)),
       ...this.servedDepsRecords,
+      ...this.servedSecretRecords,
     ];
     for (const filepath of paths) {
       await updateFileTime(filepath, when).catch(() => undefined);
@@ -2287,7 +2312,7 @@ export class BuildCache {
       if (shouldAbort()) {
         return;
       }
-      await this.removeIfPast(path.resolve(this.secretsRoot, record.name), MINIMUM_FRESHNESS_MS);
+      await this.removeIfPast(path.resolve(this.secretsRoot, record.name), GC_MAX_AGE_MS);
     }
     await this.expireKeptWorkDirs(shouldAbort);
     this.reapWorkTrees();
@@ -2694,21 +2719,37 @@ export interface ISecretRecord {
   readonly value: Buffer;
 }
 
-/** Read the secret record at `file`, with when it was written, or undefined where there is none or it is damaged. */
-function readSecretRecord(file: string): { record: ISecretRecord; mtimeMs: number } | undefined {
+/** Read the secret record at `file`, with when it was fetched (on the cache's clock), or undefined where there is none or it is damaged. */
+function readSecretRecord(file: string): { record: ISecretRecord; fetched: number } | undefined {
   try {
-    const mtimeMs = fs.statSync(file).mtimeMs;
-    const record = parseJson(fs.readFileSync(file, "utf8"), file, json => {
-      const { identity, secret, value } = toJsonObject(json);
-      if (typeof identity !== "string" || typeof secret !== "boolean" || typeof value !== "string") {
+    return parseJson(fs.readFileSync(file, "utf8"), file, json => {
+      const { identity, secret, value, fetched } = toJsonObject(json);
+      if (typeof identity !== "string" || typeof secret !== "boolean" || typeof value !== "string" || typeof fetched !== "number") {
         throw new Error("not a secret record");
       }
-      return { identity, secret, value: Buffer.from(value, "base64") };
+      return { record: { identity, secret, value: Buffer.from(value, "base64") }, fetched };
     });
-    return { record, mtimeMs };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * @return true if a held copy is served in place of what a refetch failed to
+ * give, otherwise false: where it failed transiently (see
+ * {@link isTransientFetchError}), or could not be signed in — a 401, or a
+ * {@link NoCredentialError} anywhere in the `cause` chain.
+ */
+function servesHeldCopy(err: unknown): boolean {
+  if (isTransientFetchError(err)) {
+    return true;
+  }
+  for (let cause: unknown = err; typeof cause === "object" && cause !== null; cause = (cause as { cause?: unknown }).cause) {
+    if (cause instanceof NoCredentialError || (cause instanceof HttpStatusError && cause.statusCode === 401)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

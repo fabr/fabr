@@ -59,7 +59,7 @@ function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFak
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
       requests.push({ target: req.headers["x-amz-target"] as string | undefined, body, authorization: req.headers.authorization });
-      const { SecretId } = JSON.parse(body) as { SecretId: string };
+      const { SecretId, VersionId } = JSON.parse(body) as { SecretId: string; VersionId?: string };
       if (SecretId === THROTTLED) {
         res
           .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
@@ -67,7 +67,7 @@ function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFak
         return;
       }
       const found = secrets[SecretId];
-      if (found === undefined) {
+      if (found === undefined || (VersionId !== undefined && VersionId !== found.versionId)) {
         res
           .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
           .end(JSON.stringify({ __type: "ResourceNotFoundException", message: "Secrets Manager can't find the specified secret." }));
@@ -96,12 +96,19 @@ function startSecretsManager(secrets: Record<string, IFakeSecret>): Promise<IFak
   );
 }
 
-/** A TargetContext whose `fetchSecret` fetches every time, with no cache, recording each cache key. */
+/** A TargetContext whose `fetchSecret` fetches every time, with no cache, recording each cache key, marked where it is asked to keep the record as immutable. */
 function fetchingContext(keys: string[]): TargetContext {
   return {
     name: "@aws",
-    fetchSecret: (cacheKey: string, _tag: string, _url: string, fetch: () => Computable<ISecretRecord>) => {
-      keys.push(cacheKey);
+    fetchSecret: (
+      cacheKey: string,
+      _tag: string,
+      _url: string,
+      fetch: () => Computable<ISecretRecord>,
+      _report: unknown,
+      immutable = false
+    ) => {
+      keys.push(immutable ? `${cacheKey} (immutable)` : cacheKey);
       return fetch();
     },
   } as unknown as TargetContext;
@@ -195,6 +202,37 @@ describe("the Secrets Manager secrets of an AWS account", () => {
     expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${service.url} prod/db/password`]);
   });
 
+  it("reads one version of a secret by its version ID, named as the secret is, and keeps it as immutable", async () => {
+    const keys: string[] = [];
+    const version = "11111111-aaaa-bbbb-cccc-222222222222";
+    const files = await read(accountAt(service, keys), `prod/db/password:${version}`);
+    expect([...files.keys()]).to.deep.equal(["prod/db/password"]);
+    expect((files.get("prod/db/password") as SecretFile).getDisplayName()).to.equal(`@aws:secretsmanager:prod/db/password:${version}`);
+    expect(JSON.parse(service.requests[0].body)).to.deep.equal({ SecretId: "prod/db/password", VersionId: version });
+    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${service.url} prod/db/password:${version} (immutable)`]);
+  });
+
+  it("selects a version's file through the reference's projection, renamed where it says so", async () => {
+    const ref = await refOf(accountAt(service), "prod/db/password:11111111-aaaa-bbbb-cccc-222222222222 -> password");
+    expect(ref.name).to.equal("prod/db/password");
+    expect(ref.versionConstraint).to.equal("11111111-aaaa-bbbb-cccc-222222222222");
+    const files = await (ref.source as SecretsManagerSecrets).resolve(ref);
+    const projected = await files.find(ref.projections[0].pattern);
+    expect([...projected].map(([name]) => name)).to.deep.equal(["password"]);
+  });
+
+  it("refuses a version Secrets Manager does not have", async () => {
+    const err = await failureOf(read(accountAt(service), "prod/db/password:99999999-aaaa-bbbb-cccc-222222222222"));
+    expect(err?.message).to.equal(
+      "Secrets Manager has no secret version 'prod/db/password:99999999-aaaa-bbbb-cccc-222222222222' in @aws's account and region"
+    );
+  });
+
+  it("refuses a staging label in place of a version ID", async () => {
+    const err = await failureOf(refOf(accountAt(service), "prod/db/password:AWSCURRENT"));
+    expect(err?.message).to.equal("'@aws:secretsmanager:prod/db/password:AWSCURRENT' does not name a Secrets Manager secret");
+  });
+
   it("reads a binary secret as its bytes", async () => {
     const files = await read(accountAt(service), "prod/signing.key");
     const file = files.get("prod/signing.key") as SecretFile;
@@ -224,6 +262,10 @@ describe("Secrets Manager's GetSecretValue", () => {
     expect(request.url.toUnmaskedString()).to.equal("https://secretsmanager.eu-west-2.amazonaws.com/");
     expect(request.headers?.get("x-amz-target")).to.equal("secretsmanager.GetSecretValue");
     expect(JSON.parse(request.body)).to.deep.equal({ SecretId: "prod/key" });
+    expect(JSON.parse(secretValueRequest("prod/key", "eu-west-2", undefined, "v1").body)).to.deep.equal({
+      SecretId: "prod/key",
+      VersionId: "v1",
+    });
   });
 
   it("reads the value from an answer, and refuses one holding none", () => {

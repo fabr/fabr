@@ -521,17 +521,23 @@ export abstract class TargetContext {
    * Get the record `cacheKey` and `tag` name from the cache's secrets store, for
    * content that must not enter the shared pools (a secret), or fetch it from
    * `url` with `fetch` (see BuildCache.getOrFetchSecret), the fetch reported
-   * as a task as {@link fetch} reports one.
+   * as a task as {@link fetch} reports one. With `immutable`, a held record is
+   * never fetched again.
    */
   public fetchSecret(
     cacheKey: string,
     tag: string,
     url: string,
     fetch: () => Computable<ISecretRecord>,
-    report: IFetchReport
+    report: IFetchReport,
+    immutable = false
   ): Computable<ISecretRecord> {
-    return this.context.execution.buildCache.getOrFetchSecret(cacheKey, tag, url, () =>
-      this.runTask({ kind: "fetch", url, ...report }, () => fetch())
+    return this.context.execution.buildCache.getOrFetchSecret(
+      cacheKey,
+      tag,
+      url,
+      () => this.runTask({ kind: "fetch", url, ...report }, () => fetch()),
+      immutable
     );
   }
 

@@ -31,7 +31,8 @@ LocalStack or ministack.
 |---|---|
 | `aws ssm get-parameter --name /app/region` | A reference to the parameter, `@aws:ssm:/app/region`, as a build input; or `fabr cat @aws:ssm:/app/region`. |
 | `aws ssm get-parameter --name /app/db/password --with-decryption` | The same reference: fabr always decrypts a `SecureString`. |
-| `aws ssm get-parameter --name /app/region:3` | Not supported: fabr reads the parameter's latest version. |
+| `aws ssm get-parameter --name /app/region:3` | `@aws:ssm:/app/region:3`: the same version selector. |
+| `aws ssm get-parameter --name /app/region:prod` | Not supported: a label can be moved to another version, so name the version. |
 | `aws ssm get-parameters-by-path --path /app/` | Not supported: name each parameter. |
 
 ## Naming parameters
@@ -42,9 +43,11 @@ A reference to SSM is the account, the service, then the parameter's name as SSM
 @aws:ssm:/app/ssl/ca.key               # the file app/ssl/ca.key
 @aws:ssm:/app/ssl/ca.key -> ca.key     # the file ca.key
 @aws:ssm:legacy-token                  # the file legacy-token
+@aws:ssm:/app/ssl/ca.key:7             # version 7, the file app/ssl/ca.key
 ```
 
-The parameter is read as one file, named as the parameter is without its leading `/`. Write
+The parameter is read as one file, named as the parameter is without its leading `/`, whether or
+not the reference names a version. Write
 `-> name` to give it another name, as for any [projection](/reference/syntax/#projection-and-renaming).
 A parameter's name is written literally: a pattern such as `@aws:ssm:/app/*` is refused.
 
@@ -75,26 +78,33 @@ What fabr does with a secret:
 
 ## How parameters are cached
 
-SSM returns a parameter's value and version together, so fabr keeps each parameter it reads for a
-day and reads it again after that. Parameters are kept in a directory of fabr's cache that only
-your user can read, apart from the build cache, and are deleted once they are a day old. They are
-kept per account, profile and region, so two profiles that read the same name don't share a value.
+SSM returns a parameter's value and version together, so fabr keeps each parameter it reads and
+reads it again once its copy is a day old. Parameters are kept in a directory of fabr's cache that
+only your user can read, apart from the build cache, and are deleted once no run has used them for
+30 days. They are kept per account, profile and region, so two profiles that read the same name
+don't share a value.
+
+A parameter read by version (`@aws:ssm:/app/ssl/ca.key:7`) is never read again, since a version's
+value can't change. Once fabr has it, a build needs neither SSM nor AWS credentials to use it.
 
 To pick up a new version sooner, run with `--refresh`, which reads every parameter the run uses
-again, however recently fabr last read it:
+again, however recently fabr last read it, apart from those read by version:
 
 ```sh
 fabr build --refresh certificates
 ```
 
-If SSM can't be reached when a parameter is read again, fabr uses the value it already has, with
-a warning:
+If SSM can't be reached when a parameter is read again, or you aren't signed in to AWS (no
+credentials, an SSO session that has expired, an expired token), fabr uses the value it already
+has, with a warning:
 
 ```
 warn:cannot refresh ssm:/app/ssl/ca.key (…); serving the cached copy
 ```
 
-A missing parameter or a refused request is never answered from the cache.
+So a developer needs to sign in only when there is no copy yet, or to pick up a new version. A
+missing parameter, or a request refused for any other reason (such as access denied), is never
+answered from the cache.
 
 In [watch mode](/guides/watch/), nothing tells fabr that a parameter changed; restart with
 `--refresh` to pick the change up.
@@ -145,6 +155,5 @@ command's standard input (`< ca.key`). Pass it to the command as a file argument
 
 ## Not supported
 
-- Reading a particular version or label of a parameter (`/app/key:3`, `/app/key:prod`).
 - Reading every parameter under a path, and listing parameters with `fabr ls`.
 - Publishing parameters with `sync`.

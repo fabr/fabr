@@ -345,7 +345,9 @@ contacts `api.osv.dev`.
 - **A download that fails transiently is retried** twice, after one second and then four: a
   connection that is refused, drops or times out, or a `408`, `429` or `5xx` response. Any other
   failure, or a third failure, fails the build; run it again, and what was downloaded before the
-  failure is kept.
+  failure is kept. Where fabr holds a copy and is only checking it again, it uses that copy with a
+  warning instead, both for these failures and where it cannot sign in (a `401`, or no usable AWS
+  credentials).
 
 ## Build steps and the environment
 

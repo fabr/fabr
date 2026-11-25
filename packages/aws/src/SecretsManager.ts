@@ -78,8 +78,10 @@ export interface ISecretValue {
  * The Secrets Manager secrets of an account (`@aws:secretsmanager`). A name in
  * it is a secret's (`prod/db/password`), whose current value is read as one
  * secret file ({@link SecretFile}) named as the secret is, without a leading
- * `/`. What is read is kept in the cache's secrets store, and read again once
- * it is a day old or under `--refresh`.
+ * `/`, or a secret's with a version ID (`prod/db/password:<VersionId>`), whose
+ * value at that version is read so. What is read is kept in the cache's
+ * secrets store, and read again once it is a day old or under `--refresh`; a
+ * version is never read again once held.
  */
 export class SecretsManagerSecrets implements Repository, RepositoryLookup {
   /** The name the service is written as (`@aws:secretsmanager`), for messages. */
@@ -89,7 +91,11 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
     this.written = `${account.name}:${SECRETS_MANAGER_SERVICE}`;
   }
 
-  /** Vend the reference for the secret `name` names, which must be literal. */
+  /**
+   * Vend the reference for the secret `name` names, which must be literal: the
+   * secret, or one version of it by its version ID, as the reference's version
+   * constraint.
+   */
   public getRepositoryRef(name: Name): RepositoryRef {
     const written = `${this.written}:${name.toDisplayString()}`;
     if (name.getMarker() !== undefined) {
@@ -97,14 +103,15 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
         "write the reference without the marker"
       );
     }
-    const secret = name.getLiteralPrefix();
+    const [, secret, version] = /^(.*?)(?::([A-Za-z0-9-]{32,64}))?$/.exec(name.getLiteralPrefix())!;
     if (!name.isSimpleName() || !/^[A-Za-z0-9/_+=.@-]+$/.test(secret) || secret.endsWith("/") || secret.includes("//")) {
       throw new FabrError(`'${written}' does not name a Secrets Manager secret`).withHelp(
-        `name the secret as it is, without a pattern, as in '${this.written}:prod/db/password'`
+        `name the secret as it is, without a pattern, as in '${this.written}:prod/db/password', ` +
+          `or one version of it by its version ID, as in '${this.written}:prod/db/password:a1b2c3d4-5678-90ab-cdef-EXAMPLE11111'`
       );
     }
-    return new RepositoryRef(this, { name: secret, versionConstraint: undefined }).find(
-      name.substring(secret.startsWith("/") ? 1 : 0)
+    return new RepositoryRef(this, { name: secret, versionConstraint: version }).find(
+      name.substring(secret.startsWith("/") ? 1 : 0, version === undefined ? undefined : secret.length)
     );
   }
 
@@ -112,42 +119,55 @@ export class SecretsManagerSecrets implements Repository, RepositoryLookup {
     throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toDisplayString()}')`);
   }
 
-  /** Read the current value of the secret `reference` names, as one secret file named as the secret is, without a leading `/`. */
+  /**
+   * Read the value of the secret `reference` names, as one secret file named
+   * as the secret is, without a leading `/`: at the version its version
+   * constraint names, which is never read again once held, else the current
+   * value.
+   */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
     const secret = reference.name;
+    const version = reference.versionConstraint;
+    const selector = version === undefined ? secret : `${secret}:${version}`;
     const { context, credentials, region, endpoint, name } = this.account;
-    const request = secretValueRequest(secret, region, endpoint);
-    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${secret}`.toUnmaskedString();
+    const request = secretValueRequest(secret, region, endpoint, version);
+    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${selector}`.toUnmaskedString();
     return context
-      .fetchSecret(cacheKey, SECRET_TAG, `secretsmanager:${secret}`, () => this.fetch(request, secret), {
-        resource: "secret",
-        role: "content",
-      })
+      .fetchSecret(
+        cacheKey,
+        SECRET_TAG,
+        `secretsmanager:${selector}`,
+        () => this.fetch(request, selector, version !== undefined),
+        { resource: "secret", role: "content" },
+        version !== undefined
+      )
       .then(record => {
         const origin: ISecretOrigin = { kind: SECRETS_MANAGER_PROVENANCE, account: name, secret };
-        const file = new SecretFile(`${this.written}:${secret}`, record.identity, record.value);
+        const file = new SecretFile(`${this.written}:${selector}`, record.identity, record.value);
         return new FileSet(new Map([[secret.replace(/^\//, ""), file]])).withOrigin(origin);
       });
   }
 
-  /** Fetch the current value of `secret` with `GetSecretValue`. */
-  private fetch(request: IServiceRequest & { readonly body: string }, secret: string): Computable<ISecretRecord> {
-    return postServiceRequest(this.account, SECRETS_MANAGER_SERVICE, request, text => refusal(text, secret, this.account.name)).then(
-      body => {
-        const found = parseJson(body, `the answer from ${shownUrl(requestUrl(request))}`, toSecretValue);
-        return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
-      }
-    );
+  /** Fetch the value `request` asks `GetSecretValue` for: of `secret`, at a version where `versioned` (`secret` is then `<name>:<VersionId>`). */
+  private fetch(request: IServiceRequest & { readonly body: string }, secret: string, versioned: boolean): Computable<ISecretRecord> {
+    return postServiceRequest(this.account, SECRETS_MANAGER_SERVICE, request, text =>
+      refusal(text, secret, versioned, this.account.name)
+    ).then(body => {
+      const found = parseJson(body, `the answer from ${shownUrl(requestUrl(request))}`, toSecretValue);
+      return { identity: `${found.arn} ${found.versionId}`, secret: true, value: found.value };
+    });
   }
 }
 
-/** Make the `GetSecretValue` request for `secret`'s current value: to `endpoint` where there is one, else to Secrets Manager in `region`. */
+/** Make the `GetSecretValue` request for `secret`'s value, at `version` (a version ID) where given, else its current one: to `endpoint` where there is one, else to Secrets Manager in `region`. */
 export function secretValueRequest(
   secret: string,
   region: string,
-  endpoint?: SecureString
+  endpoint?: SecureString,
+  version?: string
 ): IServiceRequest & { readonly body: string } {
-  return jsonRequest("secretsmanager.GetSecretValue", { SecretId: secret }, getServiceUrl("secretsmanager", region), endpoint);
+  const body = version === undefined ? { SecretId: secret } : { SecretId: secret, VersionId: version };
+  return jsonRequest("secretsmanager.GetSecretValue", body, getServiceUrl("secretsmanager", region), endpoint);
 }
 
 /** Read a `GetSecretValue` answer. Throws where it holds no value. */
@@ -164,11 +184,11 @@ export function toSecretValue(json: unknown): ISecretValue {
   throw new FabrError("the answer holds no secret value");
 }
 
-/** Make the error for Secrets Manager refusing to read `secret`, from its error document `text`. */
-function refusal(text: string, secret: string, account: string): FabrError {
+/** Make the error for Secrets Manager refusing to read `secret` (`<name>:<VersionId>` where `versioned`), from its error document `text`. */
+function refusal(text: string, secret: string, versioned: boolean, account: string): FabrError {
   const error = serviceErrorOf(text);
   if (error.type === "ResourceNotFoundException") {
-    return new FabrError(`Secrets Manager has no secret '${secret}' in ${account}'s account and region`);
+    return new FabrError(`Secrets Manager has no secret${versioned ? " version" : ""} '${secret}' in ${account}'s account and region`);
   }
   const refused = new FabrError(`Secrets Manager refused to read '${secret}' (${describeServiceError(error)})`);
   return error.type === "AccessDeniedException"

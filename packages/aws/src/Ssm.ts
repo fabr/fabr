@@ -86,7 +86,8 @@ export interface IParameter {
  * parameter is, without its leading `/` (`app/db/password`). A `SecureString`
  * is a secret ({@link SecretFile}); any other parameter is ordinary content.
  * What is read is kept in the cache's secrets store, and read again once it is
- * a day old or under `--refresh`.
+ * a day old or under `--refresh`; a version (`/app/db/password:3`) is never
+ * read again once held.
  */
 export class SsmParameters implements Repository, RepositoryLookup {
   /** The name the service is written as (`@aws:ssm`), for messages. */
@@ -96,7 +97,11 @@ export class SsmParameters implements Repository, RepositoryLookup {
     this.written = `${account.name}:${SSM_SERVICE}`;
   }
 
-  /** Vend the reference for the parameter `name` names, which must be literal. */
+  /**
+   * Vend the reference for the parameter `name` names, which must be literal:
+   * the parameter (`/app/ssl/ca.key`), or one version of it
+   * (`/app/ssl/ca.key:7`), as the reference's version constraint.
+   */
   public getRepositoryRef(name: Name): RepositoryRef {
     const written = `${this.written}:${name.toDisplayString()}`;
     if (name.getMarker() !== undefined) {
@@ -104,14 +109,20 @@ export class SsmParameters implements Repository, RepositoryLookup {
         "write the reference without the marker"
       );
     }
-    const parameter = name.getLiteralPrefix();
-    if (!/^\/?[A-Za-z0-9_.\-/]+$/.test(parameter) || parameter.endsWith("/") || parameter.includes("//")) {
+    const [, parameter, version] = /^(.*?)(?::([1-9][0-9]*))?$/.exec(name.getLiteralPrefix())!;
+    if (
+      !/^\/?[A-Za-z0-9_.\-/]+$/.test(parameter) ||
+      parameter.endsWith("/") ||
+      parameter.includes("//") ||
+      (version !== undefined && name.hasGlob())
+    ) {
       throw new FabrError(`'${written}' does not name an SSM parameter`).withHelp(
-        `name the parameter as it is, without a pattern, as in '${this.written}:/app/db/password'`
+        `name the parameter as it is, without a pattern, as in '${this.written}:/app/db/password', ` +
+          `or one version of it, as in '${this.written}:/app/db/password:3'`
       );
     }
-    return new RepositoryRef(this, { name: parameter, versionConstraint: undefined }).find(
-      name.substring(parameter.startsWith("/") ? 1 : 0)
+    return new RepositoryRef(this, { name: parameter, versionConstraint: version }).find(
+      name.substring(parameter.startsWith("/") ? 1 : 0, version === undefined ? undefined : parameter.length)
     );
   }
 
@@ -119,20 +130,30 @@ export class SsmParameters implements Repository, RepositoryLookup {
     throw new FabrError(`${this.written} cannot be published to (cannot sync to '${this.written}:${name.toDisplayString()}')`);
   }
 
-  /** Read the parameter `reference` names, as one file named as the parameter is, without its leading `/`. */
+  /**
+   * Read the parameter `reference` names, as one file named as the parameter
+   * is, without its leading `/`: the version its version constraint names,
+   * which is never read again once held, else the latest.
+   */
   public resolve(reference: RepositoryRef): Computable<FileSet> {
     const parameter = reference.name;
+    const version = reference.versionConstraint;
+    const selector = version === undefined ? parameter : `${parameter}:${version}`;
     const { context, credentials, region, endpoint, name } = this.account;
-    const request = parameterRequest(parameter, region, endpoint);
-    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${parameter}`.toUnmaskedString();
+    const request = parameterRequest(selector, region, endpoint);
+    const cacheKey = secure`${name} ${credentials} ${region} ${endpoint ?? ""} ${selector}`.toUnmaskedString();
     return context
-      .fetchSecret(cacheKey, PARAMETER_TAG, `ssm:${parameter}`, () => this.fetch(request, parameter), {
-        resource: "parameter",
-        role: "content",
-      })
+      .fetchSecret(
+        cacheKey,
+        PARAMETER_TAG,
+        `ssm:${selector}`,
+        () => this.fetch(request, selector),
+        { resource: "parameter", role: "content" },
+        version !== undefined
+      )
       .then(record => {
         const file = record.secret
-          ? new SecretFile(`${this.written}:${parameter}`, record.identity, record.value)
+          ? new SecretFile(`${this.written}:${selector}`, record.identity, record.value)
           : new MemoryFile(record.value);
         const origin: ISsmOrigin = { kind: SSM_PROVENANCE, account: name, parameter, version: versionOf(record.identity) };
         return new FileSet(new Map([[parameter.replace(/^\//, ""), file]])).withOrigin(origin);
@@ -152,7 +173,7 @@ export class SsmParameters implements Repository, RepositoryLookup {
   }
 }
 
-/** Make the `GetParameter` request for `parameter`, decrypted: to `endpoint` where there is one, else to SSM in `region`. */
+/** Make the `GetParameter` request for `parameter` (a name, or `<name>:<version>`), decrypted: to `endpoint` where there is one, else to SSM in `region`. */
 export function parameterRequest(
   parameter: string,
   region: string,
@@ -182,11 +203,14 @@ function versionOf(identity: string): number {
   return Number(identity.substring(identity.lastIndexOf(":") + 1));
 }
 
-/** Make the error for SSM refusing to read `parameter`, from its error document `text`. */
+/** Make the error for SSM refusing to read `parameter` (a name, or `<name>:<version>`), from its error document `text`. */
 function refusal(text: string, parameter: string, account: string): FabrError {
   const error = serviceErrorOf(text);
   if (error.type === "ParameterNotFound") {
     return new FabrError(`SSM has no parameter '${parameter}' in ${account}'s account and region`);
+  }
+  if (error.type === "ParameterVersionNotFound") {
+    return new FabrError(`SSM has no parameter version '${parameter}' in ${account}'s account and region`);
   }
   const refused = new FabrError(`SSM refused to read '${parameter}' (${describeServiceError(error)})`);
   return error.type === "AccessDeniedException"

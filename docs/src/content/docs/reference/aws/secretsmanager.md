@@ -26,7 +26,8 @@ LocalStack or ministack.
 | With the AWS CLI | In fabr |
 |---|---|
 | `aws secretsmanager get-secret-value --secret-id prod/db/password` | A reference to the secret, `@aws:secretsmanager:prod/db/password`, as a build input; or `fabr cat @aws:secretsmanager:prod/db/password`. |
-| `--version-id`, `--version-stage AWSPREVIOUS` | Not supported: fabr reads the secret's current version (`AWSCURRENT`). |
+| `--version-id a1b2c3d4-5678-90ab-cdef-EXAMPLE11111` | `@aws:secretsmanager:prod/db/password:a1b2c3d4-5678-90ab-cdef-EXAMPLE11111`. |
+| `--version-stage AWSPREVIOUS` | Not supported: a staging label moves from version to version, so name the version ID. |
 | `aws secretsmanager list-secrets` | Not supported: name each secret. |
 
 ## Naming secrets
@@ -37,6 +38,8 @@ A reference to Secrets Manager is the account, the service, then the secret's na
 @aws:secretsmanager:prod/db/password             # the file prod/db/password
 @aws:secretsmanager:prod/db/password -> db.pw    # the file db.pw
 @aws:secretsmanager:'region=eu'                  # a name with =, quoted
+@aws:secretsmanager:prod/db/password:a1b2c3d4-5678-90ab-cdef-EXAMPLE11111
+                                                 # that version, the file prod/db/password
 ```
 
 The secret is read as one file, named as the secret is (without a leading `/`, where it has one).
@@ -45,7 +48,10 @@ Write `-> name` to give it another name, as for any
 pattern such as `@aws:secretsmanager:prod/*` is refused. Secrets Manager allows `=` in a name,
 which means something else in a fabr name, so a name containing it is written in quotes.
 
-The file holds the secret's current value: its text for a secret stored as text, or its bytes for a
+A version is named by its version ID, as `aws secretsmanager list-secret-version-ids` lists them.
+Without one, the file holds the secret's current value (`AWSCURRENT`).
+
+The file holds the secret's value: its text for a secret stored as text, or its bytes for a
 binary secret. A secret stored as JSON key/value pairs is the whole JSON document; fabr doesn't pick
 out a single key.
 
@@ -65,8 +71,12 @@ Every value read from Secrets Manager is a secret, handled as a
 
 ## How secrets are cached
 
-fabr keeps each secret it reads for a day, in a directory of its cache that only your user can read,
-and reads it again after that. Secrets are kept per account, profile and region.
+fabr keeps each secret it reads in a directory of its cache that only your user can read, and reads
+it again once its copy is a day old. A secret no run has used for 30 days is deleted. Secrets are
+kept per account, profile and region.
+
+A secret read by version ID is never read again, since a version's value can't change. Once fabr
+has it, a build needs neither Secrets Manager nor AWS credentials to use it, even with `--refresh`.
 
 When Secrets Manager rotates a secret, the previous version normally stays valid until the next
 rotation, so a value up to a day old still works unless the secret rotates more often than daily.
@@ -76,8 +86,10 @@ To read every secret again now, run with `--refresh`:
 fabr build --refresh encrypted
 ```
 
-If Secrets Manager can't be reached when a secret is read again, fabr uses the value it already
-has, with a warning. A missing secret or a refused request is never answered from the cache.
+If Secrets Manager can't be reached when a secret is read again, or you aren't signed in to AWS (no
+credentials, an SSO session that has expired, an expired token), fabr uses the value it already
+has, with a warning. A missing secret, or a request refused for any other reason, is never
+answered from the cache.
 
 In [watch mode](/guides/watch/), nothing tells fabr that a secret changed; restart with `--refresh`
 to pick the change up.
@@ -129,7 +141,6 @@ command's standard input (`< data-key`). Pass it to the command as a file argume
 
 ## Not supported
 
-- Reading a particular version or stage of a secret.
 - Reading one key of a JSON secret.
 - Listing secrets with `fabr ls`.
 - Creating or updating secrets with `sync`.

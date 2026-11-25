@@ -11,6 +11,11 @@ together and share a version number.
 - Repair damaged cache entries when encountered.
 - Performance optimizations.
 
+@fabr-build/aws
+
+- Hold secrets for the same lifetime as other fetches
+- Add support for explicit versions of ssm + secretsmanager data.
+
 @fabr-build/js
 
 - Jest jsdom compatibility fixes.

@@ -29,14 +29,15 @@ import {
   IAuthChallenge,
   IRequestHead,
   isJsonObject,
+  NoCredentialError,
   parseJson,
   RenewableToken,
   SecureString,
   sendRequest,
   shownUrl,
 } from "@fabr-build/core";
-import { describeServiceError, jsonRequest, serviceErrorOf } from "./JsonProtocol";
-import { getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
+import { describeServiceError, isCredentialRefusal, jsonRequest, serviceErrorOf } from "./JsonProtocol";
+import { CREDENTIALS_HELP, getServiceUrl, IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
 /** The name of the ECR service under an account. */
@@ -79,9 +80,13 @@ export class EcrSignIn implements Credential {
       .then(headers => sendRequest(url, { method: "POST", headers, body: request.body }))
       .then(response => {
         if (response.statusCode !== 200) {
-          throw new FabrError(
-            `ECR refused a registry token (${response.statusCode}: ${describeServiceError(serviceErrorOf(response.body.toString("utf8")))})`
-          ).withHelp("signing in to ECR needs the ecr:GetAuthorizationToken permission");
+          const error = serviceErrorOf(response.body.toString("utf8"));
+          if (isCredentialRefusal(error)) {
+            throw new NoCredentialError(`ECR refused the credential (${describeServiceError(error)})`).withHelp(CREDENTIALS_HELP);
+          }
+          throw new FabrError(`ECR refused a registry token (${response.statusCode}: ${describeServiceError(error)})`).withHelp(
+            "signing in to ECR needs the ecr:GetAuthorizationToken permission"
+          );
         }
         return parseJson(response.body, `token from ${shownUrl(url)}`, toEcrToken);
       });

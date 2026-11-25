@@ -618,31 +618,36 @@ export class Name {
   }
 
   /**
-   * @return the tail of this name from `start`, an offset into its written text
-   * ({@link toBaseString}), with the rename target and override marker but not
-   * the constraints. Used to split a reference into what it names and the
-   * projection after it: the rename belongs to the projection, and the
-   * constraints to what they constrain. Throws where `start` falls inside a
-   * part that is not a literal (a `:` or `/` boundary is always in one).
+   * @return the part of this name from `start` up to `end` (the whole tail
+   * where omitted), offsets into its written text ({@link toBaseString}), with
+   * the rename target and override marker but not the constraints. Used to
+   * split a reference into what it names and the projection after it: the
+   * rename belongs to the projection, and the constraints to what they
+   * constrain. Throws where `start` or `end` falls inside a part that is not a
+   * literal (a `:` or `/` boundary is always in one).
    */
-  public substring(start: number): Name {
+  public substring(start: number, end?: number): Name {
     const parts: NamePart[] = [];
     let offset = 0;
     for (const part of this.parts) {
-      const end = offset + Name.renderPart(part, false).length;
-      if (end <= start) {
-        offset = end;
+      const partEnd = offset + Name.renderPart(part, false).length;
+      if (partEnd <= start || (end !== undefined && offset >= end)) {
+        offset = partEnd;
         continue;
       }
-      if (parts.length === 0 && start > offset) {
+      const from = Math.max(start - offset, 0);
+      const to = end === undefined || end >= partEnd ? undefined : end - offset;
+      if (from > 0 || to !== undefined) {
         if (part.kind !== NamePartKind.Literal) {
-          throw new FabrError(`internal: '${this.toDisplayString()}' cannot be split inside a pattern (at offset ${start})`);
+          throw new FabrError(
+            `internal: '${this.toDisplayString()}' cannot be split inside a pattern (at offset ${from > 0 ? start : end})`
+          );
         }
-        parts.push(sliceLiteral(part, start - offset));
+        parts.push(sliceLiteral(part, from, to));
       } else {
         parts.push(part);
       }
-      offset = end;
+      offset = partEnd;
     }
     return new Name(parts, [], this.renameTo, this.marked);
   }

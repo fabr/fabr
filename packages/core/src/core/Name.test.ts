@@ -485,6 +485,26 @@ describe("Name", () => {
     });
   });
 
+  describe("substring", () => {
+    it("takes the text between two offsets, keeping the rename target", () => {
+      const name = new NameBuilder().appendLiteralString("/app/ssl/ca.key:7").name().withRenameTo(Name.fromLiteral("ca.key"));
+      const taken = name.substring(1, "/app/ssl/ca.key".length);
+      expect(taken.toBaseString()).to.equal("app/ssl/ca.key");
+      expect(taken.getRenameTo()?.toUnmaskedString()).to.equal("ca.key");
+    });
+
+    it("takes the tail where no end is given, and keeps whole parts between the offsets", () => {
+      const name = new NameBuilder().appendLiteralString("lib:a/").appendGlobMetachars("*").appendLiteralString(".js:x").name();
+      expect(name.substring(4).toGlobString()).to.equal("a/*.js:x");
+      expect(name.substring(4, "lib:a/*.js".length).toGlobString()).to.equal("a/*.js");
+    });
+
+    it("refuses to split a pattern", () => {
+      const name = new NameBuilder().appendLiteralString("a").appendGlobMetachars("**").name();
+      expect(() => name.substring(0, 2)).to.throw(/cannot be split inside a pattern/);
+    });
+  });
+
   /* Two renderings, and which one a caller wants. `toString` is the name's TEXT
    * (what it denotes as a value, and what to show a user); `toGlobString` is the
    * pattern a matcher compiles, and — being lossless — the name's identity. */

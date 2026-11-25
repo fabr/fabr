@@ -26,6 +26,7 @@ import {
   ISecretRecord,
   MemoryFile,
   NamespaceRef,
+  NoCredentialError,
   parseName,
   RepositoryRef,
   SecretFile,
@@ -51,6 +52,8 @@ interface IFakeParameter {
 
 /** The parameter whose every read is answered as throttled. */
 const THROTTLED = "/app/throttled";
+/** The parameter whose every read is answered as signed with an expired token. */
+const EXPIRED = "/app/expired";
 
 function startSsm(parameters: Record<string, IFakeParameter>): Promise<IFakeSsm> {
   const requests: IFakeSsm["requests"] = [];
@@ -60,16 +63,29 @@ function startSsm(parameters: Record<string, IFakeParameter>): Promise<IFakeSsm>
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
       requests.push({ target: req.headers["x-amz-target"] as string | undefined, body, authorization: req.headers.authorization });
-      const { Name } = JSON.parse(body) as { Name: string };
+      const { Name: selector } = JSON.parse(body) as { Name: string };
+      const [, Name, version] = /^(.*?)(?::([0-9]+))?$/.exec(selector)!;
       if (Name === THROTTLED) {
         res
           .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
           .end(JSON.stringify({ __type: "com.amazonaws.ssm#ThrottlingException", message: "Rate exceeded" }));
         return;
       }
+      if (Name === EXPIRED) {
+        res
+          .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
+          .end(JSON.stringify({ __type: "ExpiredTokenException", message: "The security token included in the request is expired" }));
+        return;
+      }
       const found = parameters[Name];
       if (found === undefined) {
         res.writeHead(400, { "content-type": "application/x-amz-json-1.1" }).end(JSON.stringify({ __type: "ParameterNotFound" }));
+        return;
+      }
+      if (version !== undefined && Number(version) !== found.version) {
+        res
+          .writeHead(400, { "content-type": "application/x-amz-json-1.1" })
+          .end(JSON.stringify({ __type: "ParameterVersionNotFound" }));
         return;
       }
       res.writeHead(200, { "content-type": "application/x-amz-json-1.1" }).end(
@@ -96,12 +112,19 @@ function startSsm(parameters: Record<string, IFakeParameter>): Promise<IFakeSsm>
   );
 }
 
-/** A TargetContext whose `fetchSecret` fetches every time, with no cache, recording each cache key. */
+/** A TargetContext whose `fetchSecret` fetches every time, with no cache, recording each cache key, marked where it is asked to keep the record as immutable. */
 function fetchingContext(keys: string[]): TargetContext {
   return {
     name: "@aws",
-    fetchSecret: (cacheKey: string, _tag: string, _url: string, fetch: () => Computable<ISecretRecord>) => {
-      keys.push(cacheKey);
+    fetchSecret: (
+      cacheKey: string,
+      _tag: string,
+      _url: string,
+      fetch: () => Computable<ISecretRecord>,
+      _report: unknown,
+      immutable = false
+    ) => {
+      keys.push(immutable ? `${cacheKey} (immutable)` : cacheKey);
       return fetch();
     },
   } as unknown as TargetContext;
@@ -191,6 +214,34 @@ describe("the SSM parameters of an AWS account", () => {
     expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${ssm.url} /app/ssl/ca.key`]);
   });
 
+  it("reads one version of a parameter, named as the parameter is, and keeps it as immutable", async () => {
+    const keys: string[] = [];
+    const files = await read(accountAt(ssm, keys), "/app/ssl/ca.key:7");
+    expect([...files.keys()]).to.deep.equal(["app/ssl/ca.key"]);
+    expect((files.get("app/ssl/ca.key") as SecretFile).getDisplayName()).to.equal("@aws:ssm:/app/ssl/ca.key:7");
+    expect(JSON.parse(ssm.requests[0].body)).to.deep.equal({ Name: "/app/ssl/ca.key:7", WithDecryption: true });
+    expect(keys).to.deep.equal([`@aws profile:default us-east-1 ${ssm.url} /app/ssl/ca.key:7 (immutable)`]);
+  });
+
+  it("selects a version's file through the reference's projection, renamed where it says so", async () => {
+    const ref = await refOf(accountAt(ssm), "/app/ssl/ca.key:7 -> ca.key");
+    expect(ref.name).to.equal("/app/ssl/ca.key");
+    expect(ref.versionConstraint).to.equal("7");
+    const files = await (ref.source as SsmParameters).resolve(ref);
+    const projected = await files.find(ref.projections[0].pattern);
+    expect([...projected].map(([name]) => name)).to.deep.equal(["ca.key"]);
+  });
+
+  it("refuses a version SSM does not have", async () => {
+    const err = await failureOf(read(accountAt(ssm), "/app/ssl/ca.key:3"));
+    expect(err?.message).to.equal("SSM has no parameter version '/app/ssl/ca.key:3' in @aws's account and region");
+  });
+
+  it("refuses a version that is not a positive number", async () => {
+    const err = await failureOf(refOf(accountAt(ssm), "/app/ssl/ca.key:0"));
+    expect(err?.message).to.equal("'@aws:ssm:/app/ssl/ca.key:0' does not name an SSM parameter");
+  });
+
   it("reads a String as ordinary content", async () => {
     const files = await read(accountAt(ssm), "/app/region");
     const file = files.get("app/region");
@@ -207,6 +258,14 @@ describe("the SSM parameters of an AWS account", () => {
     const err = await failureOf(read(accountAt(ssm), THROTTLED));
     expect(err).to.be.instanceOf(HttpStatusError);
     expect((err as HttpStatusError).statusCode).to.equal(429);
+  });
+
+  it("answers a read signed with an expired token as having no credential", async () => {
+    const err = await failureOf(read(accountAt(ssm), EXPIRED));
+    expect(err).to.be.instanceOf(NoCredentialError);
+    expect(err?.message).to.equal(
+      "AWS refused the credential for ssm (ExpiredTokenException: The security token included in the request is expired)"
+    );
   });
 
   it("shows an endpoint written as an environment variable as written where a read fails", async () => {

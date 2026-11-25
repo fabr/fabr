@@ -34,7 +34,15 @@ import {
   MINIMUM_FRESHNESS_MS,
   ownerName,
 } from "./BuildCache";
-import { cacheDamageIn, CacheDamagedError, FabrError, HttpStatusError, MultiError, toleratingFailure } from "./Errors";
+import {
+  cacheDamageIn,
+  CacheDamagedError,
+  FabrError,
+  HttpStatusError,
+  MultiError,
+  NoCredentialError,
+  toleratingFailure,
+} from "./Errors";
 import { PackageFileSet, PackageGraphBuilder } from "./PackageFileSet";
 import { ActionFileInputs, BuildAction, BuildResult, IBuildActionDefinition, preciseActionKey } from "./BuildAction";
 import { narrowDeps, purgeCache } from "./BuildCache";
@@ -2042,7 +2050,7 @@ describe("BuildCache non-immutable fetches", () => {
     expect(second["servedManifests"].has(hashString(`fetch:test:1 ${origin.url}`))).to.equal(true);
   });
 
-  it("propagates a definite 4xx on revalidation rather than serving stale (auth/not-found)", async () => {
+  it("propagates a definite 4xx on revalidation rather than serving stale (forbidden/not-found)", async () => {
     const warnings: Record<string, unknown>[] = [];
     const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
     const fetchLogged = (): Promise<string> =>
@@ -2054,7 +2062,7 @@ describe("BuildCache non-immutable fetches", () => {
     origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
     await fetchLogged();
     clock += STALE;
-    origin.respond(serve(403, {})); /* expired token: a definite answer, not a blip */
+    origin.respond(serve(403, {})); /* forbidden: a definite answer, not a blip */
     let failure: Error | undefined;
     try {
       await fetchLogged();
@@ -2063,6 +2071,23 @@ describe("BuildCache non-immutable fetches", () => {
     }
     expect(failure).to.be.an("error");
     expect(warnings).to.have.lengthOf(0); /* not degraded to a stale-serve warning */
+  });
+
+  it("serves the stale copy where the request cannot be signed in (401)", async () => {
+    const warnings: Record<string, unknown>[] = [];
+    const logging = new BuildCache(root, { log: (_diagnostic, params) => warnings.push(params) }, () => clock);
+    const fetchLogged = (): Promise<string> =>
+      toPromise(
+        logging
+          .getOrFetch(origin.url, "test:1", requestOf(origin.url, store), () => UNTRACKED, { immutable: false })
+          .then(files => files.readFile("doc.txt"))
+      );
+    origin.respond(serve(200, { "cache-control": "max-age=300" }, "one"));
+    await fetchLogged();
+    clock += STALE;
+    origin.respond(serve(401, {}));
+    expect(await fetchLogged()).to.equal("one");
+    expect(warnings).to.have.lengthOf(1);
   });
 
   it("serves the stale copy on a retry-later 4xx (429 rate-limited)", async () => {
@@ -2381,6 +2406,19 @@ describe("BuildCache secrets store", () => {
     expect(fetched).to.equal(2);
   });
 
+  it("never fetches an immutable record again once held, past its day or under refresh", async () => {
+    const getImmutable = (cache: BuildCache, fetch: () => Computable<ISecretRecord>): Promise<string> =>
+      toPromise(
+        cache
+          .getOrFetchSecret("param:1", "test:1", "ssm:param:1", fetch, true)
+          .then(record => `${record.identity}=${record.value.toString()}`)
+      );
+    expect(await getImmutable(new BuildCache(root, NULL_LOG, () => clock), answer("one"))).to.equal("param:1=one");
+    const later = new BuildCache(root, NULL_LOG, () => clock + 20 * MINIMUM_FRESHNESS_MS, true);
+    expect(await getImmutable(later, answer("two", 2))).to.equal("param:1=one");
+    expect(fetched).to.equal(1);
+  });
+
   it("fetches a fresh record again once per run under refresh", async () => {
     await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
     const refreshing = new BuildCache(root, NULL_LOG, () => clock, true);
@@ -2389,12 +2427,17 @@ describe("BuildCache secrets store", () => {
     expect(fetched).to.equal(2);
   });
 
-  it("serves the held record where fetching it fails transiently, and not where it is refused", async () => {
+  it("serves the held record where fetching it fails transiently or cannot sign in, and not where it is refused", async () => {
     await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
     const warnings: unknown[] = [];
     const stale = new BuildCache(root, { log: (_diag, data) => warnings.push(data) } as Log, () => clock + 2 * MINIMUM_FRESHNESS_MS);
     expect(await get(stale, () => Computable.reject(new HttpStatusError(503, "http://ssm")))).to.equal("param:1=one");
     expect(warnings).to.deep.equal([{ url: "ssm:param", reason: "503 Service Unavailable: http://ssm" }]);
+    const signedOut = new BuildCache(root, NULL_LOG, () => clock + 20 * MINIMUM_FRESHNESS_MS);
+    const noCredential = new FabrError("cannot sign", new NoCredentialError("the SSO session has expired"));
+    expect(await get(signedOut, () => Computable.reject(noCredential))).to.equal("param:1=one");
+    const unauthorized = new BuildCache(root, NULL_LOG, () => clock + 20 * MINIMUM_FRESHNESS_MS);
+    expect(await get(unauthorized, () => Computable.reject(new HttpStatusError(401, "http://ssm")))).to.equal("param:1=one");
     const refused = await toPromise(
       stale.getOrFetchSecret("param", "test:1", "ssm:param", () => Computable.reject(new Error("no such parameter")))
     ).catch((err: Error) => err.message);
@@ -2419,10 +2462,17 @@ describe("BuildCache secrets store", () => {
     expect(refusals).to.equal(1);
   });
 
-  it("trims a record past its day", async () => {
+  it("keeps a record past its freshness", async () => {
     await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
     const later = new BuildCache(root, NULL_LOG, () => clock + 2 * MINIMUM_FRESHNESS_MS + 1_000);
     await toPromise(later.maybeCollectGarbage());
+    expect(fs.readdirSync(path.join(root, "secrets"))).to.have.length(1);
+  });
+
+  it("trims a record unused for 30 days", async () => {
+    await get(new BuildCache(root, NULL_LOG, () => clock), answer("one"));
+    const unused = new BuildCache(root, NULL_LOG, () => clock + 31 * MINIMUM_FRESHNESS_MS);
+    await toPromise(unused.maybeCollectGarbage());
     expect(fs.readdirSync(path.join(root, "secrets"))).to.deep.equal([]);
   });
 

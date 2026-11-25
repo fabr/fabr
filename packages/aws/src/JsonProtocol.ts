@@ -23,8 +23,18 @@
  * the error document a refusal answers with.
  */
 
-import { Computable, HttpStatusError, parseJson, SecureString, sendRequest, shownUrl, toJsonObject, urlJoin } from "@fabr-build/core";
-import { IServiceRequest, requestUrl } from "./Signing";
+import {
+  Computable,
+  HttpStatusError,
+  NoCredentialError,
+  parseJson,
+  SecureString,
+  sendRequest,
+  shownUrl,
+  toJsonObject,
+  urlJoin,
+} from "@fabr-build/core";
+import { CREDENTIALS_HELP, IServiceRequest, requestUrl } from "./Signing";
 import { IServiceSettings } from "./Types";
 
 /**
@@ -98,12 +108,21 @@ export function isThrottling(error: IServiceError): boolean {
   return error.type !== undefined && THROTTLING_ERRORS.has(error.type);
 }
 
+/** The error types with which AWS refuses a request signed with an expired or unknown credential. */
+const CREDENTIAL_ERRORS = new Set(["ExpiredToken", "ExpiredTokenException", "InvalidClientTokenId", "UnrecognizedClientException"]);
+
+/** @return true if `error` says the request's credential has expired or is unknown, otherwise false. */
+export function isCredentialRefusal(error: IServiceError): boolean {
+  return error.type !== undefined && CREDENTIAL_ERRORS.has(error.type);
+}
+
 /**
  * Sign `request` for `service` and send it to its URL, resolving to the body of
  * a 200. A 5xx rejects with an `HttpStatusError` of that status, and a
  * throttling error (see {@link isThrottling}) with one of 429, both of which a
- * fetch retries as transient; any other answer rejects with `refuse` of its
- * text.
+ * fetch retries as transient; a credential refusal (see
+ * {@link isCredentialRefusal}), or no credential to sign with, with a
+ * `NoCredentialError`; any other answer rejects with `refuse` of its text.
  */
 export function postServiceRequest(
   settings: IServiceSettings,
@@ -121,9 +140,15 @@ export function postServiceRequest(
       }
       if (response.statusCode !== 200) {
         const text = response.body.toString("utf8");
+        const error = serviceErrorOf(text);
         /* AWS answers throttling with a 400: reject it as a 429, "too many requests". */
-        if (isThrottling(serviceErrorOf(text))) {
+        if (isThrottling(error)) {
           throw new HttpStatusError(429, shownUrl(url));
+        }
+        if (isCredentialRefusal(error)) {
+          throw new NoCredentialError(`AWS refused the credential for ${service} (${describeServiceError(error)})`).withHelp(
+            CREDENTIALS_HELP
+          );
         }
         throw refuse(text);
       }
