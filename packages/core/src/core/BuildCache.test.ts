@@ -2147,6 +2147,28 @@ describe("BuildCache non-immutable fetches", () => {
     expect(origin.requests).to.have.lengthOf(1);
   });
 
+  it("closes a response its content's processing failed without reading through", async () => {
+    /* A body left open holds its request's slot and connection. */
+    origin.respond((_req, res) => {
+      res.writeHead(200);
+      res.write(Buffer.alloc(4 * 1024 * 1024));
+    });
+    let body: Readable | undefined;
+    const refuse = (content: Readable): Computable<FileSet> => {
+      body = content;
+      return Computable.reject(new Error("invalid content"));
+    };
+    let failure: Error | undefined;
+    try {
+      await toPromise(cache.getOrFetch(origin.url, "test:1", requestOf(origin.url, refuse), () => UNTRACKED));
+    } catch (err) {
+      failure = err as Error;
+    }
+    expect(failure?.message).to.equal("invalid content");
+    await new Promise(resolve => setImmediate(resolve));
+    expect(body?.destroyed).to.equal(true);
+  });
+
   it("propagates a validation failure and keeps the previous entry standing", async () => {
     origin.respond(serve(200, { "cache-control": "max-age=300", etag: '"v1"' }, "one"));
     await fetchDoc({ immutable: false });

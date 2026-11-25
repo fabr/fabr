@@ -25,7 +25,7 @@ import { Readable, Writable } from "stream";
 import { StringDecoder } from "string_decoder";
 import { getSystemErrorMap } from "util";
 import { Computable } from "../core/Computable";
-import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine } from "../core/Errors";
+import { CommandFailedError, ExecutionError, FabrError, ICommandOutputLine, toError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
 import { secure, SecureString } from "../core/SecureString";
 import { registerProcess } from "./FabrSocket";
@@ -787,8 +787,9 @@ interface Capture {
  * for the first stage, in pipeline order, that exited non-zero or by signal,
  * carrying that stage's shown output; and with an ExecutionError where a
  * stage's executable cannot be found (before anything is spawned) or a stage
- * cannot be spawned. On a failure every stage's group is sent SIGTERM and
- * every capture is discarded.
+ * cannot be spawned, and with a capture's own error where it cannot be
+ * written. On a failure every stage's group is sent SIGTERM and every capture
+ * is discarded.
  */
 /* Take ONE slot for all the stages: they are pipe-wired and must run
  * together, and admitted separately a stage could wait behind its own
@@ -860,10 +861,13 @@ function pipelineUnbounded(
         afterSweeps(() => reject(err));
       }
     };
-    /* Open a capture handle for `name` and register it for finalize/discard. */
+    /* Open a capture handle for `name` and register it for finalize/discard.
+     * A capture that fails (a full disk) fails the run: its stage would
+     * otherwise block writing output nobody reads. */
     const capture = (name: string): Writable => {
       const handle = createOutput();
       captures.push({ name, handle });
+      handle.stream.on("error", err => fail(toError(err)));
       return handle.stream;
     };
 

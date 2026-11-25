@@ -20,7 +20,7 @@
 import * as http from "http";
 import { availableParallelism } from "os";
 import { URL } from "url";
-import { Readable, Transform } from "stream";
+import { finished, pipeline, Readable, Transform } from "stream";
 import type { Credential, IRequestHead } from "./Credential";
 import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici";
 import { Computable } from "./Computable";
@@ -52,7 +52,10 @@ const MAX_CONNECTIONS_PER_ORIGIN = 15;
  * (over HTTP/2 one socket carries many requests, so the socket limit does not
  * bound them); further requests queue until one ends. A request holds its slot
  * until its body has been read or discarded. Index reads get three per CPU
- * core, between 64 and 96 (pnpm's default).
+ * core, between 64 and 96 (pnpm's default). Keep half the content limit below
+ * {@link MAX_CONNECTIONS_PER_ORIGIN}: each relay ({@link relayUrl}) within an
+ * origin holds two content slots and a connection for its download while its
+ * upload waits for one.
  */
 const MAX_REQUESTS_PER_ORIGIN: Readonly<Record<FetchRole, number>> = {
   index: Math.min(96, Math.max(availableParallelism() * 3, 64)),
@@ -77,19 +80,44 @@ export type FetchRole = "content" | "index";
 /** The request limit of each role and origin, made on first use. */
 const admissions = new Map<string, Semaphore>();
 
-/**
- * Send a request to `urlstring`'s origin once it has a slot free for `role`,
- * and hold the slot until `send` calls the release it is handed: when the
- * response's body has been read, discarded or failed.
- */
-function admitted(urlstring: string, role: FetchRole, send: (release: () => void) => void): void {
-  const key = `${role} ${new URL(urlstring).origin}`;
+/** @return the key of the request limit of `role` at `urlstring`'s origin. */
+function admissionKey(urlstring: string, role: FetchRole): string {
+  return `${role} ${new URL(urlstring).origin}`;
+}
+
+/** @return the request limit `key` names, made on first use. */
+function admissionOf(key: string): Semaphore {
   let limit = admissions.get(key);
   if (limit === undefined) {
-    limit = new Semaphore(MAX_REQUESTS_PER_ORIGIN[role]);
+    limit = new Semaphore(MAX_REQUESTS_PER_ORIGIN[key.startsWith("index ") ? "index" : "content"]);
     admissions.set(key, limit);
   }
-  void limit.run(() => Computable.from<void>(done => send(() => done())));
+  return limit;
+}
+
+/**
+ * How a request takes its slot: called with the function that sends it, which
+ * is handed the release to call when the response's body has been read,
+ * discarded or failed.
+ */
+type Admission = (send: (release: () => void) => void) => void;
+
+/** @return the admission that sends a request to `urlstring`'s origin once it has a slot free for `role`, held until released. */
+function admitted(urlstring: string, role: FetchRole): Admission {
+  return send => void admissionOf(admissionKey(urlstring, role)).run(() => Computable.from<void>(done => send(() => done())));
+}
+
+/** The admission of a request whose slot its caller holds: sent at once. */
+const HELD: Admission = send => send(() => undefined);
+
+/**
+ * Run `work` holding a content slot for a request to `from`'s origin and one
+ * for a request to `to`'s, taken together where the two are one origin, and
+ * in the order of their keys otherwise.
+ */
+function admittedPair<T>(from: string, to: string, work: () => Computable<T>): Computable<T> {
+  const keys = [admissionKey(from, "content"), admissionKey(to, "content")].sort();
+  return keys[0] === keys[1] ? admissionOf(keys[0]).run(work, 2) : admissionOf(keys[0]).run(() => admissionOf(keys[1]).run(work));
 }
 
 /**
@@ -224,6 +252,11 @@ export interface HttpResponse {
  * in transport.
  */
 export function sendRequest(written: string | SecureString, request: HttpRequest): Computable<HttpResponse> {
+  return sendWith(undefined, written, request);
+}
+
+/** Send {@link sendRequest}'s request under `admission`, or as its role admits it where there is none. */
+function sendWith(admission: Admission | undefined, written: string | SecureString, request: HttpRequest): Computable<HttpResponse> {
   const { credential, method, headers, body } = request;
   const url = typeof written === "string" ? SecureString.of(written) : written;
   const urlstring = url.toUnmaskedString();
@@ -234,7 +267,7 @@ export function sendRequest(written: string | SecureString, request: HttpRequest
       method,
       urlstring,
       headers,
-      signed => send(urlstring, method, signed, body),
+      signed => send(urlstring, method, signed, body, admission ?? admitted(urlstring, "content")),
       response => (body instanceof Readable ? undefined : challengesOf(response.statusCode, response.headers))
     )
   );
@@ -281,7 +314,8 @@ function send(
   urlstring: string,
   method: string,
   headers: Record<string, string> | undefined,
-  body: HttpRequest["body"]
+  body: HttpRequest["body"],
+  admission: Admission
 ): Computable<HttpResponse> {
   return Computable.from<HttpResponse>((resolve, reject) => {
     const unsupported = unsupportedProtocol(urlstring);
@@ -289,7 +323,7 @@ function send(
       reject(unsupported);
       return;
     }
-    admitted(urlstring, "content", release => {
+    admission(release => {
       const fail = (err: unknown): void => {
         release();
         reject(toError(err));
@@ -351,7 +385,8 @@ function parseContentLength(value: string | string[] | undefined): number | unde
 /**
  * Pass `stream` through unchanged, calling `report` with the number of bytes
  * read so far as each chunk is read. An error on `stream` destroys the
- * returned stream with it.
+ * returned stream with it, and the returned stream closing before `stream`
+ * has ended destroys `stream`.
  */
 export function reportingProgress(stream: Readable, report: (bytes: number) => void): Readable {
   /* Count in a Transform, not a `data` listener: a listener switches the
@@ -365,8 +400,8 @@ export function reportingProgress(stream: Readable, report: (bytes: number) => v
       done(null, chunk);
     },
   });
-  stream.on("error", err => counter.destroy(err instanceof Error ? err : new FabrError(String(err))));
-  return stream.pipe(counter);
+  /* Each stream reports its own failure to whoever reads it. */
+  return pipeline(stream, counter, () => undefined);
 }
 
 /**
@@ -399,7 +434,7 @@ export function openUrlStream(
       "GET",
       url.toUnmaskedString(),
       headers,
-      signed => streamUrl(url, signed, now, role, digestHeader),
+      signed => streamUrl(url, signed, now, digestHeader, admitted(url.toUnmaskedString(), role)),
       () => undefined
     )
   );
@@ -410,8 +445,8 @@ function streamUrl(
   url: SecureString,
   headers: Record<string, string> | undefined,
   now: () => number,
-  role: FetchRole,
-  digestHeader: string | undefined
+  digestHeader: string | undefined,
+  admission: Admission
 ): Computable<UrlStreamResponse> {
   const urlstring = url.toUnmaskedString();
   const conditional = headers !== undefined && Object.keys(headers).some(name => /^if-(none-match|modified-since)$/i.test(name));
@@ -421,7 +456,7 @@ function streamUrl(
       reject(unsupported);
       return;
     }
-    admitted(urlstring, role, release => {
+    admission(release => {
       /* The dispatcher follows redirects, so this is the last hop's response. */
       httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(
         response => {
@@ -449,6 +484,95 @@ function streamUrl(
       );
     });
   });
+}
+
+/** The download a relay reads ({@link relayUrl}). */
+export interface RelaySource {
+  url: SecureString;
+  headers?: Record<string, string>;
+  /** What signs the download in, as {@link openUrlStream}'s does. */
+  credential?: Credential;
+}
+
+/** The request a relay sends its download in ({@link relayUrl}). */
+export interface RelayDestination {
+  url: SecureString;
+  method: string;
+  /** The request's headers, among them the body's length where the server needs it. */
+  headers?: Record<string, string>;
+  /** What signs the request in. It is asked once: a 401 stands, since the body cannot be sent twice. */
+  credential?: Credential;
+}
+
+/**
+ * Relay a download into an upload: send a GET for `source` and send its body,
+ * as it is read, as the body of the request to `destination`.
+ * @return the destination's response, whatever its status.
+ *
+ * Both requests are signed in first. The relay then holds a content slot at
+ * each origin, taken together, from the time its GET is sent until the
+ * destination's response is read, when the download is closed if it was not
+ * read through.
+ *
+ * Rejects as {@link openUrlStream} does where the download cannot be opened,
+ * and where the request to `destination` fails in transport.
+ */
+export function relayUrl(source: RelaySource, destination: RelayDestination): Computable<HttpResponse> {
+  const from = source.url.toUnmaskedString();
+  const to = destination.url.toUnmaskedString();
+  const relayed = (
+    uploadHeaders: Record<string, string> | undefined,
+    signed: Record<string, string> | undefined
+  ): Computable<HttpResponse> => {
+    try {
+      const unsupported = unsupportedProtocol(from) ?? unsupportedProtocol(to);
+      if (unsupported) {
+        return Computable.reject(unsupported);
+      }
+      return admittedPair(from, to, () =>
+        streamUrl(source.url, signed, Date.now, undefined, HELD).then(response => {
+          const body = response.stream!;
+          return send(to, destination.method, uploadHeaders, body, HELD).finally(() => {
+            body.on("error", () => undefined);
+            body.destroy();
+          });
+        })
+      );
+    } catch (err) {
+      return Computable.reject(toError(err));
+    }
+  };
+  return maskingFailures(
+    destination.url,
+    maskingFailures(
+      source.url,
+      signedHeaders(destination.credential, destination.method, to, destination.headers).then(uploadHeaders =>
+        withCredential(
+          source.credential,
+          "GET",
+          from,
+          source.headers,
+          signed => relayed(uploadHeaders, signed),
+          () => undefined
+        )
+      )
+    )
+  );
+}
+
+/** @return `headers` with those `credential` gives a `method` request to `url` added, or `headers` as they stand without one. */
+function signedHeaders(
+  credential: Credential | undefined,
+  method: string,
+  url: string,
+  headers: Record<string, string> | undefined
+): Computable<Record<string, string> | undefined> {
+  if (credential === undefined) {
+    return Computable.resolve(headers);
+  }
+  return credential
+    .authorize({ method, url, headers: new Map(Object.entries(headers ?? {})) })
+    .then(added => ({ ...headers, ...Object.fromEntries(added ?? []) }));
 }
 
 /**
@@ -547,7 +671,10 @@ function headOf(
       reject(unsupported);
       return;
     }
-    admitted(urlstring, role, release => {
+    admitted(
+      urlstring,
+      role
+    )(release => {
       httpRequest(urlstring, { method: "HEAD", headers, dispatcher }).then(
         response => {
           void response.body.dump().finally(release);
@@ -617,12 +744,11 @@ function declaredLifetime(headers: http.IncomingHttpHeaders, now: number): numbe
   return undefined;
 }
 
-/** Read `stream` to its end and return its contents. */
+/** Read `stream` to its end and return its contents. Rejects where it fails, or closes before its end. */
 export function readStream(stream: Readable): Computable<Buffer> {
   return Computable.from<Buffer>((resolve, reject) => {
     const data: Buffer[] = [];
     stream.on("data", chunk => data.push(chunk));
-    stream.on("end", () => resolve(Buffer.concat(data)));
-    stream.on("error", err => reject(err));
+    finished(stream, { writable: false }, err => (err ? reject(err) : resolve(Buffer.concat(data))));
   });
 }

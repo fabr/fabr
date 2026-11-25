@@ -264,9 +264,13 @@ function pushBlob(
       file !== undefined
         ? contentStream(file).then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
         : source !== undefined
-          ? (sameRegistry ? registry : sourceRegistry(context, source))
-              .blobStream(source.repository, blob.digest)
-              .then(stream => registry.uploadBlob(repository, blob.digest, blob.size, stream))
+          ? registry.copyBlob(
+              repository,
+              blob.digest,
+              blob.size,
+              sameRegistry ? registry : sourceRegistry(context, source),
+              source.repository
+            )
           : Computable.reject<void>(new FabrError(`nothing holds the blob ${blob.digest} to push`));
     if (source !== undefined && sameRegistry) {
       return registry

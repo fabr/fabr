@@ -23,7 +23,7 @@ import { secure, SecureString } from "./SecureString";
 import { Computable } from "./Computable";
 import type { Credential, IAuthChallenge } from "./Credential";
 import { HttpStatusError } from "./Errors";
-import { fetchUrl, openUrlStream, readStream, reportingProgress, sendRequest, urlResolved } from "./Fetch";
+import { fetchUrl, openUrlStream, readStream, relayUrl, reportingProgress, sendRequest, urlResolved } from "./Fetch";
 
 interface Received {
   method?: string;
@@ -397,5 +397,140 @@ describe("reportingProgress", () => {
       failed = err as Error;
     }
     expect(failed?.message).to.equal("boom");
+  });
+
+  it("closes the source when the consumer closes before the source has ended", async () => {
+    const source = new Readable({ read() {} });
+    const counted = reportingProgress(source, () => undefined);
+    source.push(Buffer.from("abc"));
+    counted.destroy();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(source.destroyed).to.equal(true);
+  });
+});
+
+describe("relayUrl", () => {
+  /** An origin serving a 256 KB blob to a GET, and reading through what a POST or PUT sends: answering with the bytes it read. */
+  function startStore(): Promise<{ url: string; close: () => void }> {
+    return new Promise(resolve => {
+      const server = http.createServer((req, res) => {
+        if (req.method === "GET") {
+          res.writeHead(200);
+          res.end(Buffer.alloc(256 * 1024, 1));
+          return;
+        }
+        let read = 0;
+        req.on("data", (chunk: Buffer) => (read += chunk.length));
+        req.on("end", () => {
+          res.writeHead(req.method === "POST" ? 202 : 201);
+          res.end(String(read));
+        });
+      });
+      server.listen(0, "127.0.0.1", () =>
+        resolve({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() })
+      );
+    });
+  }
+
+  /** Relay `count` blobs of `from` into `to` at once, each a POST and then the relay into a PUT: the bytes each PUT sent. */
+  function relayAll(from: string, to: string, count: number): Promise<string[]> {
+    const relays = Array.from({ length: count }, (_, i) =>
+      sendRequest(`${to}/uploads/${i}`, { method: "POST", headers: { "content-length": "0" } })
+        .then(() =>
+          relayUrl(
+            { url: SecureString.of(`${from}/blob/${i}`) },
+            { url: SecureString.of(`${to}/uploads/${i}?put`), method: "PUT", headers: { "content-length": String(256 * 1024) } }
+          )
+        )
+        .then(response => response.body.toString())
+    );
+    return settled(Computable.forAll(relays, (...sent: string[]) => sent));
+  }
+
+  /** Wait for `relays` to settle, failing where they have not within ten seconds. */
+  function settled<T>(relays: Computable<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out (the relays wait on each other)")), 10_000);
+      relays.then(
+        value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        err => {
+          clearTimeout(timer);
+          reject(err);
+        }
+      );
+    });
+  }
+
+  it("relays more blobs within one origin than it has connections or content slots", async () => {
+    const store = await startStore();
+    try {
+      const sent = await relayAll(store.url, store.url, 40);
+      expect(new Set(sent)).to.deep.equal(new Set([String(256 * 1024)]));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("relays between two origins, in both directions at once", async () => {
+    const [a, b] = [await startStore(), await startStore()];
+    try {
+      const sent = await Promise.all([relayAll(a.url, b.url, 24), relayAll(b.url, a.url, 24)]);
+      expect(new Set(sent.flat())).to.deep.equal(new Set([String(256 * 1024)]));
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  it("signs both requests in, and gives back what it holds where the upload cannot be sent", async () => {
+    const store = await startStore();
+    const asked: string[] = [];
+    const credential: Credential = {
+      authorize: head => {
+        asked.push(head.method);
+        return Computable.resolve(new Map([["authorization", "Bearer t"]]));
+      },
+    };
+    try {
+      /* Nothing listens at the destination: more relays fail than the source has slots or connections. */
+      const failures = await settled(
+        Computable.forAll(
+          Array.from({ length: 24 }, (_, i) =>
+            relayUrl(
+              { url: SecureString.of(`${store.url}/blob/${i}`), credential },
+              { url: SecureString.of("http://127.0.0.1:1/put"), method: "PUT", credential }
+            ).then(
+              () => "sent",
+              () => "failed"
+            )
+          ),
+          (...outcomes: string[]) => outcomes
+        )
+      );
+      expect(new Set(failures)).to.deep.equal(new Set(["failed"]));
+      expect(asked.filter(method => method === "PUT")).to.have.lengthOf(24);
+      expect(asked.filter(method => method === "GET")).to.have.lengthOf(24);
+      expect((await settled(fetchUrl(SecureString.of(`${store.url}/blob`)))).length).to.equal(256 * 1024);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("readStream", () => {
+  it("rejects (rather than hanging) when the stream closes before its end", async () => {
+    const source = new Readable({ read() {} });
+    const read = new Promise<string>(resolve =>
+      readStream(source).then(
+        () => resolve("read"),
+        (err: NodeJS.ErrnoException) => resolve(err.code ?? err.message)
+      )
+    );
+    source.push(Buffer.from("abc"));
+    source.destroy();
+    expect(await read).to.equal("ERR_STREAM_PREMATURE_CLOSE");
   });
 });

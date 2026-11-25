@@ -22,7 +22,7 @@ import { SecureString } from "../core/SecureString";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PassThrough, Readable } from "stream";
+import { PassThrough, Readable, Transform } from "stream";
 import { Computable } from "../core/Computable";
 import { CommandFailedError, FabrError } from "../core/Errors";
 import { FileSet, IFile } from "../core/FileSet";
@@ -559,6 +559,32 @@ describe("executePipeline", () => {
     expect(outcomes[0].ok).to.equal(false);
     expect(outcomes[0].err?.message).to.include("DIAG-ON-STDOUT");
     expect(outcomes[0].err?.message).to.include("exited with error code 3");
+  });
+
+  it("fails (rather than hanging) when a capture cannot be written while its stage still has output", async () => {
+    /* More output than a pipe holds, so the stage blocks unless it is ended. */
+    const failingOutput = (): IOutputHandle => {
+      const handle = memoryOutput();
+      const stream = new Transform({
+        transform(_chunk, _encoding, done): void {
+          done(new Error("no space left on device"));
+        },
+      });
+      stream.on("error", () => undefined);
+      return { ...handle, stream };
+    };
+    const outcomes = await collectSettlements(
+      executePipeline(
+        LIMIT,
+        [{ argv: [NODE, "-e", "process.stdout.write('x'.repeat(1 << 20))"], stdout: "out" }],
+        CWD,
+        failingOutput,
+        undefined,
+        SILENT_REPORT
+      )
+    );
+    expect(outcomes).to.have.length(1);
+    expect(outcomes[0].err?.message).to.equal("no space left on device");
   });
 
   it("reports a failed stage's shown output in its message, with or without a sink", async () => {

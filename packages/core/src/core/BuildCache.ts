@@ -977,24 +977,32 @@ export class BuildCache {
         const meta = options?.immutable !== false ? undefined : withMinimumFreshness(response.cacheControl, this.now());
         const stream = response.stream;
         if (stream) {
+          /* Close the body however the entry's making ends: a body left open
+           * holds its request's slot and connection. */
+          const close = (): void => {
+            stream.on("error", () => undefined);
+            stream.destroy();
+          };
           /* Track the transfer as the caller's task, counting the body's bytes
            * against the declared size. */
-          return this.createEntry(
-            key,
-            targetDir =>
-              track(report =>
-                process(
-                  reportingProgress(stream, bytes =>
-                    report.progress({ measure: "bytes", done: bytes, total: response.contentLength })
-                  ),
-                  { targetDir, createOutput: () => this.getTemporaryWriteStream() }
-                )
-              ).then(result => ({ result })),
-            undefined,
-            meta,
-            undefined,
-            undefined,
-            "fetch"
+          return closingAfter(close, () =>
+            this.createEntry(
+              key,
+              targetDir =>
+                track(report =>
+                  process(
+                    reportingProgress(stream, bytes =>
+                      report.progress({ measure: "bytes", done: bytes, total: response.contentLength })
+                    ),
+                    { targetDir, createOutput: () => this.getTemporaryWriteStream() }
+                  )
+                ).then(result => ({ result })),
+              undefined,
+              meta,
+              undefined,
+              undefined,
+              "fetch"
+            )
           );
         }
         /* A 304, so the request was conditional and `entry` is held: store it
@@ -2690,6 +2698,18 @@ function delay(ms: number): Computable<void> {
   return Computable.from<void>(resolve => {
     setTimeout(() => resolve(), ms);
   });
+}
+
+/** Run `work` and call `close` once its result settles, or at once where it throws. */
+function closingAfter<T>(close: () => void, work: () => Computable<T>): Computable<T> {
+  let result: Computable<T>;
+  try {
+    result = work();
+  } catch (err) {
+    close();
+    throw err;
+  }
+  return result.finally(close);
 }
 
 /** Make `attempt`, and again after each of {@link FETCH_RETRY_DELAYS_MS} while it fails transiently. */

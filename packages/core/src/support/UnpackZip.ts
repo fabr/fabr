@@ -140,8 +140,9 @@ function writeEntry(
   const output = createOutput();
   return Computable.from<[string, IFile]>((resolve, reject) => {
     let crc = 0;
-    /* Discard the output before rejecting. */
+    /* Stop reading the entry, and discard the output before rejecting. */
     const fail = (err: Error): void => {
+      stream.destroy();
       output.discard().then(() => reject(err));
     };
     stream.on("data", (data: Buffer) => {

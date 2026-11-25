@@ -10,6 +10,7 @@ together and share a version number.
 
 - Repair damaged cache entries when encountered.
 - Performance optimizations.
+- Harden fetch/exec against potential stalls/hangs.
 
 @fabr-build/aws
 

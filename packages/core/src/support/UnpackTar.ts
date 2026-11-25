@@ -87,12 +87,13 @@ export function extractTar(createOutput: () => IOutputHandle): { sink: Writable;
       emit(
         name,
         Computable.from<[string, IFile]>((resolveFile, rejectFile) => {
-          /* A read or write failure discards the output and rejects both this
-           * file and the whole extraction, whose `finish` may never fire. */
+          /* A read or write failure discards the output, rejects this file and
+           * fails the whole extraction, which stops reading the archive. */
           const fail = (err: Error): void => {
             output.discard().then(() => {
               rejectFile(err);
               reject(err);
+              extract.destroy(err);
             });
           };
           output.stream.on("error", fail);

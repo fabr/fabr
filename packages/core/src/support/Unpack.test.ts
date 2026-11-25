@@ -99,6 +99,36 @@ describe("Unpack", () => {
     });
   });
 
+  it("stops reading the archive once it has failed", async () => {
+    /* A source left open and unread holds a download's connection. */
+    const settled = async (source: Readable): Promise<void> => {
+      await withTimeout(unpackStream(source, createOutput)).catch(() => undefined);
+      await new Promise(resolve => setImmediate(resolve));
+    };
+    const endless = (head: Buffer): Readable => {
+      let sent = false;
+      return new Readable({
+        read(): void {
+          this.push(sent ? Buffer.alloc(16 * 1024) : head);
+          sent = true;
+        },
+      });
+    };
+    /* No archive of a known kind. */
+    const unknown = endless(Buffer.alloc(1024, 1));
+    await settled(unknown);
+    expect(unknown.destroyed).to.equal(true);
+    /* A gzip layer that is corrupt past its header. */
+    const corrupt = endless(zlib.gzipSync(crypto.randomBytes(64 * 1024)).subarray(0, 1024));
+    await settled(corrupt);
+    expect(corrupt.destroyed).to.equal(true);
+    /* An entry whose spool cannot be written. */
+    const pack = new TarPack();
+    pack.entry({ name: "package/big.bin" }, crypto.randomBytes(512 * 1024));
+    await withFailingSpool(() => settled(pack));
+    expect(pack.destroyed).to.equal(true);
+  });
+
   it("tar.gz", async () => {
     const input = Buffer.from(
       `H4sICKfHJGYAA3Rlc3QudGFyAO2UzY6bMBDHc85ToBz2VJuvAKs97aFSLz30CVI54A1OwFges2pU

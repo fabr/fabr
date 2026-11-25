@@ -17,7 +17,7 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Readable, Writable } from "stream";
+import { pipeline, Readable, Writable } from "stream";
 import { createUnzip } from "zlib";
 import { createDecompressStream } from "@napi-rs/lzma/xz";
 import type { IOutputHandle } from "./Execute";
@@ -95,7 +95,9 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
 
 /** Buffer the first `headerSize` bytes of `ins` (fewer where it ends first),
  * hand them to `cb`, and pipe the whole stream into the sink `cb` returns, or
- * destroy it where `cb` returns null. Failures are reported to `onError`. */
+ * destroy it where `cb` returns null. A failure of either side is reported to
+ * `onError` and destroys the other, as does the sink closing before the stream
+ * has ended. */
 function magicByteStream(
   ins: Readable,
   headerSize: number,
@@ -133,11 +135,11 @@ function magicByteStream(
       ins.destroy();
     } else {
       outs.write(head);
-      ins.pipe(outs);
-      /* Report a failure of either side through `onError`: an unhandled
-       * 'error' event would end the process. */
-      ins.on("error", err => outs.destroy(err));
-      outs.on("error", onError);
+      pipeline(ins, outs, err => {
+        if (err) {
+          onError(err);
+        }
+      });
     }
   }
 

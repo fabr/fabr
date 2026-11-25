@@ -18,7 +18,7 @@
  */
 
 import { createHash } from "crypto";
-import { Readable, Transform } from "stream";
+import { finished, Readable, Transform } from "stream";
 import { createGunzip, createZstdDecompress } from "zlib";
 import {
   Computable,
@@ -33,8 +33,8 @@ import {
   IFile,
   isJsonObject,
   MemoryFile,
-  openUrlStream,
   parseJson,
+  relayUrl,
   secure,
   SecureString,
   sendRequest,
@@ -362,16 +362,14 @@ export class Registry {
     return page(urlJoin(this.url, `v2/${repository}/tags/list`), []);
   }
 
-  /** Open a stream of the blob `digest` in `repository`, as published, to push it to another registry. */
-  public blobStream(repository: string, digest: string): Computable<Readable> {
-    return openUrlStream(
-      urlJoin(this.url, `v2/${repository}/blobs/${digest}`),
-      {},
-      Date.now,
-      "content",
-      undefined,
-      this.credential
-    ).then(response => response.stream!);
+  /** Copy the blob `digest`, `size` bytes, of `from`'s repository `fromRepository` into `repository`, as published, sent on as it is read. */
+  public copyBlob(repository: string, digest: string, size: number, from: Registry, fromRepository: string): Computable<void> {
+    return this.startUpload(repository, digest).then(url =>
+      relayUrl(
+        { url: urlJoin(from.url, `v2/${fromRepository}/blobs/${digest}`), credential: from.credential },
+        { url, ...blobPut(size), credential: this.credential }
+      ).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`))
+    );
   }
 
   /** @return the digest `tag` names in `repository`, or undefined where it names nothing. */
@@ -414,6 +412,15 @@ export class Registry {
 
   /** Upload the blob `digest`, `size` bytes, into `repository`, in one request. */
   public uploadBlob(repository: string, digest: string, size: number, body: Readable | Buffer): Computable<void> {
+    return this.startUpload(repository, digest).then(url =>
+      this.send(url, { ...blobPut(size), body }).then(response =>
+        this.expect(response, [201], `uploading the blob ${digest} to ${repository}`)
+      )
+    );
+  }
+
+  /** Start an upload of the blob `digest` into `repository`: the URL its content is put to. */
+  private startUpload(repository: string, digest: string): Computable<SecureString> {
     return this.send(urlJoin(this.url, `v2/${repository}/blobs/uploads/`), {
       method: "POST",
       headers: { "content-length": "0" },
@@ -425,11 +432,7 @@ export class Registry {
       }
       const url = new URL(location, this.url.toUnmaskedString());
       url.searchParams.set("digest", digest);
-      return this.send(urlResolved(this.url, url.href), {
-        method: "PUT",
-        headers: { "content-type": "application/octet-stream", "content-length": String(size) },
-        body,
-      }).then(response => this.expect(response, [201], `uploading the blob ${digest} to ${repository}`));
+      return urlResolved(this.url, url.href);
     });
   }
 
@@ -482,6 +485,11 @@ export class Registry {
       );
     }
   }
+}
+
+/** @return the method and headers of the request putting a blob of `size` bytes where its upload was started. */
+function blobPut(size: number): { method: string; headers: Record<string, string> } {
+  return { method: "PUT", headers: { "content-type": "application/octet-stream", "content-length": String(size) } };
 }
 
 /** Read a tag list's `tags` (null where a repository has none). */
@@ -581,11 +589,16 @@ function storeLayer(
         resolve();
       }
     };
-    decompressed.on("error", reject);
-    output.stream.on("error", reject);
-    indexer.sink.on("error", reject);
+    /* Stop the download with the first failure: a body left unread holds its
+     * request's slot and connection. */
+    const fail = (err: Error): void => {
+      content.destroy();
+      reject(err);
+    };
+    output.stream.on("error", fail);
+    indexer.sink.on("error", fail);
     indexer.sink.on("finish", done);
-    decompressed.on("end", done);
+    finished(decompressed, { writable: false }, err => (err ? fail(toError(err)) : done()));
     decompressed.pipe(output.stream, { end: false });
     decompressed.pipe(indexer.sink);
   }).then(
