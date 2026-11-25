@@ -450,13 +450,14 @@ function runnableNode(pkg: Package, runnable: (pkg: PackageFileSet) => Computabl
  * Resolve the member of the catalog `source` that `request` names, from the
  * resolution the catalog made. As the catalog's operation says: under a
  * `files` operation, the member's files alone, {@link PendingFiles pending};
- * under `run`, the node of the program it is; otherwise its package as the
- * catalog resolved it, its requirements bound as there
- * ({@link memberPackage}). A request for files is answered with the member's
- * files, fetched now.
+ * under `run`, the node of the program it is, made by its format's
+ * `makeRunnable` (its source's, or for a member built in the project the one
+ * its rule declares) over its package as the catalog resolved it; otherwise
+ * that package, its requirements bound as there ({@link memberPackage}). A
+ * request for files is answered with the member's files, fetched now.
  *
- * Rejects where a member built in the project is asked for under `run`. A
- * failure of the repository's part is attributed to the reference; a member
+ * Rejects where a member built in the project is asked for under `run` and its
+ * rule declares no format. A failure of the repository's part is attributed to the reference; a member
  * built in the project reports its own build's failure.
  */
 function resolveMember(
@@ -498,12 +499,16 @@ function resolveMember(
         return resolved();
       }
       if (local) {
-        return attributedTo(reference, () => {
-          const repository = reference.repositoryName ?? "its repository";
-          throw new FabrError(
-            `${repository} member '${reference.toString()}' is built in this project, which ${repository} cannot deliver as a runnable`
-          ).withHelp(`run the target directly rather than through ${repository}`);
-        });
+        const format = isBuild(entry) ? entry.format : undefined;
+        if (format === undefined) {
+          return attributedTo(reference, () => {
+            const repository = reference.repositoryName ?? "its repository";
+            throw new FabrError(
+              `${repository} member '${reference.toString()}' is built by a rule that does not say what format of package it builds, so ${repository} cannot make it runnable`
+            ).withHelp(`run the target directly rather than through ${repository}`);
+          });
+        }
+        return resolved().then(pkg => runnableNode(pkg, held => attributedTo(reference, () => format.makeRunnable(held, context))));
       }
       return resolved().then(pkg =>
         runnableNode(pkg, held => attributedTo(reference, () => runnableFrom(context, entry.source, held)))

@@ -147,6 +147,8 @@ describe("CatalogRepository.getRepositoryRef", () => {
 describe("CatalogRepository (through the model)", () => {
   /* The runnable record is format-level (launching is format convention). */
   const ran: string[] = [];
+  /** The packages each run was made from, in the order made. */
+  const ranOver: PackageFileSet[] = [];
   /** The test ecosystem: a near-versionless grammar over semver — a written
    * name IS the package, implicitly at 1.0.0, with an optional `:version` tail
    * for the tests that need two versions of one package (an empty one states
@@ -180,6 +182,7 @@ describe("CatalogRepository (through the model)", () => {
     },
     makeRunnable: (pkg: PackageFileSet) => {
       ran.push(pkg.packageName);
+      ranOver.push(pkg);
       return Computable.resolve(
         RunnableFileSet.forEntry(pkg, `${pkg.packageName}/data.txt`, [], new HostLink("node", process.execPath))
       );
@@ -578,6 +581,23 @@ describe("CatalogRepository (through the model)", () => {
         );
       }),
   });
+  /* A `test_stated` whose rule declares the package it builds, in the test format. */
+  const formattedRule: RuleDefinition = defineRule({
+    type: "test_formatted",
+    properties: {},
+    requirements: context =>
+      Computable.resolve({
+        build: { dependencies: context.getPackageProperty("deps") },
+        result: { package: context.name, format: CAT_FORMAT },
+      }),
+    evaluateResolved: (context, requirements) =>
+      requirements.packages("dependencies").then(deps => {
+        statedBuilt.push(context.name);
+        return Computable.resolve(
+          packageCarrying(context.name, new Map([[`${context.name}/data.txt`, contentOf(context.name)]]), deps)
+        );
+      }),
+  });
   /* The `test_stated` targets whose build fails. */
   const statedFailing = new Set<string>();
   /* A package carrying requirements its rule reads as private `deps` and does
@@ -631,6 +651,7 @@ describe("CatalogRepository (through the model)", () => {
         subRule,
         builtRule,
         statedRule,
+        formattedRule,
         driftRule,
       ],
       repositories: [
@@ -673,6 +694,7 @@ describe("CatalogRepository (through the model)", () => {
     "targetdef test_sub { deps = PACKAGES; }\n" +
     "targetdef test_built { deps = PACKAGES; version = STRING; }\n" +
     "targetdef test_stated { deps = PACKAGES; }\n" +
+    "targetdef test_formatted { deps = PACKAGES; }\n" +
     "targetdef test_drift { deps = PACKAGES; }\n" +
     "targetdef patched { srcs = REQUIRED PACKAGES; patches = FILES; run = COMMAND; env = MAP; fixes = STRING; }\n";
 
@@ -683,6 +705,7 @@ describe("CatalogRepository (through the model)", () => {
     patchTexts.clear();
     scriptTexts.clear();
     ran.length = 0;
+    ranOver.length = 0;
     lookedUp.length = 0;
     statedBuilt.length = 0;
     statedFailing.clear();
@@ -1358,14 +1381,28 @@ describe("CatalogRepository (through the model)", () => {
       expect(statedBuilt).to.deep.equal([]);
     });
 
-    it("refuses a member built in the project as a runnable, naming the catalog, before building it", async () => {
+    it("makes a member built in the project runnable by its rule's format, over the catalog's resolution", async () => {
+      const model = build(
+        "package_repo @backing { }\n" +
+          "test_formatted lib { deps = @backing:bar:^1.0.0; }\n" +
+          "catalog @cat { deps = @backing:bar:1.2.0 lib; }\n" +
+          "test_run a { tool = @cat:lib; }\n"
+      );
+      await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
+      expect(lastTool).to.be.instanceOf(RunnableFileSet);
+      expect(ran).to.deep.equal(["lib"]);
+      expect(edges(ranOver[0])).to.deep.equal(["bar@1.2.0"]);
+      expect(statedBuilt).to.deep.equal(["lib"]);
+    });
+
+    it("refuses as a runnable a member whose rule declares no format, naming the catalog, before building it", async () => {
       const model = build("test_stated lib { }\n" + "catalog @cat { deps = lib; }\n" + "test_run a { tool = @cat:lib; }\n");
       try {
         await model.getConfig(Constraints.of({}), execution).materialize(writtenOnCommandLine("a"));
         expect.fail("expected the member to be refused as a runnable");
       } catch (err) {
         expect((rootCauseOf(err) as Error).message).to.equal(
-          "@cat member 'lib' is built in this project, which @cat cannot deliver as a runnable"
+          "@cat member 'lib' is built by a rule that does not say what format of package it builds, so @cat cannot make it runnable"
         );
         expect(statedBuilt).to.deep.equal([]);
       }
