@@ -9,6 +9,8 @@ together and share a version number.
 @fabr-build/js
 
 - Add layout/hoisted for npm (symlink-free) layout.
+- Cap playwright workers at the maximum we can actually run, and allocate slots per test rather than worker
+  (works around potential deadlock where workers aren't released)
 
 ## Fabr 0.4.4
 

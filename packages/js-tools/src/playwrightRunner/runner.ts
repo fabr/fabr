@@ -51,7 +51,6 @@
  */
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { configurationOf, IBrowserConfiguration, isConfigurationOption } from "../support/BrowserConfigurations";
@@ -59,7 +58,7 @@ import { parseJson, toJsonObject } from "../support/Json";
 import { childPreloads, enterInteractiveRun, focusAllowed, loadPnpPreload, parseRunnerArgs } from "../testRunner/RunTests";
 import type { IConfigSettings } from "./Config";
 import { FABR_SOCKET_VARIABLE } from "../support/FabrSocket";
-import { installProcessSlot, SLOTS_PER_WORKER } from "./ProcessSlot";
+import { installProcessSlot, MAX_WORKERS } from "./ProcessSlot";
 import type { IProjectConfiguration } from "./PlaywrightRun";
 import type { IReporterOptions } from "./Reporter";
 
@@ -219,8 +218,11 @@ export function main(argv: string[]): void {
     retries: options.retries ?? 0,
     forbidOnly: !focusAllowed(options.only, "Playwright"),
     /* As many workers as the machine's processors run at SLOTS_PER_WORKER
-     * slots each: Playwright's own default, outside CI. */
-    workers: Math.max(1, Math.floor(os.availableParallelism() / SLOTS_PER_WORKER)),
+     * slots each: Playwright's own default, outside CI. Where the workers
+     * take fabr's slots, no more than that, so that every worker of the run
+     * can hold its slots at once. */
+    workers: MAX_WORKERS,
+    ...(process.env[FABR_SOCKET_VARIABLE] ? { maxWorkers: MAX_WORKERS } : {}),
     ...(baseURL === undefined || baseURL === "" ? {} : { baseURL }),
     ...(configured === undefined ? {} : { configuration: projectConfiguration(configured, () => playwrightDevices(playwright.cli)) }),
     ...(options.setup.length === 0 ? {} : { globalSetup: setupModule(root, options.setup) }),

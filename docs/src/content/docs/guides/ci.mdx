@@ -362,11 +362,11 @@ number. On a runner with many processors and little memory:
 
 - **JavaScript:** each test file is one of those steps. Limit each test process instead, with
   `NODE_OPTIONS` in `test_env`.
-- **Browser tests:** each Playwright worker counts as two of those steps, for itself and its
-  browser, so several browser-test targets together run only as many workers at once as the
-  machine has room for beside the rest of the build. Each target still starts up to its config's
-  `workers` processes, which wait their turn; lower `workers` in its Playwright config to start
-  fewer.
+- **Browser tests:** each Playwright worker running a test counts as two of those steps, for
+  itself and its browser, so several browser-test targets together run only as many tests at
+  once as the machine has room for beside the rest of the build. Each target starts up to its
+  config's `workers` processes, but no more than half the machine's processors, and a worker
+  waits its turn before each test; lower `workers` in its Playwright config to start fewer.
 - **Java:** each target's tests are one step, run in one JVM, which takes the JVM's default
   maximum heap, a quarter of the machine's memory. Several large test suites at once can exhaust a
   small runner's memory, so give each a smaller heap with `-Xmx` in `test_jvm_args` (see

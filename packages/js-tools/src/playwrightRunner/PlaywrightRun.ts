@@ -27,6 +27,7 @@
  * the target's dependencies, at the version the project chose.
  */
 
+import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ITestResult } from "@fabr-build/core";
@@ -82,6 +83,8 @@ export interface IInvocation {
   forbidOnly?: boolean;
   /** How many workers the run starts where the config sets none. */
   workers?: number;
+  /** The most workers the run starts, whatever the config says; undefined sets no limit. */
+  maxWorkers?: number;
   /** The run's global setup module, made of the suite's setup files, where it has any. */
   globalSetup?: string;
   /** The URL the suite runs against, if any: `use.baseURL` in every project. */
@@ -90,6 +93,36 @@ export interface IInvocation {
   configuration?: IProjectConfiguration;
   /** fabr's reporter, as a config's reporter entry; undefined leaves the config's own. */
   reporter?: [string, Record<string, unknown>];
+}
+
+/**
+ * @return the `workers` setting of a run starting `workers`, at most `max`:
+ * none where `workers` is undefined, and `workers` as written where it is
+ * within `max` or is no setting Playwright accepts, so that Playwright reports
+ * it.
+ */
+function workersOf(workers: number | string | undefined, max: number | undefined): { workers?: number | string } {
+  if (workers === undefined) {
+    return {};
+  }
+  const count = workerCount(workers);
+  return { workers: max === undefined || count === undefined || count <= max ? workers : max };
+}
+
+/**
+ * @return how many workers Playwright starts for its `workers` setting: a
+ * number, or a percentage of the machine's processors, at least one; or
+ * undefined where Playwright refuses the setting.
+ */
+function workerCount(workers: number | string): number | undefined {
+  if (typeof workers === "number") {
+    return workers;
+  }
+  const count = Number.parseInt(workers, 10);
+  if (Number.isNaN(count) || count < 1) {
+    return undefined;
+  }
+  return workers.endsWith("%") ? Math.max(1, Math.floor(os.cpus().length * (count / 100))) : count;
 }
 
 /** A browser configuration as the settings of its Playwright project. */
@@ -115,10 +148,10 @@ export interface IProjectConfiguration {
  * - fabr's reporter, where the invocation has one, is the only reporter, given
  *   the invocation's files not selected as `unmatched`.
  * - `outputDir` and `retries` are the invocation's, at the top and in the
- *   project; `workers` the invocation's where the config sets none;
- *   `globalTimeout` and `shard` are off; snapshots are rewritten as `update`
- *   says, where it is given; and `use.baseURL` is the invocation's URL, where
- *   it has one.
+ *   project; `workers` the invocation's where the config sets none, and at
+ *   most its `maxWorkers`; `globalTimeout` and `shard` are off; snapshots
+ *   are rewritten as `update` says, where it is given; and `use.baseURL` is
+ *   the invocation's URL, where it has one.
  * - A `globalSetup` or `globalTeardown` naming a TypeScript source that is
  *   not there names its compiled file. The suite's setup files are the
  *   `globalSetup`.
@@ -170,7 +203,7 @@ export function wrapConfig(user: IPlaywrightConfig, invocation: IInvocation): IP
     ...(invocation.globalSetup === undefined ? {} : { globalSetup: invocation.globalSetup }),
     ...(top.globalTeardown === undefined ? {} : { globalTeardown: compiledScripts(top.globalTeardown, invocation) }),
     ...use(top.use),
-    ...(top.workers === undefined && invocation.workers !== undefined ? { workers: invocation.workers } : {}),
+    ...workersOf(top.workers ?? invocation.workers, invocation.maxWorkers),
     ...(reporter === undefined
       ? {}
       : { reporter: [[reporter[0], { ...reporter[1], unmatched: invocation.files.filter(file => !files.includes(file)) }]] }),

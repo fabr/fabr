@@ -155,6 +155,18 @@ describe("wrapConfig", () => {
     expect(wrapConfig({ workers: "50%" }, invocation(["a.spec.js"], undefined, { workers: 3 })).workers).to.equal("50%");
   });
 
+  it("starts at most the invocation's maxWorkers, whatever the config or the invocation's default says", () => {
+    const capped = (workers: number | string | undefined, extra: Partial<IInvocation> = {}): number | string | undefined =>
+      wrapConfig(workers === undefined ? {} : { workers }, invocation(["a.spec.js"], undefined, { maxWorkers: 2, ...extra })).workers;
+    expect(capped(8)).to.equal(2);
+    expect(capped(1)).to.equal(1);
+    expect(capped(`${os.cpus().length * 300}%`), "a percentage, read as Playwright reads it").to.equal(2);
+    expect(capped("1%"), "a percentage within the limit stays as written").to.equal("1%");
+    expect(capped(undefined, { workers: 5 })).to.equal(2);
+    expect(capped(undefined)).to.equal(undefined);
+    expect(capped("many"), "a setting Playwright refuses stays for Playwright to report").to.equal("many");
+  });
+
   it("forbids focused tests where the invocation says, whatever the config says", () => {
     expect(wrapConfig({ forbidOnly: false }, invocation(["a.spec.js"], undefined, { forbidOnly: true })).forbidOnly).to.equal(true);
     expect(wrapConfig({}, invocation(["a.spec.js"])).forbidOnly).to.equal(undefined);

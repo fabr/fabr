@@ -11,7 +11,7 @@ more of fabr's limit on how many processes run at once.
 
 You need this page only if you write a tool that fabr runs and that starts worker
 processes of its own. Fabr's runner for Playwright uses it already: each Playwright worker takes two slots while it
-runs tests.
+runs a test.
 
 ## Process slots
 

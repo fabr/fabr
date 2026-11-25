@@ -18,19 +18,29 @@
  */
 
 /**
- * A Playwright worker's slots of fabr's process limit: where fabr runs the
+ * A Playwright test's slots of fabr's process limit: where fabr runs the
  * Playwright run as a build step (`FABR_SOCKET`, the fabr socket and the
- * run's token), every worker takes them before its first test and holds them
- * until it exits. They are taken by a worker-scoped auto fixture added to
+ * run's token), every test takes them before it starts, with its `beforeEach`
+ * hooks and the fixtures it uses, and gives them back once those are torn
+ * down. So a worker holds no slots between tests. `beforeAll` and `afterAll`
+ * hooks, and a worker fixture's teardown, run without slots. Each worker
+ * connects to the socket once, in a worker fixture. The fixtures are added to
  * `@playwright/test`'s `test`, so a suite's own fixtures, extended from it,
- * carry it too.
+ * carry them too.
  */
 
 import Module from "node:module";
-import { acquireSlots, connectFabrSocket, FABR_SOCKET_VARIABLE, FabrSocketClient } from "../support/FabrSocket";
+import * as os from "node:os";
+import { acquireSlots, connectFabrSocket, FABR_SOCKET_VARIABLE } from "../support/FabrSocket";
 
-/** How many of fabr's process slots a worker takes: itself, and the browser it drives. */
+/** How many of fabr's process slots a test takes: its worker, and the browser it drives. */
 export const SLOTS_PER_WORKER = 2;
+
+/** The most workers a run starts where its tests take fabr's slots: as many as the machine's processors run at {@link SLOTS_PER_WORKER} slots each. */
+export const MAX_WORKERS = Math.max(1, Math.floor(os.availableParallelism() / SLOTS_PER_WORKER));
+
+/** Take a test's slots, waiting for them to be granted. @return a function that gives them back, or undefined where the test runs without slots. */
+export type TakeSlots = () => Promise<(() => void) | undefined>;
 
 /** The part of `@playwright/test` the slot is added to. */
 interface IPlaywrightTest {
@@ -39,48 +49,55 @@ interface IPlaywrightTest {
 }
 
 /**
- * Take a worker's slots from the fabr socket `variable` names
- * ({@link SLOTS_PER_WORKER} of them), waiting for them to be granted.
- * @return the connection holding them, which gives them back as it closes; or
- *   undefined where the socket cannot be reached or refuses, and the worker
- *   runs without slots of its own.
+ * Hold a test's slots, taken with `takeSlots`, while `use` runs the test,
+ * and give them back once it ends, however it ends: the test fixture's body.
  */
-export function takeProcessSlot(variable: string): Promise<FabrSocketClient | undefined> {
-  return connectFabrSocket(variable).then(client =>
-    client === undefined
-      ? undefined
-      : acquireSlots(client, SLOTS_PER_WORKER).then(release => {
-          if (release === undefined) {
-            client.close();
-            return undefined;
-          }
-          return client;
-        })
-  );
+export async function withTestSlots(takeSlots: TakeSlots, use: () => Promise<void>): Promise<void> {
+  const release = await takeSlots();
+  try {
+    await use();
+  } finally {
+    release?.();
+  }
+}
+
+/**
+ * @return the fixtures that take each test's slots from the fabr socket
+ * `address` names: `fabrSocket`, the worker's connection, as the function
+ * taking a test's slots through it (none where the socket cannot be reached
+ * or refuses), and `fabrProcessSlot`, the test's slots.
+ */
+export function processSlotFixtures(address: string): Record<string, unknown> {
+  return {
+    fabrSocket: [
+      // eslint-disable-next-line no-empty-pattern
+      async ({}, use: (takeSlots: TakeSlots) => Promise<void>) => {
+        const client = await connectFabrSocket(address);
+        try {
+          await use(() => (client === undefined ? Promise.resolve(undefined) : acquireSlots(client, SLOTS_PER_WORKER)));
+        } finally {
+          client?.close();
+        }
+      },
+      { scope: "worker", box: true },
+    ],
+    fabrProcessSlot: [
+      ({ fabrSocket }: { fabrSocket: TakeSlots }, use: (value: undefined) => Promise<void>) =>
+        withTestSlots(fabrSocket, () => use(undefined)),
+      /* Waiting for slots is no part of the test's time. */
+      { scope: "test", auto: true, timeout: 0, box: true },
+    ],
+  };
 }
 
 /**
  * @return the module `playwright` with its `test` and `default` replaced by
- * `test` extended with the slot fixture, which takes slots from the fabr
- * socket `address` names; where the module is itself `test`, calling it and
- * reading what `test` carries reach the extended one too.
+ * `test` extended with {@link processSlotFixtures}; where the module is
+ * itself `test`, calling it and reading what `test` carries reach the
+ * extended one too.
  */
 export function withProcessSlot<T extends IPlaywrightTest>(playwright: T, address: string): T {
-  const test = playwright.test.extend({
-    fabrProcessSlot: [
-      // eslint-disable-next-line no-empty-pattern
-      async ({}, use: (value: undefined) => Promise<void>) => {
-        const slot = await takeProcessSlot(address);
-        try {
-          await use(undefined);
-        } finally {
-          slot?.close();
-        }
-      },
-      /* Waiting for a slot is no part of any test's time. */
-      { scope: "worker", auto: true, timeout: 0, box: true },
-    ],
-  });
+  const test = playwright.test.extend(processSlotFixtures(address));
   /* The module may itself be `test` (playwright's is, with the rest of its
    * exports on it): calling it, and what `test` carries (`extend`,
    * `describe`, the hooks), reach the extended one; the module's other

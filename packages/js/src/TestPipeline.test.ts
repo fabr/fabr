@@ -402,6 +402,7 @@ describe("readsOf", () => {
     files: EMPTY_FILESET,
     trees: new Map(),
     members: [y],
+    namesReads: true,
     nameRead: read => names.get(path.relative(cwd, read).split(path.sep).join("/")),
     locate: () => undefined,
   };
@@ -426,6 +427,18 @@ describe("readsOf", () => {
       expect([...named!.deps].sort()).to.deep.equal(
         ["y index.js", "y package.json", "y x index.js", "y x sub.js", "y x x package.json", "y x package.json"].sort()
       );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records a lookup nothing answered as its row, and no reads where the layout names none", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fabr-reads-"));
+    try {
+      const document = path.join(dir, "reads.json");
+      fs.writeFileSync(document, JSON.stringify({ files: ["a.test.js"], lookups: [{ from: "a.test.js", name: "opt" }] }));
+      expect([...readsOf(document, cwd, layout)!.deps]).to.deep.equal(["opt package.json"]);
+      expect(readsOf(document, cwd, { ...layout, namesReads: false })).to.equal(undefined);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

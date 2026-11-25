@@ -753,8 +753,9 @@ function invocationReads(index: number): string {
  *   requirer's own dependencies or the requirer itself (a self-reference).
  * - A path that names nothing in the staged work is skipped.
  *
- * @return undefined where the document is unreadable (a process the runner
- *   could not follow), or where a read fits no row: a lookup answered by
+ * @return undefined where the layout names no reads
+ *   ({@link IPackageLayout.namesReads}), where the document is unreadable (a
+ *   process the runner could not follow), or where a read fits no row: a lookup answered by
  *   neither the requirer's own dependencies nor a direct member (a
  *   `node_modules` tree's hidden links, which answer from the whole closure),
  *   or a probe that found a directory within a package under which the
@@ -768,6 +769,9 @@ export function readsOf(
   directories: DirectoryRows = new DirectoryRows(),
   names = new Map<string, ReadName | undefined>()
 ): { reads: ReadonlySet<string>; deps: ReadonlySet<string> } | undefined {
+  if (!layout.namesReads) {
+    return undefined;
+  }
   let read: IReadsDocument;
   try {
     read = parseJson(fs.readFileSync(document), document, toReadsDocument);

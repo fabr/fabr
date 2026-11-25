@@ -18,9 +18,7 @@
  */
 
 import { expect } from "chai";
-import * as os from "os";
-import * as path from "path";
-import { takeProcessSlot, withProcessSlot } from "./ProcessSlot";
+import { withProcessSlot, withTestSlots } from "./ProcessSlot";
 
 /** A stand-in for `@playwright/test`, whose module is itself `test`, with `extend` making a new `test` that records its calls. */
 function playwrightModule(): {
@@ -51,17 +49,37 @@ describe("withProcessSlot", () => {
     wrapped.default("default import");
     wrapped("the module called");
     expect(calls).to.deep.equal([
-      "original + fabrProcessSlot: named import",
-      "original + fabrProcessSlot: default import",
-      "original + fabrProcessSlot: the module called",
+      "original + fabrSocket,fabrProcessSlot: named import",
+      "original + fabrSocket,fabrProcessSlot: default import",
+      "original + fabrSocket,fabrProcessSlot: the module called",
     ]);
-    expect(wrapped.describe, "what test carries comes from the extended test").to.equal("original + fabrProcessSlot.describe");
+    expect(wrapped.describe, "what test carries comes from the extended test").to.equal(
+      "original + fabrSocket,fabrProcessSlot.describe"
+    );
     expect(wrapped.expect, "the module's other exports stay its own").to.equal("the module's expect");
   });
 });
 
-describe("takeProcessSlot", () => {
-  it("resolves no slot where the socket cannot be reached, so the worker runs without one", async () => {
-    expect(await takeProcessSlot(`${path.join(os.tmpdir(), "fabr-no-such-socket")}#token`)).to.equal(undefined);
+describe("withTestSlots", () => {
+  it("holds the test's slots while it runs, and gives them back once it ends, however it ends", async () => {
+    const events: string[] = [];
+    const takeSlots = (): Promise<() => void> => {
+      events.push("take");
+      return Promise.resolve(() => void events.push("release"));
+    };
+    await withTestSlots(takeSlots, () => Promise.resolve(void events.push("test")));
+    let failure: unknown;
+    await withTestSlots(takeSlots, () => Promise.reject(new Error("failed"))).catch((error: unknown) => (failure = error));
+    expect(events).to.deep.equal(["take", "test", "release", "take", "release"]);
+    expect((failure as Error).message).to.equal("failed");
+  });
+
+  it("runs the test without slots where none are taken", async () => {
+    let ran = false;
+    await withTestSlots(
+      () => Promise.resolve(undefined),
+      () => Promise.resolve(void (ran = true))
+    );
+    expect(ran).to.equal(true);
   });
 });
