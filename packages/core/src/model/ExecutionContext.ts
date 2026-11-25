@@ -179,13 +179,14 @@ export class ExecutionContext {
    * {@link IdentityProvider}. Set by the driver. */
   public identityProvider?: IdentityProvider;
   /**
-   * The run-wide limit on work running at once, one slot per CPU. A slot is
+   * The run-wide limit on work running at once, one slot per CPU unless the
+   * constructor is given a count (the driver's `-j`). A slot is
    * held for a process's lifetime by `execute`/`executePipeline` (a whole
    * pipeline takes one slot, since its stages must run together), and for a
    * step's staging and collection through `ActionContext.admit`. Never hold a
    * slot while acquiring another: that could deadlock. Cache hits take none.
    */
-  public readonly processLimit = new Semaphore(availableParallelism());
+  public readonly processLimit: Semaphore;
   /** The per-run state plugins keep here, by {@link PluginKey}. */
   private readonly pluginContexts = new Map<PluginKey<unknown>, unknown>();
   /** The names of the directly requested targets that had tasks performed for
@@ -201,8 +202,11 @@ export class ExecutionContext {
     /* Shared with the watch controller, which advances it. */
     cycle: BuildCycle = new BuildCycle(),
     hostFileSource: FileSource = hostFiles(buildCache),
-    installedFileSource: FileSource = new AbsolutePathSource(root => new FSFileSource(root, undefined, buildCache))
+    installedFileSource: FileSource = new AbsolutePathSource(root => new FSFileSource(root, undefined, buildCache)),
+    /* How many slots the process limit has. */
+    processSlots: number = availableParallelism()
   ) {
+    this.processLimit = new Semaphore(processSlots);
     this.buildCache = buildCache;
     this.log = log;
     this.sourceFileSource = sourceFileSource;

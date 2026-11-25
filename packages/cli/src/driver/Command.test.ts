@@ -389,6 +389,17 @@ describe("Command", () => {
     expect(capture(["list-targets", "--refresh"]).err.join("\n")).to.match(/Option '--refresh' is not valid/);
   });
 
+  it("limits the processes run at once with -j, for any command", () => {
+    expect(parseCommandLine(["node", "fabr", "build", "foo"]).jobs).to.equal(undefined);
+    expect(parseCommandLine(["node", "fabr", "-j", "4", "foo"]).jobs).to.equal(4);
+    expect(parseCommandLine(["node", "fabr", "-j2", "foo"]).jobs).to.equal(2);
+    expect(parseCommandLine(["node", "fabr", "ls", "--jobs=3", "foo"]).jobs).to.equal(3);
+    expect(parseCommandLine(["node", "fabr", "test", "--jobs", "1", "foo"]).targets).to.deep.equal(["foo"]);
+    expect(capture(["-j"]).err.join("\n")).to.match(/Option '-j' requires a number of processes/);
+    expect(capture(["-j0", "foo"]).err.join("\n")).to.match(/at least 1, not '0'/);
+    expect(capture(["-j", "foo"]).err.join("\n")).to.match(/at least 1, not 'foo'/);
+  });
+
   it("treats arguments after -- as targets, even dash-prefixed ones", () => {
     const options = parseCommandLine(["node", "fabr", "cat", "--", "-weird", "pkg:-x.js"]);
     expect(options.command).to.equal("cat");

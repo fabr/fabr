@@ -6,6 +6,10 @@ together and share a version number.
 
 ## Fabr 0.4.5
 
+@fabr-build/core
+
+- Add -j jobs option to set max parallel processes.
+
 @fabr-build/js
 
 - Add layout/hoisted for npm (symlink-free) layout.

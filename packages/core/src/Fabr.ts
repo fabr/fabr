@@ -72,6 +72,9 @@ export interface IFabrOptions {
   /** Revalidate every mutable fetched document once this run, whatever its
    * freshness (`--refresh`; see {@link BuildCache}). */
   refresh?: boolean;
+  /** How many slots the run's process limit has (see
+   * {@link ExecutionContext.processLimit}); one per CPU where absent. */
+  processSlots?: number;
 }
 
 /**
@@ -140,7 +143,9 @@ export class Fabr {
       this.sourceFileSource,
       new AbsolutePathSource(root => new FSFileSource(root)),
       cycle,
-      this.hostFileSource
+      this.hostFileSource,
+      undefined,
+      options.processSlots
     );
     /* Save the source and host indexes at each cycle-end, which comes even
      * where no result changed (a file touched but not edited changes the

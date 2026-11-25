@@ -893,6 +893,7 @@ async function runWith(options: Options, operation: Operation, watch = false, se
       environment: new Map(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
       includeOptionalLibs: options.includeOptional,
       refresh: options.refresh,
+      processSlots: options.jobs,
     });
     const execution = fabr.execution;
     setup.execution?.(execution);

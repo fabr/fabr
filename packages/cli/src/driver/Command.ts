@@ -173,6 +173,7 @@ const OPTION_SPECS: OptionSpec[] = [
 /** The options every command accepts. */
 const UNIVERSAL_OPTIONS: OptionSpec[] = [
   { flag: "-D", usage: "-DPROP=VALUE", summary: "Set the property PROP to VALUE" },
+  { flag: "-j", usage: "-j, --jobs N", summary: "Run at most N processes at once, one per CPU by default" },
   { flag: "--", usage: "--", summary: "End of options: what follows are targets, even if they start with '-'" },
   { flag: "-h", usage: "-h, --help", summary: "Print help and exit" },
   { flag: "-v", usage: "-v, --version", summary: "Print the fabr version and exit" },
@@ -415,6 +416,9 @@ export interface Options {
   /** For `--trace[=<file>]`: where the run's trace is written, a plain
    * filesystem path resolved against the invocation cwd. */
   traceFile?: string;
+  /** How many processes may run at once (`-j`/`--jobs`); one per CPU where
+   * absent. */
+  jobs?: number;
   /** The properties set on the command line, by key: each `-D`, and those
    * `-u`, `-t`, `-T` and `--coverage` set. */
   properties: Map<string, string>;
@@ -730,6 +734,20 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
   } else if (arg === "-h" || arg === "--help") {
     /* Printed once the command is known: the help is that command's. */
     seenFlags.push({ raw: arg, flag: "-h" });
+  } else if (arg.startsWith("-j") || arg === "--jobs" || arg.startsWith("--jobs=")) {
+    const separate = arg === "-j" || arg === "--jobs";
+    const given = separate ? next : arg.startsWith("--jobs=") ? arg.slice("--jobs=".length) : arg.slice("-j".length);
+    const jobs = given !== undefined && /^[0-9]+$/.test(given) ? Number(given) : 0;
+    if (jobs < 1) {
+      usageError(
+        given === undefined || given === ""
+          ? `Option '${arg}' requires a number of processes`
+          : `Option '-j' takes a whole number of at least 1, not '${given}'`,
+        command
+      );
+    }
+    options.jobs = jobs;
+    return separate ? 1 : 0;
   } else if (arg === "--version" || arg === "-v") {
     console.log(`fabr ${getVersion()}`);
     process.exit(0);
