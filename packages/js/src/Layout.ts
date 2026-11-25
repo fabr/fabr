@@ -24,8 +24,10 @@ import {
   EMPTY_FILESET,
   FabrError,
   FileSet,
+  IFile,
   mapComputable,
   MemoryFile,
+  nodeNaming,
   PackageFileSet,
   RunnableArgument,
   RunnableFileSet,
@@ -44,7 +46,7 @@ import {
   resolveVirtual,
   TREE_LINK,
 } from "@fabr-build/js-tools";
-import { assembleNodeModules, INSTANCE_AREA, packageDirectories } from "./NodeModules";
+import { assembleHoistedNodeModules, assembleNodeModules, hoistedPlacements, INSTANCE_AREA, packageDirectories } from "./NodeModules";
 import { ISelfPackage, pnpManifestOf, unpluggedPackages } from "./PnPManifest";
 
 /**
@@ -58,12 +60,16 @@ import { ISelfPackage, pnpManifestOf, unpluggedPackages } from "./PnPManifest";
  * - `node_modules`: a `node_modules` tree staged at the mount
  *   ({@link assembleNodeModules}), the direct deps linked at its top. For a tool
  *   that resolves packages through the filesystem.
+ * - `hoisted`: a `node_modules` tree with no links staged at the mount
+ *   ({@link assembleHoistedNodeModules}), for an install copied somewhere that
+ *   keeps no symlinks.
  */
 export const PNP = "pnp";
 export const NODE_MODULES = "node_modules";
+export const HOISTED = "hoisted";
 
 /** The layout tokens, for a caller that validates one. */
-export type NodeLayout = typeof PNP | typeof NODE_MODULES;
+export type NodeLayout = typeof PNP | typeof NODE_MODULES | typeof HOISTED;
 
 /** The action's packages laid out for a step, as its `layout` config says. */
 export interface IPackageLayout {
@@ -71,12 +77,17 @@ export interface IPackageLayout {
    *  tree at its mount, or the PnP table. */
   readonly files: FileSet;
   /** The packages the PnP table names in the tree pool, by each one's
-   *  location relative to the working directory; empty for `node_modules`,
-   *  whose packages are among {@link files}. */
+   *  location relative to the working directory; empty for a `node_modules`
+   *  tree, whose packages are among {@link files}. */
   readonly trees: ReadonlyMap<string, PackageFileSet>;
   /** The packages among the action's `deps` themselves: what a lookup by name
    *  falls back to where the requirer's own dependencies do not answer it. */
   readonly members: ReadonlyArray<PackageFileSet>;
+  /** False where what a read finds can change with no row the key names
+   *  changing (a hoisted tree, whose top holds packages besides
+   *  {@link members} and where a later copy may be placed above a lookup), so
+   *  a step's reads are not named at all; otherwise true. */
+  readonly namesReads: boolean;
   /**
    * Name a path the tool read (absolute, real or virtual, as the tool records
    * it) as the action's key names it:
@@ -89,15 +100,20 @@ export interface IPackageLayout {
    * - anything else, including a path outside the working directory that is
    *   no package's (a linked install, the interpreter) and a path into the
    *   tree's hidden links: undefined.
+   *
+   * Names nothing where {@link namesReads} is false.
    */
   nameRead(read: string): ReadName | undefined;
   /**
    * @return the absolute path of `path` within the package `route` reaches:
    * the dependency names from the top of what the layout stages, each looked
    * up as the tool resolves an import from the package before it, through the
-   * PnP table or the `node_modules` links. The package's directory is its
-   * instance directory, or its location over the tree pool, which may be a
-   * virtual one. Undefined where a name along the route resolves to nothing.
+   * PnP table or the `node_modules` links, or, in a hoisted tree, each taken
+   * along the packages' edges. The package's directory is its instance
+   * directory, a directory the hoisted tree places it at, or its location over
+   * the tree pool, which may be a virtual one. Undefined where a name along the
+   * route resolves to nothing, or the hoisted tree places the package nowhere
+   * (it is only ever bundled).
    */
   locate(route: ReadonlyArray<string>, path: string): string | undefined;
 }
@@ -107,7 +123,7 @@ export type ReadName = { file: string } | { route: string[]; path: string; packa
 
 /**
  * Lay out the action's `deps` as its `layout` config says, for the step working
- * in `dir`: a `node_modules` tree at `mount` (with a link from the sources'
+ * in `dir`: a `node_modules` tree at `mount`, linked or hoisted (with a link from the sources'
  * own package name to the sources, where the action's config names one), or a
  * PnP table over the tree pool, each of its trees made with `ensureTree`
  * first. With `unplug`, a PnP table locates the packages to unplug
@@ -149,10 +165,23 @@ export function layoutPackages(
           files,
           trees,
           members,
+          namesReads: true,
           nameRead: poolReadNamer(dir, locations, routes),
           locate: tableLocator(manifest.state, pool),
         };
       });
+    });
+  }
+  if (layoutConfig(action) === HOISTED) {
+    const placements = hoistedPlacements(deps, self?.name);
+    const files = FileSet.layout({ [mount]: [assembleHoistedNodeModules(deps, placements), selfLink(self, mount)] });
+    return Computable.resolve({
+      files,
+      trees: new Map(),
+      members,
+      namesReads: false,
+      nameRead: () => undefined,
+      locate: hoistedLocator(placements, members, dir, mount),
     });
   }
   const files = FileSet.layout({ [mount]: [assembleNodeModules(deps), selfLink(self, mount)] });
@@ -160,6 +189,7 @@ export function layoutPackages(
     files,
     trees: new Map(),
     members,
+    namesReads: true,
     nameRead: treeReadNamer(dir, mount, packageDirectories(deps), routes, members),
     locate: treeLocator(files, dir, mount),
   });
@@ -228,6 +258,39 @@ function treeLocator(files: FileSet, dir: string, mount: string): IPackageLayout
   };
 }
 
+/**
+ * Make {@link IPackageLayout.locate} for a hoisted layout: follow the route
+ * through the packages' edges, from the member of its first name, to the
+ * package it names, and locate that package's file at a directory `placements`
+ * places it at, in the tree staged at `mount` in `dir`.
+ */
+function hoistedLocator(
+  placements: ReadonlyMap<string, PackageFileSet>,
+  members: ReadonlyArray<PackageFileSet>,
+  dir: string,
+  mount: string
+): IPackageLayout["locate"] {
+  const nodeOf = nodeNaming(members);
+  const directories = new Map<string, string>();
+  for (const [directory, pkg] of placements) {
+    if (!directories.has(nodeOf(pkg))) {
+      directories.set(nodeOf(pkg), directory);
+    }
+  }
+  return (route, path) => {
+    let reached: PackageFileSet | undefined;
+    for (const name of route) {
+      const among: ReadonlyArray<PackageFileSet> = reached === undefined ? members : reached.packages;
+      reached = among.find(pkg => pkg.packageName === name);
+      if (reached === undefined) {
+        return undefined;
+      }
+    }
+    const directory = reached === undefined ? undefined : directories.get(nodeOf(reached));
+    return directory === undefined ? undefined : join(dir, ...mount.split("/"), ...directory.split("/"), ...path.split("/"));
+  };
+}
+
 /** A program's packages as its install holds them ({@link layoutProgram}). */
 export interface IProgramLayout {
   /** What the install holds for them: a `node_modules` tree, or the PnP table
@@ -265,31 +328,93 @@ export interface IPnpPreload {
  */
 export function pnpPreloadOf(context: TargetContext): Computable<IPnpPreload> {
   return context.getGlobalRunnable(PNP_RUNTIME_GLOBAL).then(runtime => {
-    /* The runtime's bin, as its install names it: a runnable launched by nothing. */
-    const [bin] = new RunnableFileSet(runtime, [], undefined, runtime.root, runtime.surface).toCommandLine();
-    if (typeof bin !== "object" || !("installFile" in bin)) {
-      throw new FabrError(`${PNP_RUNTIME_GLOBAL} must be a program of its own install`);
-    }
-    const file = MemoryFile.from(
-      [
-        `"use strict";`,
-        `const path = require("path");`,
-        `const pool = path.join(__dirname, ${JSON.stringify(TREE_MOUNT)});`,
-        `if (!require("fs").existsSync(pool)) {`,
-        `  throw new Error(${JSON.stringify(PNP_STAGING_ERROR)} + " (" + __dirname + ")");`,
-        `}`,
-        `require(path.join(pool, ${JSON.stringify(`${runtime.toManifestHash()}/${bin.installFile}`)})).installFromPreload(__filename);`,
-        ``,
-      ].join("\n")
-    );
-    return { file, runtime };
+    const entry = runtimeEntryOf(runtime);
+    return { file: preloadFile(TREE_MOUNT, `${runtime.toManifestHash()}/${entry}`, PNP_STAGING_ERROR), runtime };
   });
 }
 
-/** Lay out a program's `packages` in a `node_modules` tree, each reached at `node_modules/<name>`. */
-export function nodeModulesLayout(packages: PackageFileSet[]): IProgramLayout {
+/** @return the install path of the bin of `runtime`, the program `JS_PNP_RUNTIME` names: a runnable launched by nothing. */
+function runtimeEntryOf(runtime: RunnableFileSet): string {
+  const [bin] = new RunnableFileSet(runtime, [], undefined, runtime.root, runtime.surface).toCommandLine();
+  if (typeof bin !== "object" || !("installFile" in bin)) {
+    throw new FabrError(`${PNP_RUNTIME_GLOBAL} must be a program of its own install`);
+  }
+  return bin.installFile;
+}
+
+/**
+ * Make a PnP install's preload: it requires `entry` from the directory `pool`
+ * (both relative to the preload's own directory) and installs it for the table
+ * beside the preload, refusing with `missing` where `pool` is not there.
+ */
+function preloadFile(pool: string, entry: string, missing: string): MemoryFile {
+  return MemoryFile.from(
+    [
+      `"use strict";`,
+      `const path = require("path");`,
+      `const pool = path.join(__dirname, ${JSON.stringify(pool)});`,
+      `if (!require("fs").existsSync(pool)) {`,
+      `  throw new Error(${JSON.stringify(missing)} + " (" + __dirname + ")");`,
+      `}`,
+      `require(path.join(pool, ${JSON.stringify(entry)})).installFromPreload(__filename);`,
+      ``,
+    ].join("\n")
+  );
+}
+
+/** The directory a self-contained PnP installation holds its trees in ({@link pnpInstallation}). */
+const INSTALLED_POOL = ".fabr-tree";
+
+/** What a self-contained PnP installation's preload says where its trees are missing. */
+const INSTALLED_POOL_ERROR = `A layout/pnp installation runs only with its ${INSTALLED_POOL} directory beside its PnP table`;
+
+/**
+ * Lay out `packages` as a PnP installation that holds everything it needs and
+ * no links: the PnP table and the preload (which node is given with
+ * `--require`) at its root, each package in `packages` at
+ * `node_modules/<name>/` (one to unplug beside the others it is unplugged
+ * with), and every other package, and the PnP runtime, in a tree of its own
+ * copied to `.fabr-tree/<content hash>/`.
+ */
+export function pnpInstallation(context: TargetContext, packages: PackageFileSet[]): Computable<FileSet> {
+  return Computable.forAll(
+    [unpluggedPackages(packages), context.getGlobalRunnable(PNP_RUNTIME_GLOBAL)] as const,
+    (unplugged, runtime) => {
+      const manifest = pnpManifestOf(packages, undefined, undefined, unplugged, { pool: INSTALLED_POOL, besideTable: true });
+      /* The runtime's own package, which imports nothing but node's modules and
+       * its own files: what its install holds where its root leads. */
+      const link = runtime.getFile(runtime.root);
+      const home = link instanceof SymlinkFile ? posix.join(posix.dirname(runtime.root), link.target) : runtime.root;
+      const own = new FileSet(
+        new Map(
+          [...runtime].flatMap(([name, file]): Array<[string, IFile]> =>
+            name.startsWith(`${home}/`) ? [[name.slice(home.length + 1), file]] : []
+          )
+        )
+      );
+      const entry = posix.relative(runtime.root, runtimeEntryOf(runtime));
+      if (own.getFile(entry) === undefined) {
+        throw new FabrError(`${PNP_RUNTIME_GLOBAL} must be a package's program, its files under its install's root`);
+      }
+      const runtimeTree = own.toManifestHash();
+      return FileSet.unionAll(
+        FileSet.layout({
+          [PNP_DATA_FILE]: manifest.toFile(),
+          [PNP_PRELOAD]: preloadFile(INSTALLED_POOL, `${runtimeTree}/${entry}`, INSTALLED_POOL_ERROR),
+        }),
+        ...manifest.trees.map(tree => tree.mountedAt(`${INSTALLED_POOL}/${tree.toManifestHash()}`)),
+        manifest.beside,
+        own.mountedAt(`${INSTALLED_POOL}/${runtimeTree}`)
+      );
+    }
+  );
+}
+
+/** Lay out a program's `packages` in a `node_modules` tree, linked or (with
+ *  `hoisted`) not, each reached at `node_modules/<name>`. */
+export function nodeModulesLayout(packages: PackageFileSet[], hoisted = false): IProgramLayout {
   return {
-    files: FileSet.layout({ node_modules: assembleNodeModules(packages) }),
+    files: FileSet.layout({ node_modules: hoisted ? assembleHoistedNodeModules(packages) : assembleNodeModules(packages) }),
     locationOf: pkg => `node_modules/${pkg.packageName}`,
     interpreterArgs: [],
   };
@@ -299,8 +424,8 @@ export function nodeModulesLayout(packages: PackageFileSet[]): IProgramLayout {
  * Lay out a program's `packages` (those of `deps`, and a package entry among
  * them) as `layout` says:
  *
- * - `node_modules`: a tree at `node_modules`, each package reached at
- *   `node_modules/<name>`.
+ * - `node_modules`, `hoisted`: a tree at `node_modules`, linked or not, each
+ *   package reached at `node_modules/<name>`.
  * - `pnp`: the PnP table at the install root and, beside it, the preload
  *   ({@link pnpPreloadOf}) that node is given with `--require`. Each package,
  *   and the runtime, is a tree written to the pool here, reached through the
@@ -309,8 +434,8 @@ export function nodeModulesLayout(packages: PackageFileSet[]): IProgramLayout {
  *   ({@link unpluggedPackages}) are trees of their own.
  */
 export function layoutProgram(context: TargetContext, packages: PackageFileSet[], layout: NodeLayout): Computable<IProgramLayout> {
-  if (layout === NODE_MODULES) {
-    return Computable.resolve(nodeModulesLayout(packages));
+  if (layout !== PNP) {
+    return Computable.resolve(nodeModulesLayout(packages, layout === HOISTED));
   }
   return Computable.forAll(
     [
@@ -333,8 +458,8 @@ export function layoutProgram(context: TargetContext, packages: PackageFileSet[]
 /** Read the action's `layout` config, one of the {@link NodeLayout} tokens. */
 function layoutConfig(action: BuildAction): NodeLayout {
   const layout = stringConfig(action, "layout");
-  if (layout !== PNP && layout !== NODE_MODULES) {
-    throw new FabrError(`Config 'layout' must be '${PNP}' or '${NODE_MODULES}', not '${layout}'`);
+  if (layout !== PNP && layout !== NODE_MODULES && layout !== HOISTED) {
+    throw new FabrError(`Config 'layout' must be '${PNP}', '${NODE_MODULES}' or '${HOISTED}', not '${layout}'`);
   }
   return layout;
 }

@@ -326,7 +326,8 @@ test's `NODE_OPTIONS`. Packages that hold a native addon (a `.node` file), or
 whose `package.json` sets `preferUnplugged`, are laid out side by side in a `node_modules`
 directory with the others of them they depend on, so an addon that loads a library from such a
 package (`sharp`'s, from `@img/sharp-libvips-<platform>`) finds it.
-`layout/node_modules` asks for the tree explicitly. A [`js_script`](/guides/tools/#running-without-a-node_modules-directory)
+`layout/node_modules` asks for the tree explicitly, and `layout/hoisted` for a tree with no
+symlinks, laid out as npm's default install lays one out. A [`js_script`](/guides/tools/#running-without-a-node_modules-directory)
 program takes the same flag.
 
 ### DOM tests

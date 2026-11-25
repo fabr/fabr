@@ -19,12 +19,16 @@
 
 /**
  * The js_installation rule: build a `node_modules` tree of every package in
- * `deps` and every package they require, laid out as any install the plugin
- * makes, with the loose files in `deps` at their own paths.
+ * `deps` and every package they require, linked as any install the plugin
+ * makes or, with `layout/hoisted` among `deps`, hoisted with no links, or,
+ * with `layout/pnp`, a PnP installation holding its packages' trees; and the
+ * loose files in `deps` at their own paths.
  */
 
-import { defineRule, FileSet, PackageFileSet } from "@fabr-build/core";
-import { assembleNodeModules } from "../NodeModules";
+import { defineRule, FileSet, Flag, PackageFileSet } from "@fabr-build/core";
+import { layoutOf } from "../JSPackage";
+import { HOISTED, PNP, pnpInstallation } from "../Layout";
+import { assembleHoistedNodeModules, assembleNodeModules } from "../NodeModules";
 import { NPM_FORMAT } from "../NPMProtocol";
 
 /** The `js_installation` rule. */
@@ -32,9 +36,15 @@ export default defineRule({
   requirements(context) {
     return { run: { deps: context.getPackageProperty("deps", undefined, NPM_FORMAT) }, result: "files" };
   },
-  evaluateMaterialized(_context, { deps }: { deps: FileSet[] }) {
-    const packages = deps.filter(dep => dep instanceof PackageFileSet);
-    const loose = deps.filter(dep => !(dep instanceof PackageFileSet));
-    return FileSet.unionAll(FileSet.layout({ node_modules: assembleNodeModules(packages) }), ...loose);
+  evaluateMaterialized(context, { deps }: { deps: FileSet[] }) {
+    const packages = deps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
+    const flags = deps.filter((dep): dep is Flag => dep instanceof Flag);
+    const loose = deps.filter(dep => !(dep instanceof PackageFileSet) && !(dep instanceof Flag));
+    const layout = layoutOf(flags);
+    if (layout === PNP) {
+      return pnpInstallation(context, packages).then(installed => FileSet.unionAll(installed, ...loose));
+    }
+    const tree = layout === HOISTED ? assembleHoistedNodeModules(packages) : assembleNodeModules(packages);
+    return FileSet.unionAll(FileSet.layout({ node_modules: tree }), ...loose);
   },
 });

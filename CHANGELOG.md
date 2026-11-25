@@ -4,6 +4,12 @@ Notable changes in each release of fabr. The CLI (`@fabr-build/cli`), the engine
 (`@fabr-build/sass-pnp-importer`) and the migration tool (`@fabr-build/migration`) are released
 together and share a version number.
 
+## Fabr 0.4.5
+
+@fabr-build/js
+
+- Add layout/hoisted for npm (symlink-free) layout.
+
 ## Fabr 0.4.4
 
 @fabr-build/core

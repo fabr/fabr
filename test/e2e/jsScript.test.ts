@@ -17,8 +17,11 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { execFileSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 import { expect } from "chai";
-import { HOST_NODE, runFabr, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
+import { HOST_NODE, runFabr, runFabrSequence, STUB_TSC, STUB_TSC_CONFIG } from "./harness";
 
 /* A js_script defines a runnable; the generic `generate` target executes it and
  * collects output. These cases exercise that pair through the real CLI. */
@@ -541,5 +544,57 @@ describe("e2e: js_script under layout/pnp", () => {
     );
     expect(result.status).to.not.equal(0);
     expect(result.stderr).to.contain("A layout/pnp program runs only as a program of its own");
+  });
+});
+
+describe("e2e: js_installation without links", () => {
+  /** @return the symlinks under `dir`, relative to it. */
+  const linksUnder = (dir: string): string[] =>
+    fs
+      .readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isSymbolicLink())
+      .map(entry => path.relative(dir, path.join(entry.parentPath, entry.name)));
+
+  /** Copy out the installation `inst`, laid out with `flag`, and run its `app` package with `node` and `nodeArgs`. */
+  const runCopied = (flag: string, nodeArgs: (installed: string) => string[]): { links: string[]; output: string } => {
+    let links: string[] = [];
+    let output = "";
+    const [copied] = runFabrSequence(
+      {
+        ...STUB_TSC,
+        "PROJECT.fabr":
+          "plugin @fabr-build/js;\n\n" +
+          STUB_TSC_CONFIG +
+          "\njs_package lib { srcs = libsrc:**/*.ts; }\n" +
+          "js_package app { srcs = appsrc:**/*.ts; deps = lib; }\n" +
+          `js_installation inst { deps = ${flag} app; }\n`,
+        "libsrc/index.ts": 'exports.greeting = "hello";\n',
+        "appsrc/index.ts": 'process.stdout.write(require("lib").greeting);\n',
+      },
+      [
+        ["-DJS_TARGET=es2020", "cp", "inst", "out"],
+        dir => {
+          const installed = path.join(dir, "out", "inst");
+          links = linksUnder(installed);
+          output = execFileSync(process.execPath, [...nodeArgs(installed), path.join(installed, "node_modules", "app", "index.js")], {
+            cwd: dir,
+            env: {},
+          }).toString();
+        },
+      ]
+    );
+    expect(copied.status, copied.stderr).to.equal(0);
+    return { links, output };
+  };
+
+  it("lays out layout/hoisted as a node_modules tree that runs as it is", () => {
+    expect(runCopied("layout/hoisted", () => [])).to.deep.equal({ links: [], output: "hello" });
+  });
+
+  it("lays out layout/pnp as a PnP installation holding its trees, run with its preload", () => {
+    expect(runCopied("layout/pnp", installed => ["--require", path.join(installed, ".fabr-pnp.cjs")])).to.deep.equal({
+      links: [],
+      output: "hello",
+    });
   });
 });

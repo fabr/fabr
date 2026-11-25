@@ -430,6 +430,34 @@ describe("pnpManifestOf with unplugged packages", () => {
     }
   });
 
+  it("lays the direct packages beside the table, a second wiring of one in the pool, each at a plain location", () => {
+    const foo = pkg("foo", "1.0.0", [pkg("x", "1.0.0")]);
+    const app = pkg("app", "1.0.0", [pkg("foo", "1.0.0", [pkg("x", "2.0.0")])]);
+    const manifest = pnpManifestOf([foo, app], undefined, undefined, new Set(), { pool: ".pool", besideTable: true });
+    expect([...rowsOf(manifest, "foo").values()].map(info => info.packageLocation).sort()).to.deep.equal([
+      `./.pool/${foo.toManifestHash()}/`,
+      "./node_modules/foo/",
+    ]);
+    expect(locationOf(manifest, "app")).to.equal("./node_modules/app/");
+    expect([...manifest.beside].map(([name]) => name).sort()).to.deep.equal([
+      "node_modules/app/index.js",
+      "node_modules/foo/index.js",
+    ]);
+  });
+
+  it("lays a direct package to unplug beside the table with the tree it is unplugged in", async () => {
+    const libvips = holding("@img/sharp-libvips-darwin-arm64", { "lib/libvips.node": "\0" });
+    const addon = holding("sharp", { "lib/sharp.node": "\0" }, [libvips]);
+    const manifest = pnpManifestOf([addon], undefined, undefined, await toPromise(unpluggedPackages([addon])), {
+      pool: ".pool",
+      besideTable: true,
+    });
+    expect(locationOf(manifest, "sharp")).to.equal("./node_modules/sharp/");
+    expect(locationOf(manifest, "@img/sharp-libvips-darwin-arm64")).to.equal("./node_modules/@img/sharp-libvips-darwin-arm64/");
+    expect(manifest.trees).to.have.lengthOf(0);
+    expect([...manifest.beside].map(([name]) => name)).to.include("node_modules/sharp/lib/sharp.node");
+  });
+
   it("refuses two packages of one name unplugged in one tree", async () => {
     const one = holding("dep", { "a.node": "1" });
     const two = new PackageFileSet(new Map<string, IFile>([["b.node", MemoryFile.from("2")]]), "dep", "2.0.0").withOrigin({

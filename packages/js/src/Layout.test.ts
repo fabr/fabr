@@ -31,7 +31,7 @@ import {
   SymlinkFile,
 } from "@fabr-build/core";
 import { virtualLocation } from "@fabr-build/js-tools";
-import { IPackageLayout, layoutPackages, NODE_MODULES, PNP } from "./Layout";
+import { HOISTED, IPackageLayout, layoutPackages, NODE_MODULES, PNP } from "./Layout";
 import { packageDirectories } from "./NodeModules";
 
 const STEP: IBuildActionDefinition = { id: "test:step", version: 1, run: () => Computable.reject(new Error("not run")) };
@@ -67,6 +67,11 @@ function laid(
     { discoverable: { deps } }
   );
   return toPromise(layoutPackages(action, DIR, tree => Computable.resolve(path.join(POOL, tree.toManifestHash())), mount, unplug));
+}
+
+/** A package `name` at `version`, its content distinct per version. */
+function versioned(name: string, version: string): PackageFileSet {
+  return new PackageFileSet(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version);
 }
 
 const row = (name: ReturnType<IPackageLayout["nameRead"]>): unknown =>
@@ -167,6 +172,51 @@ describe("layoutPackages", () => {
         path.join(DIR, "node_modules", ...packageDirectories([dep]).get(dep)!.split("/"), "index.js")
       );
       expect(layout.locate(["l", "@scope/dep"], "index.js"), "no such edge").to.equal(undefined);
+    });
+  });
+
+  describe("under hoisted", () => {
+    it("stages the tree at the mount with each package at its directory, and the sources' own package linked", async () => {
+      const layout = await laid([a], HOISTED, { name: "self", location: "src" });
+      const files = new Map(layout.files);
+      expect(files.has("node_modules/a/index.js")).to.equal(true);
+      expect(files.has("node_modules/b/index.js")).to.equal(true);
+      expect((files.get("node_modules/self") as SymlinkFile).target).to.equal("../src");
+    });
+
+    it("places a package of the sources' own name below the top, which their link holds", async () => {
+      const layout = await laid([pkg("tool", "tool", [versioned("self", "0.9.0")])], HOISTED, { name: "self", location: "src" });
+      const files = new Map(layout.files);
+      expect(files.get("node_modules/self")).to.be.instanceOf(SymlinkFile);
+      expect(files.has("node_modules/tool/node_modules/self/index.js")).to.equal(true);
+    });
+
+    it("locates a package's file by its route, at a directory the tree places it", async () => {
+      const x1 = versioned("x", "1.0.0");
+      const x2 = versioned("x", "2.0.0");
+      const layout = await laid([pkg("top", "top", [x1, pkg("y", "y", [x2])])], HOISTED);
+      expect(layout.locate(["top", "y", "x"], "index.js")).to.equal(
+        path.join(DIR, "node_modules", "y", "node_modules", "x", "index.js")
+      );
+      expect(layout.locate(["top", "x"], "index.js")).to.equal(path.join(DIR, "node_modules", "x", "index.js"));
+      expect(layout.locate(["top", "missing"], "index.js")).to.equal(undefined);
+      expect(layout.nameRead(path.join(DIR, "node_modules", "x", "index.js")), "a hoisted tree names no read").to.equal(undefined);
+    });
+
+    it("locates a package past a bundle where the tree places it, and nothing it only bundles", async () => {
+      /* `bundler` ships its own x@2; `other` requires x@2 too, placed at the top. */
+      const x2 = versioned("x", "2.0.0");
+      const bundler = new PackageFileSet(
+        new Map<string, IFile>(["index.js", "node_modules/x/index.js"].map(file => [file, MemoryFile.from(file)])),
+        "bundler",
+        "1.0.0",
+        dependenciesOn(x2)
+      );
+      const layout = await laid([bundler, pkg("other", "other", [x2])], HOISTED);
+      expect(layout.locate(["bundler", "x"], "index.js")).to.equal(path.join(DIR, "node_modules", "x", "index.js"));
+      /* With x@1 holding the top, the bundled x@2 is placed nowhere. */
+      const shadowed = await laid([bundler, versioned("x", "1.0.0")], HOISTED);
+      expect(shadowed.locate(["bundler", "x"], "index.js")).to.equal(undefined);
     });
   });
 

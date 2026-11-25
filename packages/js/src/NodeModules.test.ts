@@ -29,9 +29,10 @@ import {
   PackageGraphBuilder,
   SymlinkFile,
   dependenciesOn,
+  nodeNaming,
 } from "@fabr-build/core";
 import { referenceOf } from "./PnPManifest";
-import { assembleNodeModules } from "./NodeModules";
+import { assembleHoistedNodeModules, assembleNodeModules, hoistedPlacements } from "./NodeModules";
 
 /** A package with a single `index.js` and the given (already-built) deps. */
 function pkg(name: string, deps: PackageFileSet[] = []): PackageFileSet {
@@ -356,6 +357,183 @@ describe("assembling delivered edge-binding graphs", () => {
     expect(() => assembleNodeModules([one, root])).to.throw(ConflictError, /p/);
   });
 
+  describe("hoisted", () => {
+    /** The assembled hoisted tree's entries, checked to hold no links. */
+    const hoisted = (sets: FileSet[]): Map<string, IFile> => {
+      const files = entries(assembleHoistedNodeModules(sets));
+      expect([...files.values()].filter(file => file instanceof SymlinkFile)).to.have.lengthOf(0);
+      return files;
+    };
+
+    it("gives each requirer the version its edge binds, each copy as high as it can go", async () => {
+      const root = delivered(
+        {
+          "svgo@4.0.1": { csso: "csso@5.0.5", "css-tree": "css-tree@3.0.1", "mdn-data": "mdn-data@2.12.2" },
+          "csso@5.0.5": { "css-tree": "css-tree@2.2.0" },
+          "css-tree@2.2.0": { "mdn-data": "mdn-data@2.0.28" },
+          "css-tree@3.0.1": { "mdn-data": "mdn-data@2.12.2" },
+          "mdn-data@2.12.2": {},
+          "mdn-data@2.0.28": {},
+        },
+        "svgo@4.0.1"
+      );
+      const files = hoisted([root]);
+      expect(await imported(files, "svgo", "css-tree")).to.equal("// css-tree@3.0.1");
+      expect(await imported(files, "svgo", "csso", "css-tree")).to.equal("// css-tree@2.2.0");
+      expect(await imported(files, "svgo", "csso", "css-tree", "mdn-data")).to.equal("// mdn-data@2.0.28");
+      expect(await imported(files, "svgo", "css-tree", "mdn-data")).to.equal("// mdn-data@2.12.2");
+      expect([...files.keys()].filter(name => name.endsWith("/index.js")).sort()).to.deep.equal([
+        "css-tree/index.js",
+        "csso/index.js",
+        "csso/node_modules/css-tree/index.js",
+        "csso/node_modules/mdn-data/index.js",
+        "mdn-data/index.js",
+        "svgo/index.js",
+      ]);
+    });
+
+    it("installs an instance once where nothing takes its name (the pg shape)", async () => {
+      const root = delivered(
+        {
+          "app@1.0.0": { pg: "pg@8.11.3", orm: "orm@1.0.0", pool: "pool@1.0.0", saver: "saver@1.0.0" },
+          "orm@1.0.0": { pg: "pg@8.11.3" },
+          "pool@1.0.0": { pg: "pg@8.11.3" },
+          "saver@1.0.0": { pg: "pg@8.12.0" },
+          "pg@8.11.3": {},
+          "pg@8.12.0": {},
+        },
+        "app@1.0.0"
+      );
+      const files = hoisted([root]);
+      expect(await imported(files, "app", "orm", "pg")).to.equal("// pg@8.11.3");
+      expect(await imported(files, "app", "pool", "pg")).to.equal("// pg@8.11.3");
+      expect(await imported(files, "app", "saver", "pg")).to.equal("// pg@8.12.0");
+      expect([...files.keys()].filter(name => name.endsWith("pg/index.js")).sort()).to.deep.equal([
+        "pg/index.js",
+        "saver/node_modules/pg/index.js",
+      ]);
+    });
+
+    it("refuses a cross-generation version cycle, whose tree would not end", () => {
+      const root = delivered(
+        {
+          "a@1.0.0": { b: "b@1.0.0" },
+          "b@1.0.0": { a: "a@2.0.0" },
+          "a@2.0.0": { b: "b@2.0.0" },
+          "b@2.0.0": { a: "a@1.0.0" },
+        },
+        "a@1.0.0"
+      );
+      expect(() => assembleHoistedNodeModules([root])).to.throw(/Can't lay out b@1\.0\.0 without links/);
+    });
+
+    it("lays out a copy beneath a copy of itself where the copy's own dependencies are found above it", async () => {
+      /* X@1's copy beneath G finds E@1 at X/node_modules/E, so the tree ends. */
+      const root = delivered(
+        {
+          "root@1.0.0": { X: "X@1.0.0", E: "E@2.0.0", G: "G@2.0.0" },
+          "X@1.0.0": { E: "E@1.0.0" },
+          "E@1.0.0": { X: "X@2.0.0" },
+          "X@2.0.0": { G: "G@1.0.0" },
+          "G@1.0.0": { X: "X@1.0.0" },
+          "E@2.0.0": {},
+          "G@2.0.0": {},
+        },
+        "root@1.0.0"
+      );
+      const files = hoisted([root]);
+      expect(await imported(files, "root", "X", "E", "X", "G", "X", "E")).to.equal("// E@1.0.0");
+    });
+
+    it("lays out a graph whose copies repeat a package above them, seeing other packages there", async () => {
+      /* b@1 wired two ways (w1 requiring w2), c@1 beneath copies of itself. */
+      const builder = new PackageGraphBuilder();
+      const node = (name: string, version: string): PackageFileSet =>
+        builder.node(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version);
+      const a2 = node("a", "2.0.0");
+      const bW1 = node("b", "1.0.0");
+      const bW2 = node("b", "1.0.0");
+      const c1 = node("c", "1.0.0");
+      const c2 = node("c", "2.0.0");
+      const d3 = node("d", "3.0.0");
+      builder.wire(bW2, dependenciesOn(a2, d3));
+      builder.wire(d3, dependenciesOn(c1));
+      builder.wire(c1, dependenciesOn(a2, bW1, d3));
+      builder.wire(bW1, dependenciesOn(bW2, c2));
+      builder.wire(c2, dependenciesOn(c1));
+      builder.wire(a2, []);
+      builder.seal();
+      const files = hoisted([bW2]);
+      expect(await imported(files, "b", "d", "c", "b", "b", "d", "c", "b", "c")).to.equal("// c@2.0.0");
+    });
+
+    it("keeps a tree linear in the graph where a family of packages takes names the top holds", () => {
+      /* Each a_i@2 requires b_i@2 and c_i@2, which both require a_{i+1}@2; the
+       * @1 of every name holds the top. Nesting each in its requirer's own
+       * node_modules would double the copies at every level. */
+      const levels = 12;
+      const graph: Record<string, Record<string, string>> = {};
+      const root: Record<string, string> = { r: "r@1.0.0" };
+      for (let i = 0; i <= levels; i++) {
+        for (const name of ["a", "b", "c"]) {
+          root[`${name}${i}`] = `${name}${i}@1.0.0`;
+          graph[`${name}${i}@1.0.0`] = {};
+        }
+        graph[`a${i}@2.0.0`] = i < levels ? { [`b${i}`]: `b${i}@2.0.0`, [`c${i}`]: `c${i}@2.0.0` } : {};
+        if (i < levels) {
+          graph[`b${i}@2.0.0`] = { [`a${i + 1}`]: `a${i + 1}@2.0.0` };
+          graph[`c${i}@2.0.0`] = { [`a${i + 1}`]: `a${i + 1}@2.0.0` };
+        }
+      }
+      /* And, beside it, a copy beneath a copy of itself that ends (X@1 under G@1). */
+      Object.assign(root, { X: "X@1.0.0", E: "E@2.0.0", G: "G@2.0.0" });
+      Object.assign(graph, {
+        "X@1.0.0": { E: "E@1.0.0" },
+        "E@1.0.0": { X: "X@2.0.0" },
+        "X@2.0.0": { G: "G@1.0.0" },
+        "G@1.0.0": { X: "X@1.0.0" },
+        "E@2.0.0": {},
+        "G@2.0.0": {},
+      });
+      graph["root@1.0.0"] = root;
+      graph["r@1.0.0"] = { a0: "a0@2.0.0" };
+      const placements = hoistedPlacements([delivered(graph, "root@1.0.0")]);
+      expect(placements.size).to.be.lessThan(4 * 3 * (levels + 1) + 12);
+    });
+
+    it("places nothing for a dependency its requirer bundles, and nests others beneath the bundle", () => {
+      /* p ships x@2 under its own node_modules; q, beneath p, requires x@3. */
+      const builder = new PackageGraphBuilder();
+      const node = (name: string, version: string, files: string[] = ["index.js"]): PackageFileSet =>
+        builder.node(
+          new Map<string, IFile>(files.map(file => [file, MemoryFile.from(`// ${name}@${version} ${file}`)])),
+          name,
+          version
+        );
+      const root = node("root", "1.0.0");
+      const x1 = node("x", "1.0.0");
+      const x2 = node("x", "2.0.0");
+      const x3 = node("x", "3.0.0");
+      const p = node("p", "1.0.0", ["index.js", "node_modules/x/index.js", "node_modules/x/package.json"]);
+      const q1 = node("q", "1.0.0");
+      const q2 = node("q", "2.0.0");
+      builder.wire(root, dependenciesOn(p, x1, q1));
+      builder.wire(p, dependenciesOn(x2, q2));
+      builder.wire(q2, dependenciesOn(x3));
+      [x1, x2, x3, q1].forEach(pkg => builder.wire(pkg, []));
+      builder.seal();
+      const placements = hoistedPlacements([root]);
+      expect([...placements.keys()].sort()).to.deep.equal([
+        "p",
+        "p/node_modules/q",
+        "p/node_modules/q/node_modules/x",
+        "q",
+        "root",
+        "x",
+      ]);
+    });
+  });
+
   it("still NAMES the same delivery, because references need no tree", () => {
     /* A report can span surfaces that never co-resolved, where two nodes under
      * one id is an ordinary fact about two deliveries — and a node's reference
@@ -363,6 +541,161 @@ describe("assembling delivered edge-binding graphs", () => {
     const batches = disagreeingBatches();
     const pOf = (root: PackageFileSet): PackageFileSet => root.getDependency("p")!.package!;
     expect(referenceOf(pOf(batches[0])), "the two p nodes get distinct references").to.not.equal(referenceOf(pOf(batches[1])));
+  });
+});
+
+describe("hoistedPlacements over random graphs", () => {
+  /** A seeded generator of numbers in [0, 1). */
+  function random(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** A random graph: nodes by name and version, each node's dependencies as
+   *  node indices (one per name), and the roots (distinct names). */
+  interface IGraphSpec {
+    nodes: Array<{ name: string; version: string }>;
+    edges: number[][];
+    roots: number[];
+  }
+
+  /** Make a random graph: up to five names, three versions each, some
+   *  versions wired two ways, each node requiring a random set of names (its
+   *  own among them), cycles allowed. */
+  function spec(seed: number): IGraphSpec {
+    const next = random(seed);
+    const names = ["a", "b", "c", "d", "@s/e"].slice(0, 2 + Math.floor(next() * 4));
+    const nodes: IGraphSpec["nodes"] = [];
+    for (const name of names) {
+      for (let version = 1; version <= 1 + Math.floor(next() * 3); version++) {
+        for (let wiring = 0; wiring < (next() < 0.2 ? 2 : 1); wiring++) {
+          nodes.push({ name, version: `${version}.0.0` });
+        }
+      }
+    }
+    const of = (name: string): number[] => nodes.flatMap((node, index) => (node.name === name ? [index] : []));
+    const pick = (indices: number[]): number => indices[Math.floor(next() * indices.length)];
+    const edges = nodes.map(() => names.filter(() => next() < 0.45).map(name => pick(of(name))));
+    const roots = names.filter(() => next() < 0.5).map(name => pick(of(name)));
+    return { nodes, edges, roots: roots.length > 0 ? roots : [0] };
+  }
+
+  /** Build the graph `spec` describes, its nodes made, its edges wired and its
+   *  roots listed in reverse where `reversed`. */
+  function build({ nodes, edges, roots }: IGraphSpec, reversed: boolean): PackageFileSet[] {
+    const order = <T>(items: T[]): T[] => (reversed ? [...items].reverse() : items);
+    const builder = new PackageGraphBuilder();
+    const made = new Map<number, PackageFileSet>();
+    for (const index of order(nodes.map((_, at) => at))) {
+      const { name, version } = nodes[index];
+      made.set(index, builder.node(new Map<string, IFile>([["index.js", MemoryFile.from(`// ${name}@${version}`)]]), name, version));
+    }
+    for (const index of order(nodes.map((_, at) => at))) {
+      builder.wire(made.get(index)!, dependenciesOn(...order(edges[index]).map(dep => made.get(dep)!)));
+    }
+    builder.seal();
+    return order(roots).map(root => made.get(root)!);
+  }
+
+  /**
+   * @return how many directories placing each conflicting dependency in its
+   * requirer's own `node_modules` makes, with no check for a tree that never
+   * ends, or undefined past `cap`; the top level is chosen as
+   * hoistedPlacements chooses it.
+   */
+  function nestedInRequirers(roots: PackageFileSet[], cap: number): number | undefined {
+    const nodeOf = nodeNaming(roots);
+    const byName = (a: PackageFileSet, b: PackageFileSet): number =>
+      a.packageName < b.packageName ? -1 : a.packageName > b.packageName ? 1 : 0;
+    const placements = new Map<string, PackageFileSet>(roots.map(root => [root.packageName, root]));
+    const visited = new Set<string>();
+    for (let level = [...placements.values()]; level.length > 0;) {
+      const next: PackageFileSet[] = [];
+      const ordered = level
+        .filter(pkg => !visited.has(nodeOf(pkg)) && visited.add(nodeOf(pkg)))
+        .sort((a, b) => (nodeOf(a) < nodeOf(b) ? -1 : nodeOf(a) > nodeOf(b) ? 1 : 0));
+      for (const pkg of ordered) {
+        for (const dep of [...pkg.packages].sort(byName)) {
+          if (!placements.has(dep.packageName)) {
+            placements.set(dep.packageName, dep);
+          }
+          next.push(dep);
+        }
+      }
+      level = next;
+    }
+    const walk = (from: string, name: string): string | undefined => {
+      const parts = from.split("/node_modules/");
+      for (let count = parts.length; count >= 1; count--) {
+        const candidate = `${parts.slice(0, count).join("/node_modules/")}/node_modules/${name}`;
+        if (placements.has(candidate)) {
+          return candidate;
+        }
+      }
+      return placements.has(name) ? name : undefined;
+    };
+    const queue = [...placements.keys()];
+    for (let at = 0; at < queue.length; at++) {
+      if (queue.length > cap) {
+        return undefined;
+      }
+      for (const dep of placements.get(queue[at])!.packages) {
+        const found = walk(queue[at], dep.packageName);
+        if (found === undefined || nodeOf(placements.get(found)!) !== nodeOf(dep)) {
+          placements.set(`${queue[at]}/node_modules/${dep.packageName}`, dep);
+          queue.push(`${queue[at]}/node_modules/${dep.packageName}`);
+        }
+      }
+    }
+    return placements.size;
+  }
+
+  it("resolves every edge of every copy to the package it is bound to, refuses only a tree that never ends, and is deterministic", () => {
+    let laidOut = 0;
+    let refused = 0;
+    for (let seed = 1; seed <= 100; seed++) {
+      const graphSpec = spec(seed);
+      const roots = build(graphSpec, false);
+      let placements: Map<string, PackageFileSet>;
+      try {
+        placements = hoistedPlacements(roots);
+      } catch (error) {
+        expect(String(error), `seed ${seed}`).to.match(/without links/);
+        expect(nestedInRequirers(roots, 200), `seed ${seed}: refused a tree that ends`).to.equal(undefined);
+        expect(() => hoistedPlacements(build(graphSpec, true)), `seed ${seed}: refused in one order only`).to.throw(/without links/);
+        refused++;
+        continue;
+      }
+      laidOut++;
+      const nodeOf = nodeNaming(roots);
+      const files = entries(assembleHoistedNodeModules(roots, placements));
+      const byDirectory = new Map([...placements].map(([directory, pkg]): [string, string] => [directory, nodeOf(pkg)]));
+      for (const root of roots) {
+        expect(byDirectory.get(resolveFrom(files, "", root.packageName)!), `seed ${seed}: root ${root.packageName}`).to.equal(
+          nodeOf(root)
+        );
+      }
+      for (const [directory, pkg] of placements) {
+        for (const dep of pkg.packages) {
+          const found = resolveFrom(files, directory, dep.packageName);
+          expect(
+            found === undefined ? undefined : byDirectory.get(found),
+            `seed ${seed}: ${directory} -> ${dep.packageName}`
+          ).to.equal(nodeOf(dep));
+        }
+      }
+      expect(assembleHoistedNodeModules(build(graphSpec, true)).toManifest(), `seed ${seed}`).to.equal(
+        assembleHoistedNodeModules(roots, placements).toManifest()
+      );
+    }
+    expect(laidOut).to.be.greaterThan(60);
+    expect(refused).to.be.greaterThan(0);
   });
 });
 

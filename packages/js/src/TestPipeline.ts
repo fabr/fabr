@@ -130,7 +130,7 @@ import {
 } from "@fabr-build/core";
 import { type ITypeScriptPayload, layOutUnits, TSSERVER_PLUGIN, TYPESCRIPT_DATA_KIND } from "./Description";
 import { PNP_DATA_FILE, PNP_PRELOAD, SOURCE_LOCATIONS_FILE } from "@fabr-build/js-tools";
-import { layoutProgram, pnpPreloadOf } from "./Layout";
+import { layoutProgram, NodeLayout, pnpPreloadOf } from "./Layout";
 import { createTestRunAction, type IMeasuredFiles } from "./TestRunAction";
 import { posix } from "path";
 import { COMPILE_OUT_DIR, COMPILE_SRC_DIR } from "./rules/BuildJSCompile";
@@ -908,7 +908,7 @@ interface ITestRun {
   /** How the test processes reach `packages` (the `layout/*` flags): a
    * `node_modules` tree, or a PnP table over the pool's trees — laid out by
    * the test-run step. */
-  layout: "pnp" | "node_modules";
+  layout: NodeLayout;
   /** The packages the tests load. */
   packages: PackageFileSet[];
   /** Verbatim runtime files for the tests, mounted with the compiled output. */

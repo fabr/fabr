@@ -58,6 +58,18 @@ export interface ISelfPackage {
  * package's reference (a hex digest). */
 const SELF_REFERENCE = "self";
 
+/** Where a manifest locates its packages, relative to the table's directory. */
+export interface IPnpPlacement {
+  /** The directory the trees lie in, each at `<pool>/<its content hash>`:
+   *  the tree pool's link beside a staged step ({@link TREE_MOUNT}) by default. */
+  readonly pool?: string;
+  /** True to lay each direct package beside the table, at
+   *  `node_modules/<name>/`, instead of in the pool, and an unplugged one with
+   *  the unplugged tree it lies in, whose `node_modules` is then the table's
+   *  own; otherwise false. */
+  readonly besideTable?: boolean;
+}
+
 /** A manifest and the packages it has rows for. The caller must put each of
  * its {@link trees} in the pool before anything reads the manifest. */
 export interface IPnpManifest {
@@ -65,10 +77,15 @@ export interface IPnpManifest {
   /** Every package with a row, one instance per row. */
   readonly packages: ReadonlyArray<PackageFileSet>;
   /** The trees the rows are located in: each package's own, and the trees
-   *  the unplugged packages lie in ({@link unpluggedTreesOf}). */
+   *  the unplugged packages lie in ({@link unpluggedTreesOf}), each at
+   *  `<pool>/<its content hash>`. */
   readonly trees: ReadonlyArray<FileSet>;
+  /** What lies beside the table, at the table's directory
+   *  ({@link IPnpPlacement.besideTable}); empty where nothing does. */
+  readonly beside: FileSet;
   /** Locate a package's row, relative to the working directory: its tree
-   * ({@link treeMountOf}), or its directory in an unplugged tree, or, where
+   * ({@link treeMountOf}, or under the placement's pool), its directory in an
+   * unplugged tree, or its directory beside the table, or, where
    * its content is wired more than one way in this manifest, the virtual
    * location of its wiring over that directory. */
   mountOf(pkg: PackageFileSet): string;
@@ -136,7 +153,8 @@ export function pnpManifestOf(
   directDeps: FileSet[],
   self?: ISelfPackage,
   ignored?: string,
-  unplugged: ReadonlySet<string> = new Set()
+  unplugged: ReadonlySet<string> = new Set(),
+  { pool: poolDirectory = TREE_MOUNT, besideTable = false }: IPnpPlacement = {}
 ): IPnpManifest {
   assertOnePackagePerName(directDeps);
   const roots = directDeps.filter((dep): dep is PackageFileSet => dep instanceof PackageFileSet);
@@ -154,11 +172,31 @@ export function pnpManifestOf(
   }
   const isUnplugged = (pkg: PackageFileSet): boolean => unplugged.has(pkg.toManifestHash());
   const unpluggedTrees = unpluggedTreesOf(packages.filter(isUnplugged));
+  /* With `besideTable`, the direct packages (by row) and the unplugged trees
+   * holding one lie beside the table. */
+  const rowOf = (pkg: PackageFileSet): string => `${pkg.packageName}\0${referenceIn(pkg)}`;
+  const givenRows = new Set(besideTable ? roots.map(rowOf) : []);
+  const isGiven = (pkg: PackageFileSet): boolean => givenRows.has(rowOf(pkg)) && !isUnplugged(pkg);
+  const treesBeside = new Set(
+    roots.filter(root => givenRows.has(rowOf(root)) && isUnplugged(root)).map(root => unpluggedTrees.get(root.toManifestHash())!)
+  );
   const treeOf = (pkg: PackageFileSet): string => {
     const tree = unpluggedTrees.get(pkg.toManifestHash());
-    return tree === undefined ? treeMountOf(pkg) : `${TREE_MOUNT}/${tree.toManifestHash()}/node_modules/${pkg.packageName}`;
+    if (tree !== undefined) {
+      return treesBeside.has(tree)
+        ? `node_modules/${pkg.packageName}`
+        : `${poolDirectory}/${tree.toManifestHash()}/node_modules/${pkg.packageName}`;
+    }
+    return isGiven(pkg) ? `node_modules/${pkg.packageName}` : `${poolDirectory}/${pkg.toManifestHash()}`;
   };
-  const trees = [...packages.filter(pkg => !isUnplugged(pkg)), ...new Set(unpluggedTrees.values())];
+  const trees = [
+    ...packages.filter(pkg => !isUnplugged(pkg) && !isGiven(pkg)),
+    ...[...new Set(unpluggedTrees.values())].filter(tree => !treesBeside.has(tree)),
+  ];
+  const beside = FileSet.unionAll(
+    ...packages.filter(isGiven).map(pkg => pkg.mountedAt(`node_modules/${pkg.packageName}`)),
+    ...treesBeside
+  );
   const mountOf = locations(packages, referenceIn, treeOf);
   /* The one dependency list of both rows that stand for the sources, the
    * top-level row and the self row. Keep them one list: a source file matches
@@ -200,7 +238,7 @@ export function pnpManifestOf(
         ]),
     ],
   };
-  return { state, packages, trees, mountOf, toFile: () => MemoryFile.from(serialize(state)) };
+  return { state, packages, trees, beside, mountOf, toFile: () => MemoryFile.from(serialize(state)) };
 }
 
 /** The file extension of a native addon. */
@@ -310,13 +348,12 @@ function referencesOf(roots: ReadonlyArray<PackageFileSet>): (pkg: PackageFileSe
 }
 
 /**
- * Make the function locating each row's files: its content's tree
- * (`treeOf`), shared by
- * every row of that content (the same package under two names) where they all
- * bind the same dependencies. Where content is wired more than one way in this
- * manifest, every wiring gets a virtual location of its own over the tree
- * ({@link virtualLocation}) and none uses the bare tree: the resolver tells
- * which row a file belongs to by its location.
+ * Make the function locating each row's files: its directory (`treeOf`),
+ * shared by every row there (the same package under two names) where they all
+ * bind the same dependencies. Where one directory serves content wired more
+ * than one way in this manifest, every wiring gets a virtual location of its
+ * own over the directory ({@link virtualLocation}) and none uses the bare
+ * directory: the resolver tells which row a file belongs to by its location.
  */
 function locations(
   packages: ReadonlyArray<PackageFileSet>,
@@ -327,14 +364,14 @@ function locations(
     dependencyList(pkg.packages, referenceIn)
       .map(([name, reference]) => `${name}=${String(reference)}`)
       .join(",");
-  const wiringsByContent = new Map<string, Set<string>>();
+  const wiringsByDirectory = new Map<string, Set<string>>();
   for (const pkg of packages) {
-    const held = wiringsByContent.get(pkg.toManifestHash()) ?? new Set<string>();
+    const held = wiringsByDirectory.get(treeOf(pkg)) ?? new Set<string>();
     held.add(wiring(pkg));
-    wiringsByContent.set(pkg.toManifestHash(), held);
+    wiringsByDirectory.set(treeOf(pkg), held);
   }
   return pkg =>
-    (wiringsByContent.get(pkg.toManifestHash())?.size ?? 0) > 1
+    (wiringsByDirectory.get(treeOf(pkg))?.size ?? 0) > 1
       ? virtualLocation(treeOf(pkg), hashString(wiring(pkg)).slice(0, 16))
       : treeOf(pkg);
 }

@@ -224,14 +224,19 @@ default flag esnext { }
 default flag dom { }
 
 #
-# How the packages a target's tests, or a `js_script`'s program, load are laid
-# out. `layout/pnp` runs them through a PnP table over fabr's cache, with no
-# `node_modules` tree staged; `layout/node_modules`, the default, stages the
-# tree. Code that finds files by walking `node_modules` rather than by importing
-# needs the tree.
+# How the packages a target's tests, a `js_script`'s program or a
+# `js_installation` load are laid out. `layout/pnp` runs them through a PnP
+# table over fabr's cache, with no `node_modules` tree staged (a
+# `js_installation` holds a copy of each package, and is run with
+# `node --require ./.fabr-pnp.cjs`); `layout/node_modules`, the default, stages
+# the tree. Code that finds files by
+# walking `node_modules` rather than by importing needs the tree.
+# `layout/hoisted` stages a tree with no symlinks, laid out as npm's hoisted
+# install, for an install copied somewhere that does not keep them.
 #
 default flag layout/pnp { }
 default flag layout/node_modules { }
+default flag layout/hoisted { }
 
 #
 # The sources use the globals Node.js gives every module: `process`, `Buffer`
@@ -544,7 +549,8 @@ targetdef js_compile {
 
 #
 # The installation of packages: a `node_modules` tree of every package `deps`
-# hold or reach, with the loose files among `deps` at their own paths.
+# hold or reach, with the loose files among `deps` at their own paths. The 
+# layout can be controlled with the layout/* flags.
 #
 
 targetdef js_installation {

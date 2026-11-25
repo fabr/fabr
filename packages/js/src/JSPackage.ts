@@ -54,7 +54,7 @@ import {
   toJsonObject,
   toleratingFailure,
 } from "@fabr-build/core";
-import { IProgramLayout, nodeModulesLayout } from "./Layout";
+import { HOISTED, IProgramLayout, NODE_MODULES, NodeLayout, nodeModulesLayout, PNP } from "./Layout";
 import { compileCssSources, cssImportRewrites, partitionCssOutput } from "./CSSCompile";
 import { type ExportsValue, resolveExports } from "@fabr-build/js-tools";
 
@@ -313,17 +313,23 @@ export function usesDom(flags: Flag[]): boolean {
 }
 
 /**
- * @return how the packages the target's tests load are laid out: as a PnP
- * table where its flags (with what they provide) include `layout/pnp`, else as
- * a `node_modules` tree. Throws where they include both layout flags.
+ * @return how a target's packages are laid out, by the `layout/*` flag among
+ * its flags (with what they provide): `layout/pnp` a PnP table,
+ * `layout/hoisted` a `node_modules` tree with no links, and
+ * `layout/node_modules` or none a linked `node_modules` tree. Throws where
+ * they include more than one layout flag.
  */
-export function layoutOf(flags: Flag[]): "pnp" | "node_modules" {
+export function layoutOf(flags: Flag[]): NodeLayout {
   const names = new Set(flagClosure(flags).map(flag => flag.name));
-  if (names.has("layout/pnp") && names.has("layout/node_modules")) {
-    throw new FabrError("A target can't be both layout/pnp and layout/node_modules");
+  const layouts = LAYOUTS.filter(layout => names.has(`layout/${layout}`));
+  if (layouts.length > 1) {
+    throw new FabrError(`A target can't be ${layouts.map(layout => `layout/${layout}`).join(" and ")}`);
   }
-  return names.has("layout/pnp") ? "pnp" : "node_modules";
+  return layouts[0] ?? NODE_MODULES;
 }
+
+/** The layouts a `layout/*` flag names. */
+const LAYOUTS: ReadonlyArray<NodeLayout> = [HOISTED, NODE_MODULES, PNP];
 
 /**
  * @return true if the flags, with what they provide, include `js/node_globals`
