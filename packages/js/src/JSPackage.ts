@@ -626,8 +626,8 @@ export interface ICompileOptions {
   rewriteImports?: Name[];
   /**
    * The output files no step compiles: js_compile's `resources`. An import of
-   * one resolves as an empty module. {@link compileContents} sets it to the css
-   * step's stylesheets and the `copy` sources.
+   * one resolves as an empty module. {@link compileContents} adds the css
+   * step's stylesheets and the `copy` sources to these.
    */
   resources?: FileSet;
   /**
@@ -708,7 +708,7 @@ export function compileContents(
         : compileJsSources(context, augmented, deps, {
             ...options,
             rewriteImports: rewrites,
-            resources: FileSet.unionAll(content, augmented.copy),
+            resources: FileSet.unionAll(content, augmented.copy, options.resources ?? EMPTY_FILESET),
           });
     return (compiled ?? Computable.resolve(EMPTY_FILESET)).then(built => {
       const emitted = withDerivedOutputs(keepSourceJs ? withoutTranspiledJs(built, augmented.js) : built, compileInputs);

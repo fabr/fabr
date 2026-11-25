@@ -148,8 +148,11 @@ import {
   stripExtension,
   stripPackageJson,
   compileSourcesOf,
+  classifySourceByExt,
+  classifySources,
   usesDom,
 } from "./JSPackage";
+import { cssImportRewrites, isCssModule, loweredCssName } from "./CSSCompile";
 
 /** The runner's types for the globals it installs, anywhere in its install. */
 const GLOBALS_TYPES_FILE = "test-globals.d.ts";
@@ -600,7 +603,23 @@ export function compileAndRunTests(
    * runner's globals types among the sources (the runner testing itself) is
    * dropped: they come in through the `@types` mount. */
   const tested = testedSets.find((set): set is PackageFileSet => set instanceof PackageFileSet);
-  const sources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name => (name === RUNNER_GLOBALS_TYPES ? undefined : name));
+  const compiledSources = compileSourcesOf(FileSet.unionAll(...srcs, tests)).remap(name =>
+    name === RUNNER_GLOBALS_TYPES ? undefined : name
+  );
+  /* A js_package's build lowered its stylesheets: the compile leaves them out,
+   * and the tests' imports of them name what the build wrote, a css-module's
+   * class-name module typed by the declaration the build emitted for it. */
+  const sources =
+    tested === undefined
+      ? compiledSources
+      : FileSet.unionAll(
+          compiledSources.remap(name => (classifySourceByExt(name) === "css" ? undefined : name)),
+          classNameDeclarations(compiledSources, tested)
+        );
+  const stylesheets =
+    tested === undefined || classifySources(compiledSources).css.isEmpty()
+      ? undefined
+      : stripPackageJson(tested).remap(name => (classifySourceByExt(name) === "css" ? name : undefined));
   const declarations =
     tested === undefined ? undefined : stripPackageJson(tested).remap(name => (DECLARATION_FILE.test(name) ? name : undefined));
   return context.getGlobalString(TEST_FILE_PATTERN).then((filePattern): Computable<RuleResult> => {
@@ -652,57 +671,63 @@ export function compileAndRunTests(
           const resources = resourceFiles(allDeps.filter(dep => !(dep instanceof PackageFileSet)));
 
           const testTarget = testTargetOf(jsTarget, framework);
-          return testCompile(context, framework, settings, { sources, declarations, deps, testDeps, runner, testTarget }).then(
-            built => {
-              if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
-                /* No compilable source (.ts/.tsx/.js/.jsx) in the compile: nothing
-                 * to run. */
-                throw new FabrError("Test target declares test files but none is a compilable source");
-              }
-              return (interactive ? planInteractiveRun : planTestRun)(context, {
-                /* The tests' output and the package's files as one tree, the
-                 * package's file taken where both have one (a JSON source both
-                 * import, which the package's compile emits and the tests' passes
-                 * through as written). */
-                compiled: Computable.resolve(
-                  tested === undefined ? built.compiled : FileSet.unionAll(stripPackageJson(tested), built.compiled.minus(tested))
-                ),
-                /* The lowered CSS is a sibling of the compiled code that imports it. */
-                copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
-                compileSrcs: built.compileSrcs,
-                resources,
-                runner,
-                tests,
-                records: framework.records,
-                artifacts: framework.artifacts ?? false,
-                scheduler: framework.scheduler,
-                testStems,
-                testTarget,
-                /* The environment follows the `dom` source flag among `deps` and
-                 * `test_deps`, not the target the code is emitted for. A suite
-                 * whose tests need a DOM its sources do not declares `dom` in
-                 * `test_deps`. */
-                needsDom: usesDom([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-                layout: layoutOf([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
-                packages,
-                testResources: FileSet.unionAll(...testResources, ...shipped),
-                expectations: FileSet.unionAll(...expectationSets),
-                env,
-                packageName: settings.packageName,
-                runnerArgs: settings.runnerArgs ?? [],
-                links: settings.links,
-                update: expectations.equals(UPDATE_EXPECTATIONS),
-                namePattern: namePattern.length === 0 ? undefined : namePattern,
-                onlyHandling: focusHandlingOf(framework, onlyHandling.toUnmaskedString()),
-                stability: toTestStability(stability.getValues()),
-                flakeRetries: toFlakeRetries(flakeRetries),
-                coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
-              });
+          const compile = { sources, declarations, stylesheets, deps, testDeps, runner, testTarget };
+          return testCompile(context, framework, settings, compile).then(built => {
+            if (built.sources.ts.isEmpty() && built.sources.js.isEmpty() && built.sources.jsx.isEmpty()) {
+              /* No compilable source (.ts/.tsx/.js/.jsx) in the compile: nothing
+               * to run. */
+              throw new FabrError("Test target declares test files but none is a compilable source");
             }
-          );
+            return (interactive ? planInteractiveRun : planTestRun)(context, {
+              /* The tests' output and the package's files as one tree, the
+               * package's file taken where both have one (a JSON source both
+               * import, which the package's compile emits and the tests' passes
+               * through as written). */
+              compiled: Computable.resolve(
+                tested === undefined ? built.compiled : FileSet.unionAll(stripPackageJson(tested), built.compiled.minus(tested))
+              ),
+              /* The lowered CSS is a sibling of the compiled code that imports it. */
+              copied: FileSet.unionAll(built.passthrough, built.css).minus(tested ?? EMPTY_FILESET),
+              compileSrcs: built.compileSrcs,
+              resources,
+              runner,
+              tests,
+              records: framework.records,
+              artifacts: framework.artifacts ?? false,
+              scheduler: framework.scheduler,
+              testStems,
+              testTarget,
+              /* The environment follows the `dom` source flag among `deps` and
+               * `test_deps`, not the target the code is emitted for. A suite
+               * whose tests need a DOM its sources do not declares `dom` in
+               * `test_deps`. */
+              needsDom: usesDom([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+              layout: layoutOf([...runtimeDeps, ...testDeps].filter((dep): dep is Flag => dep instanceof Flag)),
+              packages,
+              testResources: FileSet.unionAll(...testResources, ...shipped),
+              expectations: FileSet.unionAll(...expectationSets),
+              env,
+              packageName: settings.packageName,
+              runnerArgs: settings.runnerArgs ?? [],
+              links: settings.links,
+              update: expectations.equals(UPDATE_EXPECTATIONS),
+              namePattern: namePattern.length === 0 ? undefined : namePattern,
+              onlyHandling: focusHandlingOf(framework, onlyHandling.toUnmaskedString()),
+              stability: toTestStability(stability.getValues()),
+              flakeRetries: toFlakeRetries(flakeRetries),
+              coverage: coverageDriver === undefined ? undefined : { driver: coverageDriver, packages },
+            });
+          });
         })
     );
   });
+}
+
+/** @return the declarations `tested` holds for the class-name modules of the
+ *  css-modules among `sources`. */
+function classNameDeclarations(sources: FileSet, tested: PackageFileSet): FileSet {
+  const names = new Set([...sources].filter(([name]) => isCssModule(name)).map(([name]) => `${loweredCssName(name)}.d.ts`));
+  return tested.remap(name => (names.has(name) ? name : undefined));
 }
 
 /** The compile a test run makes: what it compiles, against what, and for which target. */
@@ -711,6 +736,10 @@ interface ITestCompile {
   /** The declarations the package's build emitted for its sources, which the
    * compile then neither checks nor emits. */
   declarations?: FileSet;
+  /** The stylesheets the package's build wrote for the sources' own, which the
+   * compile leaves to it: the tests' imports of a stylesheet are rewritten as
+   * the package's are, and resolve to these. */
+  stylesheets?: FileSet;
   deps: FileSet[];
   testDeps: FileSet[];
   runner: FileSet;
@@ -740,7 +769,7 @@ function testCompile(
   context: TargetContext,
   framework: ITestFramework,
   settings: ITestSettings,
-  { sources, declarations, deps, testDeps, runner, testTarget }: ITestCompile,
+  { sources, declarations, stylesheets, deps, testDeps, runner, testTarget }: ITestCompile,
   describe = false
 ): Computable<ICompiledContents> {
   /* Set `JS_TARGET` even where the package already emits that format: the
@@ -754,6 +783,7 @@ function testCompile(
     {
       packageName: settings.packageName,
       declarations,
+      ...(stylesheets === undefined ? {} : { rewriteImports: cssImportRewrites(), resources: stylesheets }),
       constraints: Constraints.of({ JS_TARGET: formatJSTarget(testTarget) }),
       /* The label is part of the target key, so the test compile keeps an
        * incremental base apart from the package compile's. */

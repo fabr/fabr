@@ -14,6 +14,7 @@ together and share a version number.
 @fabr-build/js
 
 - Jest jsdom compatibility fixes.
+- Avoid double compilation of css in js_package tests.
 
 ## Fabr 0.4.3
 
