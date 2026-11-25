@@ -19,7 +19,7 @@
 
 import { expect } from "chai";
 import * as path from "node:path";
-import { posixRelative, toPosix } from "./Paths";
+import { installRootOf, posixRelative, toPosix } from "./Paths";
 
 describe("Paths", () => {
   it("spells a Windows path with `/`", () => {
@@ -31,5 +31,13 @@ describe("Paths", () => {
   it("makes a relative path /-separated", () => {
     expect(posixRelative("/w", "/w/build/a.js")).to.equal("build/a.js");
     expect(posixRelative("/w", "/w")).to.equal("");
+  });
+
+  it("takes an install to be the directory above the first node_modules on its path", () => {
+    const at = (posix: string): string => path.normalize(posix);
+    expect(installRootOf(at("/cache/trees/runner/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build"))).to.equal(
+      at("/cache/trees/runner")
+    );
+    expect(installRootOf(at("/src/js-tools/build"))).to.equal(at("/src/js-tools/build"));
   });
 });

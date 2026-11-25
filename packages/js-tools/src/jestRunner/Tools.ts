@@ -32,10 +32,11 @@
  * test, or a module of the tests' registry.
  */
 
-import { createRequire } from "node:module";
+import { createRequire, Module } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseJson, toJsonObject } from "../support/Json";
+import { installRootOf } from "../support/Paths";
 import { atLeastNode } from "../testRunner/RunTests";
 
 /** The jest major versions supported, checked by {@link assertSupportedHost}. */
@@ -64,6 +65,83 @@ let fromJest: NodeJS.Require | undefined;
 export function jestLibrary(name: string): unknown {
   fromJest ??= createRequire(fromRunner.resolve("jest/package.json"));
   return fromJest(name);
+}
+
+/** The Babel packages jest-snapshot requires, which it calls only to write
+ * inline snapshots into a test's source. */
+const SNAPSHOT_BABEL = ["@babel/core", "@babel/generator", "@babel/types"];
+
+let babelDeferred = false;
+
+/**
+ * Make jest-snapshot's requires of Babel ({@link SNAPSHOT_BABEL}) return a
+ * stand-in that loads the package when one of its members is first called or
+ * constructed, rather than when jest-snapshot loads. Call before jest-snapshot
+ * first loads; a later call does nothing. A require from any other module, or
+ * from a jest-snapshot other than the one jest's libraries resolve, loads as
+ * it would.
+ */
+export function deferSnapshotBabel(): void {
+  if (babelDeferred) {
+    return;
+  }
+  babelDeferred = true;
+  let snapshotDirectory: string;
+  try {
+    fromJest ??= createRequire(fromRunner.resolve("jest/package.json"));
+    snapshotDirectory = path.dirname(fromJest.resolve("jest-snapshot/package.json")) + path.sep;
+  } catch {
+    return;
+  }
+  /* Each Babel package's main, as resolved from a jest-snapshot module. */
+  const babelFiles = new Map<string, string | undefined>();
+  const babelFileOf = (from: string, name: string): string | undefined => {
+    const key = `${path.dirname(from)}\0${name}`;
+    if (!babelFiles.has(key)) {
+      try {
+        babelFiles.set(key, createRequire(from).resolve(name));
+      } catch {
+        babelFiles.set(key, undefined);
+      }
+    }
+    return babelFiles.get(key);
+  };
+  const loader = Module as unknown as {
+    _load(request: string, parent: { filename?: string } | undefined, isMain: boolean): unknown;
+  };
+  const original = loader._load;
+  loader._load = function (request: string, parent: { filename?: string } | undefined, isMain: boolean): unknown {
+    const from = parent?.filename;
+    if (from !== undefined && from.startsWith(snapshotDirectory) && path.isAbsolute(request)) {
+      if (SNAPSHOT_BABEL.some(name => babelFileOf(from, name) === request)) {
+        return deferredMember(() => original.call(this, request, parent, false), []);
+      }
+    }
+    return original.call(this, request, parent, isMain);
+  };
+}
+
+/**
+ * @return a stand-in for the member at `keys` of the value `load` returns: a
+ * member of it is a stand-in for the member below, and calling or constructing
+ * it loads the value and calls or constructs the real member, with the member
+ * above as `this`.
+ */
+export function deferredMember(load: () => unknown, keys: PropertyKey[]): unknown {
+  type Members = Record<PropertyKey, unknown>;
+  /* The real member and the member above it. */
+  const resolve = (): { member: unknown; owner: unknown } => {
+    const owner = keys.slice(0, -1).reduce((value: unknown, key) => (value as Members)[key], load());
+    return keys.length === 0 ? { member: owner, owner: undefined } : { member: (owner as Members)[keys[keys.length - 1]], owner };
+  };
+  return new Proxy(function () {} as (...args: unknown[]) => unknown, {
+    get: (_target, key) => deferredMember(load, [...keys, key]),
+    apply: (_target, _self, args) => {
+      const { member, owner } = resolve();
+      return Reflect.apply(member as (...args: unknown[]) => unknown, owner, args);
+    },
+    construct: (_target, args) => Reflect.construct(resolve().member as new (...args: unknown[]) => object, args),
+  });
 }
 
 /**
@@ -157,15 +235,6 @@ export function requireEnvironment(env: string, fromDocblock = false): void {
  * The directory the runner's own modules are compiled into.
  */
 export const RUNNER_ROOT = path.dirname(__dirname);
-
-/**
- * @return the install a module directory belongs to: the directory above the
- * first `node_modules` on its path, else `dir` itself.
- */
-export function installRootOf(dir: string): string {
-  const at = dir.indexOf(`${path.sep}node_modules${path.sep}`);
-  return at < 0 ? dir : dir.slice(0, at);
-}
 
 /**
  * The runner's install, holding the runner and its dependencies, jest's

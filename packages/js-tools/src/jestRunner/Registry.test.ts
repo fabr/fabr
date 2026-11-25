@@ -24,7 +24,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { makeResolveHook, MockRegistry, NOT_MOCKED } from "./Registry";
-import { installRootOf, isRegistryModule } from "./Tools";
+import { deferredMember, isRegistryModule } from "./Tools";
 
 /* The registry over a real (temporary) staged-install layout: resolution and
  * the manual-mock probes are filesystem questions, so the fixture is a
@@ -248,11 +248,6 @@ describe("MockRegistry", () => {
     const RUNNER = "/cache/trees/runner";
     const runner = at(RUNNER);
 
-    it("takes the runner's install to be the directory above the first node_modules on its path", () => {
-      expect(installRootOf(at(`${RUNNER}/node_modules/.fabr/js-tools/node_modules/@fabr-build/js-tools/build`))).to.equal(runner);
-      expect(installRootOf(at("/src/js-tools/build"))).to.equal(at("/src/js-tools/build"));
-    });
-
     it("leaves out the runner's own machinery, jest's libraries among it", () => {
       expect(
         isRegistryModule(
@@ -348,6 +343,34 @@ describe("MockRegistry", () => {
       const mocks = registry();
       mocks.setMock("./styles.css", caller, () => ({ card: "card" }));
       expect(mocks.hasMockFor(mocks["keyFor"]("./styles.css", caller, true))).to.equal(true);
+    });
+  });
+
+  describe("a deferred module", () => {
+    const babel = {
+      types: {
+        name: "types",
+        template(this: { name: string }, text: string) {
+          return `${this.name}:${text}`;
+        },
+      },
+      Node: class {
+        constructor(public readonly kind: string) {}
+      },
+    };
+
+    it("loads nothing until a member is called, then calls it on its owner", () => {
+      let loads = 0;
+      const module = deferredMember(() => (loads++, babel), []) as typeof babel;
+      const { types } = module;
+      expect(loads).to.equal(0);
+      expect(types.template("x")).to.equal("types:x");
+      expect(loads).to.equal(1);
+    });
+
+    it("constructs a member", () => {
+      const module = deferredMember(() => babel, []) as typeof babel;
+      expect(new module.Node("leaf").kind).to.equal("leaf");
     });
   });
 });

@@ -38,7 +38,7 @@ import { installHoist } from "./Hoist";
 import { IFakeTimers, IMocker, makeJestObject } from "./JestObject";
 import { ILoaderModule, installSeams, MockRegistry } from "./Registry";
 import { IMockerControls, makeEnvironmentFacade, makeRuntimeFacade } from "./RuntimeFacade";
-import { jestLibrary, jestMajor, requireEnvironment } from "./Tools";
+import { deferSnapshotBabel, jestLibrary, jestMajor, requireEnvironment } from "./Tools";
 import { makeJestConfig } from "./Config";
 import { formatExecError, formatFailures, IExecError, IFormattableResult } from "./Failures";
 
@@ -100,6 +100,7 @@ type TestFramework = (
  *   or circus itself fails.
  */
 export async function runTestFile(request: IChildRequest): Promise<IChildResult> {
+  deferSnapshotBabel();
   const environment = fileEnvironment(request);
   requireEnvironment(environment.env, environment.env !== request.env);
   if (environment.env === "jsdom") {

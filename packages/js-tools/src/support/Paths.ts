@@ -18,9 +18,9 @@
  */
 
 /**
- * Spelling the host's paths with `/`, as names are: on Windows `C:\Users\x` is
- * `C:/Users/x`. The same conversion as `@fabr-build/core`'s, which the tools
- * must not load.
+ * The host's paths: spelling them with `/`, as names are (on Windows
+ * `C:\Users\x` is `C:/Users/x`, the same conversion as `@fabr-build/core`'s,
+ * which the tools must not load), and the install a path lies in.
  */
 
 import * as path from "node:path";
@@ -38,4 +38,13 @@ export function toPosix(hostPath: string, host: path.PlatformPath = path): strin
 /** @return the path from `from` to `to`, both host paths, `/`-separated. */
 export function posixRelative(from: string, to: string): string {
   return toPosix(path.relative(from, to));
+}
+
+/**
+ * @return the install a module directory belongs to: the directory above the
+ * first `node_modules` on its path, else `dir` itself.
+ */
+export function installRootOf(dir: string): string {
+  const at = dir.indexOf(`${path.sep}node_modules${path.sep}`);
+  return at < 0 ? dir : dir.slice(0, at);
 }

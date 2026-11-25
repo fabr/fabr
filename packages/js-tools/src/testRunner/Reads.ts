@@ -36,6 +36,7 @@ import { createRequire, Module } from "node:module";
 import { fileURLToPath } from "node:url";
 import { splitSpecifier } from "../pnp/PnPResolver";
 import { resolveVirtual } from "../pnp/VirtualPath";
+import { installRootOf } from "../support/Paths";
 import { ILookup, IReadsDocument, toReadsDocument } from "./ReadsDocument";
 
 /* The functions this recorder uses for itself, taken before it wraps them. */
@@ -105,7 +106,9 @@ export interface IRecordedReads {
  * absolute paths of every module loaded, from start-up on, of every file read
  * or probed through `fs` since, by its real path, every package looked up by a
  * bare specifier, and the node processes it started; or undefined where the
- * process has since started any other process or a worker thread.
+ * process has since started any other process or a worker thread. A file
+ * within the install this module lies in ({@link ownInstall}), and a lookup
+ * made from one, is left out.
  *
  * A node process it starts (by `fork`, or by running `process.execPath` or
  * `node` with no shell) records too where its environment's `NODE_OPTIONS`
@@ -156,24 +159,45 @@ export function recordReads(recorder?: string): () => IRecordedReads | undefined
     manifests.set(directory, found);
     return found;
   };
+  /* The install this recorder lies in (the runner's) is linked into the run
+   * whole, so nothing within it is an input the reads name. */
+  const install = ownInstall();
+  const outside = (file: string): boolean => install === undefined || !file.startsWith(install);
   return () => {
     if (current.untracked) {
       return undefined;
     }
-    const modules = [...current.loaded, ...Object.keys(cache)];
+    const modules = new Set([...current.loaded, ...Object.keys(cache)].filter(outside));
     /* A module at a virtual location is probed for its manifest at the
      * physical one, where the files are; the step names a read either way. */
-    const nearest = modules.flatMap(module => manifestOf(path.dirname(resolveVirtual(module))) ?? []);
-    const lookups = [...current.lookups].map(([key, to]): ILookup => {
+    const nearest = [...modules].flatMap(module => manifestOf(path.dirname(resolveVirtual(module))) ?? []);
+    /* A module loaded is a file, so needs no probe for a directory. */
+    const read = [...current.read].map(realPathOf).filter(file => outside(file) && !modules.has(file));
+    const lookups = [...current.lookups].flatMap(([key, to]): ILookup[] => {
       const [from, name] = key.split("\0");
-      return to === null ? { from, name } : { from, name, to };
+      return !outside(from) ? [] : to === null ? [{ from, name }] : [{ from, name, to }];
     });
     return {
-      files: [...modules, ...nearest, ...[...current.read].map(realPathOf).map(markDirectory)],
+      files: [...modules, ...nearest.filter(outside), ...read.map(markDirectory)],
       lookups,
       children: [...current.children],
     };
   };
+}
+
+/**
+ * @return the install this module lies in, with a trailing separator: the
+ * directory above the first `node_modules` on its path. Undefined where there
+ * is none, or where the working directory lies within it.
+ */
+function ownInstall(): string | undefined {
+  const here = path.dirname(__filename);
+  const root = installRootOf(here);
+  if (root === here) {
+    return undefined;
+  }
+  const install = root + path.sep;
+  return (process.cwd() + path.sep).startsWith(install) ? undefined : install;
 }
 
 /** @return `file` with a trailing separator where it is a directory now, otherwise `file`. */
@@ -517,11 +541,26 @@ export function writeReads(file: string, reads: IRecordedReads | undefined): voi
     return;
   }
   const cwd = process.cwd();
-  /* `path.relative` drops a trailing separator, which marks a directory. */
-  const relative = (read: string): string => {
-    const name = path.relative(cwd, read).split(path.sep).join("/");
-    return read.endsWith(path.sep) && name !== "" ? `${name}/` : name;
+  /* Each directory's path from the working directory, `/`-separated, with a
+   * trailing `/` unless it is the working directory itself. */
+  const directories = new Map<string, string>();
+  const directoryName = (directory: string): string => {
+    let name = directories.get(directory);
+    if (name === undefined) {
+      name = path.relative(cwd, directory).split(path.sep).join("/");
+      name = name === "" ? "" : `${name}/`;
+      directories.set(directory, name);
+    }
+    return name;
   };
+  /* A trailing separator marks a directory, and is kept (the directory of
+   * `<directory>/_` is the directory, a root included). */
+  const relative = (read: string): string =>
+    read.endsWith(path.sep)
+      ? directoryName(path.dirname(read + "_"))
+      : read === cwd
+        ? ""
+        : directoryName(path.dirname(read)) + path.basename(read);
   const files = [...new Set(reads.files.map(relative))].sort();
   const lookups = [...new Map(reads.lookups.map(lookup => [`${lookup.from}\0${lookup.name}`, lookup])).values()]
     .map((lookup): ILookup => ({
