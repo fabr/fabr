@@ -38,8 +38,9 @@ const MAX_COMPRESSION_LAYERS = 4;
  * any number of gzip or xz layers up to {@link MAX_COMPRESSION_LAYERS}, judged
  * by its leading bytes.
  *
- * Each file is written to an output of its own from `createOutput` (a zip is
- * first written whole to one, then read from it); an entry's name never
+ * Each file is written to an output of its own from `createOutput`. A zip is
+ * first written out whole, to a temporary file in `scratchDir` or, without
+ * one, to memory, and is never stored itself. An entry's name never
  * places bytes at a path on disk. An absolute entry name is made relative; an
  * entry whose name escapes the tree with `../` is dropped. Two names differing
  * only in case stay two files.
@@ -47,7 +48,7 @@ const MAX_COMPRESSION_LAYERS = 4;
  * Rejects where the archive is of no known kind, nests too many compression
  * layers, or fails to read or write.
  */
-export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): Computable<FileSet> {
+export function unpackStream(ins: Readable, createOutput: () => IOutputHandle, scratchDir?: string): Computable<FileSet> {
   /* Several listeners may report a failure (a short header, a dropped
    * connection, a write error); Computable.from keeps the first outcome. */
   return Computable.from((resolve, reject) => {
@@ -79,7 +80,7 @@ export function unpackStream(ins: Readable, createOutput: () => IOutputHandle): 
           return sink;
         }
         case MIME_ZIP: {
-          const { sink, result } = extractZip(createOutput);
+          const { sink, result } = extractZip(createOutput, scratchDir);
           resolve(result);
           return sink;
         }

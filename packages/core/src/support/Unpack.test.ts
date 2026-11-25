@@ -317,6 +317,11 @@ describe("Unpack", () => {
   });
 
   describe("zip", () => {
+    /* A fetch's scratch dir, which a zip arriving as a stream is written out to. */
+    let scratchDir: string;
+    beforeEach(() => {
+      scratchDir = cache.createWorkDir();
+    });
     /** A zip entry for {@link handZip}: deflated unless `stored`, its sizes in
      *  a data descriptor after the data where `descriptor`, and `mode` (with
      *  its file type) in the central directory. */
@@ -411,7 +416,7 @@ describe("Unpack", () => {
         )
       );
       for (const size of [1, 7, 64, zip.length]) {
-        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput));
+        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput, scratchDir));
         expect(await contents(files), `in chunks of ${size}`).to.deep.equal({
           "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\r\n",
           "com/x/A.class": "a".repeat(500),
@@ -428,7 +433,7 @@ describe("Unpack", () => {
         { name: "d.txt", content: "plain" },
       ]);
       for (const size of [1, 5, zip.length]) {
-        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput));
+        const files = await withTimeout(unpackStream(chunked(zip, size), createOutput, scratchDir));
         expect(await contents(files), `in chunks of ${size}`).to.deep.equal({
           "a.txt": "deflated ".repeat(40),
           "b.txt": "stored, and holding PK\x07\x08 inside",
@@ -455,7 +460,7 @@ describe("Unpack", () => {
         { name: "noise.bin", content: noise },
         { name: "after.txt", content: "after" },
       ]);
-      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput), 10000);
+      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput, scratchDir), 10000);
       expect(await files.getFile("after.txt")!.readString()).to.equal("after");
       expect((await files.getFile("noise.bin")!.getBuffer()).equals(noise)).to.equal(true);
     });
@@ -466,7 +471,7 @@ describe("Unpack", () => {
         { name: "bin/alias", content: "tool", mode: 0o120777, stored: true },
         { name: "readme", content: "hi" },
       ]);
-      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput));
+      const files = await withTimeout(unpackStream(Readable.from([zip]), createOutput, scratchDir));
       expect(await contents(files)).to.deep.equal({ "bin/tool": "#!/bin/sh\n", "bin/alias": "-> tool", readme: "hi" });
       expect(files.getFile("bin/tool")!.mode & 0o777).to.equal(0o755);
       expect(files.getFile("readme")!.mode & 0o777).to.equal(0o644);
@@ -492,14 +497,16 @@ describe("Unpack", () => {
 
     it("refuses an entry whose content does not match its CRC-32, and a truncated archive", async () => {
       const corrupt = await withTimeout(
-        unpackStream(Readable.from([handZip([{ name: "a", content: "x", badCrc: true }])]), createOutput)
+        unpackStream(Readable.from([handZip([{ name: "a", content: "x", badCrc: true }])]), createOutput, scratchDir)
       ).then(
         () => "",
         (err: Error) => err.message
       );
       expect(corrupt).to.match(/ZIP entry 'a' is corrupt/);
       const whole = handZip([{ name: "a", content: "x" }]);
-      const truncated = await withTimeout(unpackStream(Readable.from([whole.subarray(0, whole.length - 30)]), createOutput)).then(
+      const truncated = await withTimeout(
+        unpackStream(Readable.from([whole.subarray(0, whole.length - 30)]), createOutput, scratchDir)
+      ).then(
         () => "",
         (err: Error) => err.message
       );
@@ -507,6 +514,21 @@ describe("Unpack", () => {
     });
 
     it("rejects (rather than hanging) when the stream drops mid-archive", async () => {
+      const zip = handZip([{ name: "a.txt", content: "a".repeat(5000), stored: true }]);
+      const ins = new Readable({ read() {} });
+      const result = unpackStream(ins, createOutput, scratchDir);
+      setImmediate(() => {
+        ins.push(zip.subarray(0, 600));
+        setImmediate(() => ins.destroy(new Error("connection dropped")));
+      });
+      const failure = await withTimeout(result).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(failure).to.equal("connection dropped");
+    });
+
+    it("rejects (rather than hanging) when the stream drops mid-archive, held in memory", async () => {
       const zip = handZip([{ name: "a.txt", content: "a".repeat(5000), stored: true }]);
       const ins = new Readable({ read() {} });
       const result = unpackStream(ins, createOutput);
@@ -521,15 +543,35 @@ describe("Unpack", () => {
       expect(failure).to.equal("connection dropped");
     });
 
-    it("rejects (rather than hanging) when the spool the archive is written to fails", async () => {
-      const zip = handZip([{ name: "a.bin", content: crypto.randomBytes(512 * 1024).toString("latin1"), stored: true }]);
-      await withFailingSpool(async () => {
-        const failure = await withTimeout(unpackStream(chunked(zip, 16 * 1024), createOutput)).then(
+    it("rejects (rather than hanging) a truncated compressed zip, held in memory or written out", async () => {
+      const gzipped = zlib.gzipSync(handZip([{ name: "a.bin", content: crypto.randomBytes(20000), stored: true }]));
+      const truncated = gzipped.subarray(0, gzipped.length - 5000);
+      for (const dir of [undefined, scratchDir]) {
+        const failure = await withTimeout(unpackStream(Readable.from([truncated]), createOutput, dir)).then(
           () => "",
-          (err: NodeJS.ErrnoException) => err.code ?? err.message
+          (err: Error) => err.message
         );
-        expect(failure).to.match(/^E[A-Z]+$/);
-      });
+        expect(failure, dir === undefined ? "in memory" : "written out").to.match(/unexpected end of file/);
+      }
+    });
+
+    it("rejects (rather than hanging) when the file the archive is written out to cannot be made", async () => {
+      const zip = handZip([{ name: "a.bin", content: crypto.randomBytes(512 * 1024).toString("latin1"), stored: true }]);
+      const failure = await withTimeout(unpackStream(chunked(zip, 16 * 1024), createOutput, path.join(scratchDir, "missing"))).then(
+        () => "",
+        (err: Error) => err.message
+      );
+      expect(failure).to.match(/ENOENT/);
+    });
+
+    it("stores the entries but not the archive itself", async () => {
+      const zip = handZip([
+        { name: "a.txt", content: "a".repeat(1000) },
+        { name: "b.txt", content: "b" },
+      ]);
+      const files = await withTimeout(unpackStream(chunked(zip, 64), createOutput, scratchDir));
+      const stored = new Set([...files].map(([, file]) => file.hash));
+      expect(new Set(fs.readdirSync(path.join(cacheDir, "blob")))).to.deep.equal(stored);
     });
 
     it("reads one member, passing over the rest", async () => {

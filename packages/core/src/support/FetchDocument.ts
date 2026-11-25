@@ -150,9 +150,9 @@ export function fetchArchive(context: CacheFetcher, request: IArchiveRequest): C
         url,
         ...(headers ? { headers } : {}),
         ...(credential ? { credential } : {}),
-        process: (content: Readable, { createOutput }: IFetchContext) => {
+        process: (content: Readable, { targetDir, createOutput }: IFetchContext) => {
           const { stream, verify } = verifiedStream(content, expected, shownUrl(url));
-          return unpackStream(stream, createOutput).then(files => {
+          return unpackStream(stream, createOutput, targetDir).then(files => {
             verify();
             return keep ? keep(files) : files;
           });

@@ -124,7 +124,10 @@ function servingContext(served: Map<string, Buffer>, cache: BuildCache, target: 
         if (body === undefined) {
           return Computable.reject(new HttpStatusError(404, url));
         }
-        return process(Readable.from([body]), { targetDir: "unused", createOutput: () => cache.getTemporaryWriteStream() });
+        return process(Readable.from([body]), {
+          targetDir: cache.createWorkDir(),
+          createOutput: () => cache.getTemporaryWriteStream(),
+        });
       }),
   } as unknown as TargetContext;
 }

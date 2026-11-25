@@ -24,6 +24,8 @@
  * first written out in full.
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import { Readable, Writable } from "stream";
 import { crc32 } from "zlib";
 import * as yauzl from "yauzl";
@@ -37,8 +39,8 @@ import { SymlinkFile } from "../core/SymlinkFile";
 import { normalizeEntryName } from "./Paths";
 import { contentFailure, isNotFound } from "../core/FSWrapper";
 
-/** The name an archive arriving as a stream is written out under. */
-const SPOOL_NAME = "archive.zip";
+/** The count of archives written out to a scratch dir by this process, which names each. */
+let spooled = 0;
 /* Version-made-by host: unix, whose external attributes carry the file mode. */
 const ZIP_HOST_UNIX = 3;
 const S_IFMT = 0o170000;
@@ -51,19 +53,31 @@ function zipError(err: unknown, entry?: yauzl.Entry): Error {
   );
 }
 
+/** Make yauzl's open callback settle `resolve`/`reject`, a missing file
+ *  reported as `archive`'s content failure where the archive is a stored file. */
+function zipOpened(
+  resolve: (zip: yauzl.ZipFile) => void,
+  reject: (err: Error) => void,
+  archive?: IFile
+): (err: Error | null, zip: yauzl.ZipFile) => void {
+  return (err, zip) =>
+    err ? reject(archive !== undefined && isNotFound(err) ? contentFailure(archive, err) : zipError(err)) : resolve(zip);
+}
+
+/** Open the zip archive at the host path `file`. */
+function openZipAt(file: string, archive?: IFile): Computable<yauzl.ZipFile> {
+  return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.open(file, ZIP_OPTIONS, zipOpened(resolve, reject, archive)));
+}
+
+/** Open a zip archive held in memory. */
+function openZipBuffer(buffer: Buffer): Computable<yauzl.ZipFile> {
+  return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, zipOpened(resolve, reject)));
+}
+
 /** Open a zip archive: by path where it is on disk, else from memory. */
 function openZip(archive: IFile): Computable<yauzl.ZipFile> {
-  const opened = (resolve: (zip: yauzl.ZipFile) => void, reject: (err: Error) => void) => (err: Error | null, zip: yauzl.ZipFile) =>
-    err ? reject(isNotFound(err) ? contentFailure(archive, err) : zipError(err)) : resolve(zip);
-  const path = archive.getAbsPath();
-  if (path !== undefined) {
-    return Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.open(path, ZIP_OPTIONS, opened(resolve, reject)));
-  }
-  return archive
-    .getBuffer()
-    .then(buffer =>
-      Computable.from<yauzl.ZipFile>((resolve, reject) => yauzl.fromBuffer(buffer, ZIP_OPTIONS, opened(resolve, reject)))
-    );
+  const file = archive.getAbsPath();
+  return file !== undefined ? openZipAt(file, archive) : archive.getBuffer().then(openZipBuffer);
 }
 
 /**
@@ -166,47 +180,69 @@ function writeEntry(
  * the mode its central directory records, a symlink as a {@link SymlinkFile}.
  */
 export function unzipFile(archive: IFile, createOutput: () => IOutputHandle): Computable<FileSet> {
-  return openZip(archive)
-    .then(zip =>
-      readEntries(
-        zip,
-        () => true,
-        (entry, name, stream) => writeEntry(entry, name, stream, createOutput)
-      )
-    )
-    .then(files => new FileSet(new Map(files)));
+  return openZip(archive).then(zip => unzipOpened(zip, createOutput));
+}
+
+function unzipOpened(zip: yauzl.ZipFile, createOutput: () => IOutputHandle): Computable<FileSet> {
+  return readEntries(
+    zip,
+    () => true,
+    (entry, name, stream) => writeEntry(entry, name, stream, createOutput)
+  ).then(files => new FileSet(new Map(files)));
 }
 
 /**
- * Read a zip archive arriving as a stream: written out whole to one output,
- * then unzipped from it (see {@link unzipFile}).
+ * Read a zip archive arriving as a stream: written out whole, to a temporary
+ * file in `scratchDir` or, without one, to memory, then unzipped from there
+ * (see {@link unzipFile}). The archive itself is never stored; the file is
+ * left for whoever owns `scratchDir` to remove.
  * @return the sink to stream the archive into, and the files it holds.
  */
-export function extractZip(createOutput: () => IOutputHandle): { sink: Writable; result: Computable<FileSet> } {
-  const spool = createOutput();
-  let settle!: { resolve: (files: Computable<FileSet>) => void; reject: (err: Error) => void };
-  const result = Computable.from<FileSet>((resolve, reject) => {
+export function extractZip(createOutput: () => IOutputHandle, scratchDir?: string): { sink: Writable; result: Computable<FileSet> } {
+  const { sink, archive } = scratchDir === undefined ? spoolToMemory() : spoolToFile(scratchDir);
+  return { sink, result: archive.then(zip => unzipOpened(zip, createOutput)) };
+}
+
+/** Write an archive out to a new file in `scratchDir`, opened once it is whole. */
+function spoolToFile(scratchDir: string): { sink: Writable; archive: Computable<yauzl.ZipFile> } {
+  const file = path.join(scratchDir, `archive-${++spooled}.zip`);
+  /* A failure to open the file is the sink's error. */
+  const sink = fs.createWriteStream(file, { flags: "wx" });
+  const archive = Computable.from<yauzl.ZipFile>((resolve, reject) => {
+    let whole = false;
+    sink.once("finish", () => {
+      whole = true;
+    });
+    sink.once("error", err => reject(toError(err)));
+    /* Open only once the file is closed; a sink destroyed before its end has no archive to open. */
+    sink.once("close", () =>
+      whole ? resolve(openZipAt(file)) : reject(new FabrError("ZIP archive ended before it was written out whole"))
+    );
+  });
+  return { sink, archive };
+}
+
+/** Collect an archive in memory, opened once it is whole. */
+function spoolToMemory(): { sink: Writable; archive: Computable<yauzl.ZipFile> } {
+  const chunks: Buffer[] = [];
+  let settle!: { resolve: (zip: Computable<yauzl.ZipFile>) => void; reject: (err: Error) => void };
+  const archive = Computable.from<yauzl.ZipFile>((resolve, reject) => {
     settle = { resolve, reject };
   });
   const sink = new Writable({
     write(chunk: Buffer, _encoding: BufferEncoding, done: () => void): void {
-      if (spool.stream.write(chunk)) {
-        done();
-      } else {
-        spool.stream.once("drain", () => done());
-      }
+      chunks.push(chunk);
+      done();
     },
     final(done: () => void): void {
-      settle.resolve(spool.finalize(SPOOL_NAME).then(archive => unzipFile(archive, createOutput)));
+      settle.resolve(openZipBuffer(Buffer.concat(chunks)));
       done();
     },
   });
-  /* A failure of the spool, or of the stream feeding it (a dropped connection), destroys the sink. */
-  spool.stream.on("error", err => sink.destroy(err));
-  sink.on("error", err => {
-    spool.discard().then(() => settle.reject(err));
-  });
-  return { sink, result };
+  /* A failure of the stream feeding it (a dropped connection) destroys the sink. */
+  sink.once("error", err => settle.reject(toError(err)));
+  sink.once("close", () => settle.reject(new FabrError("ZIP archive ended before it was whole")));
+  return { sink, archive };
 }
 
 /**

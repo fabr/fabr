@@ -9,6 +9,7 @@ together and share a version number.
 @fabr-build/core
 
 - Add -j jobs option to set max parallel processes.
+- Avoid storing downloaded zip files in the cache when we only want the contents.
 
 @fabr-build/js
 
