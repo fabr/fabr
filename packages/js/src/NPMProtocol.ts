@@ -368,11 +368,9 @@ function registryMessage(body: Buffer): string {
 
 /**
  * Publish a packaged tarball and its manifest to an npm registry. Sends the
- * envelope `libnpmpublish` sends (the manifest completed with `_id` and
- * `dist`: sha512 integrity, sha1 shasum and the tarball's registry URL,
- * wrapped with `dist-tags`, `versions`, `access` and `_attachments`) as a PUT
- * to the escaped package name, with `authHeaders`' credential. `provenance`,
- * a signed provenance bundle for the tarball, is attached beside it.
+ * envelope `libnpmpublish` sends ({@link publishEnvelope}) as a PUT to the
+ * escaped package name, with `authHeaders`' credential. `provenance`, a
+ * signed provenance bundle for the tarball, is attached beside it.
  *
  * - Answers `"published"` on a 2xx answer.
  * - Answers `"already-synced"` where the version is already published: a 409,
@@ -395,33 +393,7 @@ export function publishToRegistry(
   provenance?: SerializedBundle
 ): Computable<"published" | "already-synced"> {
   const { name, version } = coordinate;
-  const tarballName = tarballBasename(name, version);
-  const bytes = new Uint8Array(tarball);
-  const versionManifest: Record<string, unknown> = {
-    ...manifest,
-    _id: `${name}@${version}`,
-    dist: {
-      integrity: `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}`,
-      shasum: crypto.createHash("sha1").update(bytes).digest("hex"),
-      tarball: new URL(`${name}/-/${tarballName}`, registryUrl.concat("/").toUnmaskedString()).href.replace(/^https:\/\//, "http://"),
-    },
-  };
-  const envelope = {
-    _id: name,
-    name,
-    description: manifest.description,
-    "dist-tags": { latest: version },
-    versions: { [version]: versionManifest },
-    access,
-    _attachments: {
-      [tarballName]: {
-        content_type: "application/octet-stream",
-        data: tarball.toString("base64"),
-        length: tarball.length,
-      },
-      ...(provenance ? { [`${name}-${version}.sigstore`]: provenanceAttachment(provenance) } : {}),
-    },
-  };
+  const body = JSON.stringify(publishEnvelope(registryUrl, coordinate, tarball, manifest, access, provenance));
   const escapedName = name.replace(/\//g, "%2f");
   /* Send both npm-auth-type and npm-command: the registry offers the browser
    * (passkey) challenge, with authUrl/doneUrl in its body, only to a client
@@ -433,7 +405,6 @@ export function publishToRegistry(
     "npm-command": "publish",
     ...authHeaders,
   };
-  const body = JSON.stringify(envelope);
   const attempt = (password?: string): Computable<HttpResponse> =>
     sendRequest(urlJoin(registryUrl, escapedName), {
       method: "PUT",
@@ -441,28 +412,11 @@ export function publishToRegistry(
       body,
     });
   const settle = (response: HttpResponse): "published" | "already-synced" => {
-    /* The version is already published: a 409, or npmjs's 403 "You cannot
-     * publish over the previously published versions". */
-    if (
-      response.statusCode === 409 ||
-      (response.statusCode === 403 && response.body.toString("utf8").includes("cannot publish over"))
-    ) {
+    if (alreadyPublished(response)) {
       return "already-synced";
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      const detail = response.body.toString("utf8");
-      const error = new FabrError(
-        `publishing ${name}@${version} to ${shownUrl(registryUrl)} failed (${response.statusCode}): ${detail}`
-      );
-      /* npmjs's refusal of a restricted scoped publish: "You must sign up for
-       * private packages". */
-      if (detail.includes("private packages")) {
-        error.withHelp(
-          `restricted (private) packages are a paid npmjs feature; to publish publicly instead, use an ` +
-            `npm_repository declared with 'access = public;' (the default @npm)`
-        );
-      }
-      throw error;
+      throw publishFailure("publishing", registryUrl, coordinate, response);
     }
     return "published";
   };
@@ -480,6 +434,123 @@ export function publishToRegistry(
     );
   };
   return attempt().then(response => answerChallenge(response, undefined, 2));
+}
+
+/**
+ * Stage a packaged tarball and its manifest on an npm registry, as
+ * `npm stage publish` does: the envelope {@link publishToRegistry} sends,
+ * `POST`ed to `/-/stage/package/<name>`, held by the registry until someone
+ * approves it there (`npm stage approve`). Staging asks for no second factor.
+ *
+ * @return the stage id the registry gives the staged version, or undefined
+ * where the version is already published (a 409, or npmjs's 403 "cannot
+ * publish over"). Rejects on any other non-2xx answer, or a 2xx with no stage
+ * id, with the registry's response body.
+ */
+export function stageOnRegistry(
+  registryUrl: SecureString,
+  coordinate: NpmPublishIdentity,
+  tarball: Buffer,
+  manifest: Record<string, unknown>,
+  authHeaders: Record<string, string>,
+  access: PublishAccess = null,
+  provenance?: SerializedBundle
+): Computable<string | undefined> {
+  const body = JSON.stringify(publishEnvelope(registryUrl, coordinate, tarball, manifest, access, provenance));
+  const escapedName = coordinate.name.replace(/\//g, "%2f");
+  return sendRequest(urlJoin(registryUrl, `-/stage/package/${escapedName}`), {
+    method: "POST",
+    headers: { "content-type": "application/json", "npm-command": "stage", ...authHeaders },
+    body,
+  }).then(response => {
+    if (alreadyPublished(response)) {
+      return undefined;
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw publishFailure("staging", registryUrl, coordinate, response).withHelp(
+        `where ${shownUrl(registryUrl)} does not stage publishes, set staging = off on the repository`
+      );
+    }
+    const { stageId } = parseJson(
+      response.body,
+      `the registry's answer to staging ${coordinate.name}@${coordinate.version}`,
+      toJsonObject
+    );
+    if (typeof stageId !== "string" || stageId === "") {
+      throw new FabrError(
+        `staging ${coordinate.name}@${coordinate.version} on ${shownUrl(registryUrl)} gave no stage id: ${response.body.toString("utf8")}`
+      );
+    }
+    return stageId;
+  });
+}
+
+/** @return true if `response`, to a publish, says the version is already published: a 409, or npmjs's 403 "You cannot publish over the previously published versions", otherwise false. */
+function alreadyPublished(response: HttpResponse): boolean {
+  return (
+    response.statusCode === 409 || (response.statusCode === 403 && response.body.toString("utf8").includes("cannot publish over"))
+  );
+}
+
+/** Make the error for a refused publish (or stage), with the registry's response body, and help where npmjs refuses a restricted package. */
+function publishFailure(doing: string, registryUrl: SecureString, coordinate: NpmPublishIdentity, response: HttpResponse): FabrError {
+  const detail = response.body.toString("utf8");
+  const error = new FabrError(
+    `${doing} ${coordinate.name}@${coordinate.version} to ${shownUrl(registryUrl)} failed (${response.statusCode}): ${detail}`
+  );
+  /* npmjs's refusal of a restricted scoped publish: "You must sign up for
+   * private packages". */
+  if (detail.includes("private packages")) {
+    error.withHelp(
+      `restricted (private) packages are a paid npmjs feature; to publish publicly instead, use an ` +
+        `npm_repository declared with 'access = public;' (the default @npm)`
+    );
+  }
+  return error;
+}
+
+/**
+ * Make the document `libnpmpublish` sends to publish a tarball: the manifest
+ * completed with `_id` and `dist` (sha512 integrity, sha1 shasum and the
+ * tarball's registry URL), wrapped with `dist-tags`, `versions`, `access` and
+ * `_attachments`, `provenance` attached beside the tarball.
+ */
+function publishEnvelope(
+  registryUrl: SecureString,
+  coordinate: NpmPublishIdentity,
+  tarball: Buffer,
+  manifest: Record<string, unknown>,
+  access: PublishAccess,
+  provenance: SerializedBundle | undefined
+): Record<string, unknown> {
+  const { name, version } = coordinate;
+  const tarballName = tarballBasename(name, version);
+  const bytes = new Uint8Array(tarball);
+  const versionManifest: Record<string, unknown> = {
+    ...manifest,
+    _id: `${name}@${version}`,
+    dist: {
+      integrity: `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}`,
+      shasum: crypto.createHash("sha1").update(bytes).digest("hex"),
+      tarball: new URL(`${name}/-/${tarballName}`, registryUrl.concat("/").toUnmaskedString()).href.replace(/^https:\/\//, "http://"),
+    },
+  };
+  return {
+    _id: name,
+    name,
+    description: manifest.description,
+    "dist-tags": { latest: version },
+    versions: { [version]: versionManifest },
+    access,
+    _attachments: {
+      [tarballName]: {
+        content_type: "application/octet-stream",
+        data: tarball.toString("base64"),
+        length: tarball.length,
+      },
+      ...(provenance ? { [`${name}-${version}.sigstore`]: provenanceAttachment(provenance) } : {}),
+    },
+  };
 }
 
 /**

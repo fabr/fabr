@@ -28,7 +28,7 @@ answer every time. This page covers declaring dependencies and how their version
 | `<exclusions>` in a dependency's POM | Read, as Maven reads them; see [What fabr reads from a POM](#what-fabr-reads-from-a-pom). |
 | `<exclusions>` in your own build | See [Not supported](#not-supported). |
 | `<repositories>` / `repositories { maven { … } }` | A [`maven_repository`](#repositories); several combined with a [`repository_group`](#combining-repositories). |
-| `<mirrors>` in `settings.xml` | `MAVEN_REPOSITORY_URL`; see [Mirrors and proxies](#mirrors-and-proxies). |
+| `<mirrors>` in `settings.xml` | `MAVEN_CENTRAL_REPO_URL`; see [Mirrors and proxies](#mirrors-and-proxies). |
 | `<proxies>` in `settings.xml` | The `https_proxy` environment variable; see [Mirrors and proxies](#mirrors-and-proxies). |
 | `<servers>` in `settings.xml` | The same file; see [Credentials](#credentials). |
 | `mvn dependency:tree` / `gradle dependencies` | `fabr deps <target>`. |
@@ -356,14 +356,14 @@ the error `org.junit:junit-bom:5.11.4 publishes no javadoc jar`.
 
 ## Repositories
 
-`@mvn` is Maven Central. To send every `@mvn` package to a mirror, set `MAVEN_REPOSITORY_URL`:
+`@mvn` is Maven Central. To read it through a mirror, set `MAVEN_CENTRAL_REPO_URL`:
 
 ```
-MAVEN_REPOSITORY_URL = https://maven.example.com/repository/maven-public;
+MAVEN_CENTRAL_REPO_URL = https://maven.example.com/repository/maven-public;
 ```
 
-To use another repository beside Central, declare it with a name of your choosing, and write its
-packages under that name:
+Publishing to `@mvn` still goes to Central. Declare a repository that is not a mirror of Central
+as a `maven_repository` with a name of your choosing, and write its packages under that name:
 
 ```
 maven_repository @corp {
@@ -380,8 +380,8 @@ jar_package app {
 Maven and Gradle look for each package in every repository the build lists. Fabr looks for a
 package, and for everything its POM requires, in one repository only: the one its reference names.
 So `@corp` above must hold everything `billing` requires, as a repository manager that proxies
-Central (a Nexus or Artifactory group repository) does. Setting `MAVEN_REPOSITORY_URL` to such a
-repository is then all a build needs.
+Central (a Nexus or Artifactory group repository) does. Such a repository is a mirror of Central,
+so setting `MAVEN_CENTRAL_REPO_URL` to it is then all a build needs.
 
 A repository that holds only some packages, such as Google's, is combined with Central in a
 `repository_group`, which chooses the repository for each package by its name:
@@ -459,7 +459,7 @@ password can't be read; write it with `${env.NAME}` instead.
 Fabr reads only the `<servers>` of `settings.xml`. Its `<mirrors>`, `<proxies>`, `<profiles>` and
 `<localRepository>` are not read:
 
-- **A mirror** of Central is `MAVEN_REPOSITORY_URL`, or a `maven_repository @mvn` of your own where
+- **A mirror** of Central is `MAVEN_CENTRAL_REPO_URL`, or a `maven_repository @mvn` of your own where
   it needs credentials; see [Credentials](#credentials).
 - **A proxy** comes from the standard environment variables, `https_proxy`, `http_proxy` and
   `no_proxy`, in upper or lower case.

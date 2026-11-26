@@ -17,54 +17,67 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Computable, Diagnostic, ExecutionContext, FabrError, PublishableFileSet, toError } from "@fabr-build/core";
+import {
+  batchName,
+  Computable,
+  Diagnostic,
+  ExecutionContext,
+  FabrError,
+  PublishableFileSet,
+  publishBatches,
+  publishBatchTo,
+  toError,
+} from "@fabr-build/core";
 
 const DIAG_ALREADY_SYNCED = Diagnostic.Info<{ destination: string }>("{destination} is already synced");
+const DIAG_STAGED = Diagnostic.Info<{ destination: string }>("{destination} is staged: publish it from its repository");
 const DIAG_PUBLISH_FAILED = Diagnostic.Error<{ destination: string; reason: string }>("Failed to publish {destination}: {reason}");
 const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: string }>(
   "Skipped {destination}: its release dependency {blockedBy} was not published"
 );
 
 /**
- * Publish a release's members one at a time, in the order given, each through
- * its destination (`destination.source.publish`) as a task of its own. The
- * order must put each member after the members it depends on, as the sync
- * rule's carriers come.
+ * Publish a release's members in the batches {@link publishBatches} groups
+ * them into, one batch at a time, each through its destination as a task of
+ * its own ({@link publishBatchTo}).
  *
- * A failed upload is logged and the rest go on. A member whose `dependsOn`
- * names a token `provides`d by a member that failed or was skipped is skipped,
- * with a warning. Settles once every member has been tried, rejecting with a
+ * A failed upload is logged and the rest go on; a failed batch fails every
+ * member it held. A batch with a member whose `dependsOn` names a token
+ * `provides`d by a member that failed or was skipped is skipped, with a
+ * warning. Settles once every batch has been tried, rejecting with a
  * FabrError counting the members not published where any was not.
  */
 export function publishSync(execution: ExecutionContext, members: ReadonlyArray<PublishableFileSet>): Computable<void> {
   const unavailable = new Set<string>(); /* The tokens provided by members that failed or were skipped. */
   let failures = 0;
-  const markUnavailable = (member: PublishableFileSet): void => {
-    failures++;
-    if (member.provides !== undefined) {
-      unavailable.add(member.provides);
-    }
+  const markUnavailable = (batch: readonly PublishableFileSet[]): void => {
+    failures += batch.length;
+    batch.forEach(member => member.provides !== undefined && unavailable.add(member.provides));
   };
   let chain: Computable<void> = Computable.resolve(undefined);
-  for (const member of members) {
+  for (const batch of publishBatches(members)) {
     chain = chain.then(() => {
-      const blocked = member.dependsOn.find(dep => unavailable.has(dep));
+      const provided = new Set(batch.flatMap(member => (member.provides === undefined ? [] : [member.provides])));
+      const blocked = batch.flatMap(member => member.dependsOn).find(dep => !provided.has(dep) && unavailable.has(dep));
+      const destination = batchName(batch);
       if (blocked !== undefined) {
-        markUnavailable(member);
-        execution.log.log(DIAG_PUBLISH_SKIPPED, { destination: member.destination.toString(), blockedBy: blocked });
+        markUnavailable(batch);
+        execution.log.log(DIAG_PUBLISH_SKIPPED, { destination, blockedBy: blocked });
         return;
       }
-      const destination = member.destination.toString();
       return execution
-        .runTask({ kind: "publish", destination }, report => member.destination.source.publish(member, report))
+        .runTask({ kind: "publish", destination }, report => publishBatchTo(batch, report))
         .then(
-          status => {
-            if (status === "already-synced") {
-              execution.log.log(DIAG_ALREADY_SYNCED, { destination });
-            }
-          },
+          statuses =>
+            statuses.forEach((status, index) => {
+              if (status === "already-synced") {
+                execution.log.log(DIAG_ALREADY_SYNCED, { destination: batch[index].destination.toString() });
+              } else if (status === "staged") {
+                execution.log.log(DIAG_STAGED, { destination: batch[index].destination.toString() });
+              }
+            }),
           err => {
-            markUnavailable(member);
+            markUnavailable(batch);
             execution.log.log(DIAG_PUBLISH_FAILED, { destination, reason: toError(err).message });
           }
         );

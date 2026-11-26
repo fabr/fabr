@@ -37,6 +37,7 @@ import {
   NPM_FORMAT,
   parseMetadataResponse,
   publishToRegistry,
+  stageOnRegistry,
   toPackumentVersions,
   toPublishAccess,
   versionMetadataOf,
@@ -170,6 +171,7 @@ describe("verifying a tarball against its dist digest", () => {
 /** What one scripted-server request looked like, as the handler saw it. */
 interface SeenRequest {
   method?: string;
+  url?: string;
   headers: http.IncomingHttpHeaders;
   body: string;
 }
@@ -188,7 +190,7 @@ function scriptedServer(
       const chunks: Buffer[] = [];
       req.on("data", chunk => chunks.push(chunk));
       req.on("end", () => {
-        const request = { method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString() };
+        const request = { method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() };
         const reply = script(request, seen.length);
         seen.push(request);
         res.writeHead(reply.status, { "content-type": "application/json", ...reply.headers });
@@ -241,6 +243,46 @@ describe("publishToRegistry access", () => {
       expect((thrown as FabrError).help.join("\n")).to.match(/access = public/);
     } finally {
       server.close();
+    }
+  });
+});
+
+describe("stageOnRegistry", () => {
+  const IDENTITY = { name: "@scope/demo", version: "1.0.0" };
+  const TARBALL = Buffer.from("tgz-bytes");
+
+  it("POSTs the publish envelope to the stage route, and answers the stage id the registry gives", async () => {
+    const server = await scriptedServer(() => ({ status: 201, body: `{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}` }));
+    try {
+      const stageId = await stageOnRegistry(SecureString.of(server.url), IDENTITY, TARBALL, { name: "@scope/demo" }, {}, "public");
+      expect(stageId).to.equal("5f2c9a0e-1111-4222-8333-944444444444");
+      const [seen] = server.seen;
+      expect([seen.method, seen.url]).to.deep.equal(["POST", "/-/stage/package/@scope%2fdemo"]);
+      const envelope = JSON.parse(seen.body);
+      expect(envelope["dist-tags"]).to.deep.equal({ latest: "1.0.0" });
+      expect(envelope.access).to.equal("public");
+      expect(Object.keys(envelope._attachments)).to.deep.equal(["@scope/demo-1.0.0.tgz"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("answers no stage id for a version already published, and refuses an answer with none", async () => {
+    const published = await scriptedServer(() => ({ status: 409, body: "{}" }));
+    const empty = await scriptedServer(() => ({ status: 201, body: "{}" }));
+    const unsupported = await scriptedServer(() => ({ status: 404, body: `{"error":"Not found"}` }));
+    try {
+      expect(await stageOnRegistry(SecureString.of(published.url), IDENTITY, TARBALL, {}, {})).to.equal(undefined);
+      let thrown: unknown;
+      await stageOnRegistry(SecureString.of(empty.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/gave no stage id/);
+      await stageOnRegistry(SecureString.of(unsupported.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/^staging @scope\/demo@1\.0\.0 to .* failed \(404\)/);
+      expect((thrown as FabrError).help.join("\n")).to.match(/staging = off/);
+    } finally {
+      published.close();
+      empty.close();
+      unsupported.close();
     }
   });
 });

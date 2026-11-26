@@ -4,8 +4,9 @@ description: How to publish jars, wars and ears to a Maven repository with a syn
 ---
 
 A `sync` target publishes the project's jars, wars and ears to a Maven repository manager, such as
-Nexus, Artifactory, Reposilite or a company repository, as `mvn deploy` does. Each is uploaded
-with a POM that fabr generates from what the target requires.
+Nexus, Artifactory, Reposilite or a company repository, as `mvn deploy` does, or to
+[Maven Central](#publishing-to-maven-central). Each is uploaded with a POM that fabr generates
+from what the target requires.
 
 ```
 maven_repository @corp {
@@ -28,7 +29,8 @@ fabr sync release     # publish it
 | With Maven or Gradle | In fabr |
 |---|---|
 | `mvn deploy` / `gradle publish` | `fabr sync <target>`. |
-| `<distributionManagement>` / `publishing { repositories { … } }` | A `maven_repository` the `sync` entries name. |
+| `<distributionManagement>` / `publishing { repositories { … } }` | A `maven_repository` the `sync` entries name, with its `publish_url` where uploads go to another URL; see [Where uploads go](#where-uploads-go). |
+| `central-publishing-maven-plugin` | A `sync` entry for `@mvn`; see [Publishing to Maven Central](#publishing-to-maven-central). |
 | `groupId`, `artifactId` and `version` in the POM | The coordinate written in the `sync` entry: `@corp:<group>:<artifact>:<version>`. |
 | A hand-written POM | Generated, from the target's dependencies and its `metadata`. |
 | `mvn deploy -DskipTests`, a dry run | `fabr build` on the `sync` target, then `fabr ls`, `cat` or `cp`. |
@@ -36,6 +38,7 @@ fabr sync release     # publish it
 | `maven-source-plugin` / `withSourcesJar()`, `maven-javadoc-plugin` / `withJavadocJar()` | The repository's `auto_attach`; see [Sources and javadoc jars](#sources-and-javadoc-jars). |
 | An artifact with a classifier | An entry with the classifier after the artifact: `@corp:<group>:<artifact>/<classifier>:<version>`. |
 | Credentials in `settings.xml` | The same file; see [Credentials](/reference/java/dependencies/#credentials). |
+| `maven-gpg-plugin` / Gradle's `signing` plugin | The repository's `sign`; see [Signing](#signing). |
 | A `-SNAPSHOT` version | Not published: every published version is a release, which never changes once uploaded. |
 
 ## What is uploaded
@@ -46,6 +49,7 @@ For each entry, at its path in the repository's layout (`com/example/greeter/1.0
 - A POM, `<artifact>-<version>.pom`, generated as below.
 - Any [classified jars](#sources-and-javadoc-jars), such as `<artifact>-<version>-sources.jar`.
 - An `.md5` and a `.sha1` checksum beside each.
+- Where the repository [signs](#signing), an `.asc` signature beside the artifact, the POM and each classified jar.
 
 The package's `maven-metadata.xml` is brought up to date with the new version, and the POM is
 uploaded last of all, after its checksums, so a version is visible only once everything else is
@@ -59,6 +63,20 @@ fabr ls release
 # @corp/com.example/greeter/1.0.0/com/example/greeter/1.0.0/greeter-1.0.0.jar
 # @corp/com.example/greeter/1.0.0/com/example/greeter/1.0.0/greeter-1.0.0.pom
 # …
+```
+
+## Where uploads go
+
+A `sync` uploads to the repository's `url`, or to its `publish_url` where it has one, as Maven's
+`<distributionManagement>` does: a repository manager often reads from a group and takes uploads
+at a releases repository. Uploads sign in as the `settings.xml` server `publish_id` names, by
+default the repository's `id`.
+
+```
+maven_repository @corp {
+  url = https://nexus.corp.example.com/repository/maven-public;
+  publish_url = https://nexus.corp.example.com/repository/maven-releases;
+}
 ```
 
 ## Sources and javadoc jars
@@ -104,6 +122,43 @@ one file. An entry for a
 classifier `auto_attach` lists takes its place. The artifact the jar belongs beside must be
 published by the same `sync`: `cannot publish @corp:com.example/greeter/sources:1.0.0: the release
 publishes no com.example:greeter:1.0.0 for it to be beside`.
+
+## Signing
+
+`sign = on` publishes an `.asc` signature beside each artifact, POM and classified jar, as
+[`maven-gpg-plugin`](https://maven.apache.org/plugins/maven-gpg-plugin/) does. The key is read from
+`MAVEN_GPG_KEY`, else `~/maven-signing-key.key`, and its passphrase from `MAVEN_GPG_PASSPHRASE`.
+
+## Publishing to Maven Central
+
+A `sync` entry for `@mvn` publishes to Maven Central:
+
+```
+sync release {
+  @mvn:com.example:greeter:1.0.0 = greeter;
+}
+```
+
+`@mvn` is declared with `publish_type = portal`, which uploads through Central's
+[Publisher Portal](https://central.sonatype.org/publish/publish-portal-guide/), as
+`central-publishing-maven-plugin` does, and with `sign = on` and `auto_attach = sources javadoc`.
+You need what [Central requires](https://central.sonatype.org/publish/requirements/), with your
+Portal user token in `~/.m2/settings.xml` as server `central`.
+
+`staging = on` has the Portal hold the deployment for you to publish or drop on its
+[Deployments page](https://central.sonatype.com/publishing/deployments), like the plugin's
+`autoPublish=false`. To set it, declare `@mvn` yourself:
+
+```
+maven_repository @mvn {
+  url = ${MAVEN_CENTRAL_REPO_URL};
+  publish_type = portal;
+  publish_id = central;
+  sign = on;
+  auto_attach = sources javadoc;
+  staging = on;
+}
+```
 
 ## The generated POM
 
@@ -156,5 +211,4 @@ Elements fabr writes itself (`modelVersion`, `groupId`, `artifactId`, `version`,
 
 ## Not supported
 
-- Publishing to Maven Central is not supported: Central takes uploads only through its Portal,
-  and requires PGP signatures beside each file.
+- `-SNAPSHOT` versions, on Central's snapshot repository or any other.

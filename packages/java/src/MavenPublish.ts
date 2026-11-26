@@ -22,8 +22,8 @@
  * manager: each member is its artifact (the one jar, war or ear among its
  * files) and a POM generated from the dependencies its package carries, laid
  * out at their paths in the repository with `.md5` and `.sha1` checksums
- * beside each, and the package's `maven-metadata.xml` brought up to date when
- * it is uploaded.
+ * beside each (and, where the repository signs, an `.asc` signature), and the
+ * package's `maven-metadata.xml` brought up to date when it is uploaded.
  */
 
 import XMLBuilder from "fast-xml-builder";
@@ -54,6 +54,7 @@ import {
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenVariantOf, splitMavenName } from "./MavenProtocol";
 import { MAVEN_VERSIONS, MavenVersion } from "./MavenVersion";
+import { Signer } from "./MavenSigning";
 import { PomDependency } from "./Pom";
 import { parseXml, xmlChild, xmlChildren } from "./Xml";
 
@@ -236,6 +237,21 @@ export function pomText(pom: Pom): string {
   });
 }
 
+/** The extension of the signature published beside a file. */
+const SIGNATURE = "asc";
+
+/**
+ * Make the files published beside `bytes` at `path`: its checksums, each
+ * named `<path>.<algorithm>`, and where `sign` is given, its signature,
+ * `<path>.asc`.
+ */
+function besideFile(path: string, bytes: Buffer, sign: Signer | undefined): Computable<Array<[string, IFile]>> {
+  const checksums = checksumFiles(path, bytes);
+  return sign === undefined
+    ? Computable.resolve(checksums)
+    : sign(bytes).then(signature => [...checksums, [`${path}.${SIGNATURE}`, MemoryFile.from(signature)] as [string, IFile]]);
+}
+
 /** Make the checksum files of `bytes` published at `path`, each named `<path>.<algorithm>`. */
 export function checksumFiles(path: string, bytes: Buffer): Array<[string, IFile]> {
   return CHECKSUMS.map(([extension, algorithm]) => [
@@ -246,14 +262,15 @@ export function checksumFiles(path: string, bytes: Buffer): Array<[string, IFile
 
 /**
  * Split a member's files for upload around `marker`, the file that marks the
- * member published: `before`, every file but the marker and its checksums, and
- * `last`, the marker's checksums then the marker itself, each in code-unit
+ * member published: `before`, every file but the marker, its checksums and its
+ * signature, and `last`, those then the marker itself, each in code-unit
  * order. Whatever else a publish uploads (the package's `maven-metadata.xml`)
  * goes between the two, so the marker is present only once all of it is.
  */
 export function uploadOrder(paths: Iterable<string>, marker: string): { before: string[]; last: string[] } {
   const all = [...paths].sort(compareText);
-  const ofMarker = (path: string): boolean => path === marker || CHECKSUMS.some(([extension]) => path === `${marker}.${extension}`);
+  const ofMarker = (path: string): boolean =>
+    path === marker || [...CHECKSUMS.map(([extension]) => extension), SIGNATURE].some(extension => path === `${marker}.${extension}`);
   return {
     before: all.filter(path => !ofMarker(path)),
     last: [...all.filter(path => ofMarker(path) && path !== marker), ...all.filter(path => path === marker)],
@@ -393,8 +410,9 @@ function pomDependencyOf(
 /**
  * Package one member for a Maven repository: its artifact and a POM generated
  * from what its package requires (see {@link pomDependencyOf}), with its
- * package's `metadata`, at their repository paths, each with its checksums.
- * Content that is no package (a war's files) has a POM with no dependencies.
+ * package's `metadata`, at their repository paths, each with its checksums,
+ * and signed with `sign` where it is given. Content that is no package (a
+ * war's files) has a POM with no dependencies.
  *
  * `targets` holds each target's publish coordinates in the release, by
  * target name; `coMembers` the names of the packages this destination
@@ -408,7 +426,8 @@ export function packageMavenMember(
   member: PublishMember,
   targets: ReadonlyMap<string, readonly RepositoryPublishRef[]>,
   coMembers: ReadonlySet<string>,
-  release: readonly RepositoryPublishRef[]
+  release: readonly RepositoryPublishRef[],
+  sign?: Signer
 ): Computable<PublishableFileSet> {
   const { content } = member;
   const destination = packageCoordinateOf(member.destination);
@@ -438,19 +457,22 @@ export function packageMavenMember(
       );
       const artifactPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.${extension}`);
       const pomPath = repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
-      const files: Array<[string, IFile]> = [
-        [artifactPath, file],
-        ...checksumFiles(artifactPath, bytes),
-        [pomPath, new MemoryFile(pom)],
-        ...checksumFiles(pomPath, pom),
-      ];
       const dependsOn = [
         ...dependencies.map(dep => `${dep.groupId}/${dep.artifactId}`).filter(name => coMembers.has(name)),
         ...packageCoordinates(release)
           .filter(each => each.name === destination.name && each.version === version && variantOf(each) !== undefined)
           .map(each => variantToken(each)),
       ];
-      return new PublishableFileSet(files, destination, destination.name, dependsOn);
+      return Computable.forAll(
+        [besideFile(artifactPath, bytes, sign), besideFile(pomPath, pom, sign)],
+        (artifactBeside: Array<[string, IFile]>, pomBeside: Array<[string, IFile]>) =>
+          new PublishableFileSet(
+            [[artifactPath, file], ...artifactBeside, [pomPath, new MemoryFile(pom)], ...pomBeside],
+            destination,
+            destination.name,
+            dependsOn
+          )
+      );
     })
   );
 }
@@ -516,14 +538,16 @@ export function publishedFilePath(destination: PackagePublishRef, extension = "j
 
 /**
  * Package a variant's member for a Maven repository: its content as the file
- * published beside its version's artifact, with its checksums. Content that is
+ * published beside its version's artifact, with its checksums, signed with
+ * `sign` where it is given. Content that is
  * one file of the variant's extension is that file; any other is packed into a
  * jar or zip, and refused for another extension. Its version's artifact must
  * be published by the same release, which uploads it after this.
  */
 export function packageClassifiedMember(
   member: PublishMember,
-  release: readonly RepositoryPublishRef[]
+  release: readonly RepositoryPublishRef[],
+  sign?: Signer
 ): Computable<PublishableFileSet> {
   const { content } = member;
   const destination = packageCoordinateOf(member.destination);
@@ -553,7 +577,9 @@ export function packageClassifiedMember(
   return packed.then(file =>
     file.getBuffer().then(bytes => {
       const path = publishedFilePath(destination);
-      return new PublishableFileSet([[path, file], ...checksumFiles(path, bytes)], destination, variantToken(destination));
+      return besideFile(path, bytes, sign).then(
+        beside => new PublishableFileSet([[path, file], ...beside], destination, variantToken(destination))
+      );
     })
   );
 }

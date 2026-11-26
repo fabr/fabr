@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { PackagePublishRef, RepositoryWriter } from "../core/Repository";
-import { publishOrder } from "./BuildSync";
+import { publishBatches, publishOrder } from "./BuildSync";
 
 /* The sort reads only the provides/dependsOn tokens; the destination is inert
  * here. Tokens are npm-style names, addresses written name:version. */
@@ -63,5 +63,23 @@ describe("publishOrder (deps-first release ordering)", () => {
     const a = carrier("a", "1.0.0", ["b"]);
     const b = carrier("b", "1.0.0", ["a"]);
     expect(labels(publishOrder([a, b]))).to.deep.equal(["b:1.0.0", "a:1.0.0"]);
+  });
+});
+
+describe("publishBatches (a release grouped into its uploads)", () => {
+  const whole = { publishBatch: () => undefined } as unknown as RepositoryWriter;
+
+  it("puts a destination's members in one batch where it takes a whole release, and each other member in its own", () => {
+    const lib = carrier("lib", "1.0.0", [], whole);
+    const app = carrier("app", "1.0.0", ["lib"], whole);
+    const other = carrier("other", "1.0.0");
+    expect(publishBatches([app, other, lib]).map(labels)).to.deep.equal([["lib:1.0.0", "app:1.0.0"], ["other:1.0.0"]]);
+  });
+
+  it("orders a batch after the batches providing what its members depend on", () => {
+    const base = carrier("base", "1.0.0");
+    const app = carrier("app", "1.0.0", ["base"], whole);
+    const tool = carrier("tool", "1.0.0", ["app"]);
+    expect(publishBatches([tool, app, base]).map(labels)).to.deep.equal([["base:1.0.0"], ["app:1.0.0"], ["tool:1.0.0"]]);
   });
 });

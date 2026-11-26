@@ -1,11 +1,10 @@
 ##################### Global Properties ####################
 
 #
-# The Maven repository that `@mvn` refers to. Set it to use a mirror for
-# every package.
+# The URL `@mvn` reads Maven Central from: Central itself, or a mirror of it.
 #
 
-default MAVEN_REPOSITORY_URL = https://repo1.maven.org/maven2;
+default MAVEN_CENTRAL_REPO_URL = https://repo1.maven.org/maven2;
 
 #
 # The Java release compiled classes run on, written `jvm<release>`: `jvm17`,
@@ -454,6 +453,24 @@ targetdef maven_repository {
     # classifier: `sources`, `javadoc`, or both. A target with no `sources` or
     # `doc` rule has none.
     auto_attach = STRING;
+    # `on` to publish each file with its OpenPGP signature beside it, as
+    # `<file>.asc`, made with the key in `MAVEN_GPG_KEY`, else in
+    # `~/maven-signing-key.key`; `off` (the default) to publish none.
+    sign = STRING;
+    # How a `sync` uploads: `deploy` (the default), each file as `mvn deploy`
+    # does; `portal`, the whole release as one deployment to Maven Central's
+    # Publisher Portal.
+    publish_type = STRING;
+    # The URL a `sync` uploads to. By default, `url`, or for `portal`
+    # `https://central.sonatype.com`.
+    publish_url = STRING;
+    # The id of the `<server>` in `~/.m2/settings.xml` whose credentials
+    # uploads use. By default, the repository's `id`.
+    publish_id = STRING;
+    # `on` to have the repository hold what a `sync` uploads for manual
+    # review, `off` (default) to publish immediately. Only for
+    # `publish_type = portal`.
+    staging = STRING;
 }
 
 #
@@ -476,11 +493,17 @@ targetdef jdk_distribution {
 ####################### Repository ##########################
 
 #
-# Maven Central, or the repository `MAVEN_REPOSITORY_URL` names.
+# Maven Central, read from `MAVEN_CENTRAL_REPO_URL`. A `sync` publishes to
+# Central through its Publisher Portal, signed, with sources and javadoc jars.
+# A repository other than Central is a `maven_repository` of its own.
 #
 
 default maven_repository @mvn {
-    url = ${MAVEN_REPOSITORY_URL};
+    url = ${MAVEN_CENTRAL_REPO_URL};
+    publish_type = portal;
+    publish_id = central;
+    sign = on;
+    auto_attach = sources javadoc;
 }
 
 #

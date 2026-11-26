@@ -10,6 +10,7 @@ together and share a version number.
 
 - Add -j jobs option to set max parallel processes.
 - Avoid storing downloaded zip files in the cache when we only want the contents.
+- A repository may take a whole release as one upload (`RepositoryWriter.publishBatch`).
 
 @fabr-build/js
 
@@ -17,6 +18,11 @@ together and share a version number.
 - Cap playwright workers at the maximum we can actually run, and allocate slots per test rather than worker
   (works around potential deadlock where workers aren't released)
 - Start each jest test file about 100ms faster (defer unneded loading + optimize read gen)
+
+@fabr-build/java
+
+- Add support for publishing to maven central (signing, portal)
+- BREAKING: `MAVEN_REPOSITORY_URL` is renamed to `MAVEN_CENTRAL_REPO_URL`.
 
 ## Fabr 0.4.4
 

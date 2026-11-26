@@ -117,6 +117,20 @@ export class MavenAuth {
   }
 
   /**
+   * Get the username and password `settings.xml` gives the server `id`, as a
+   * Publisher Portal user token. Throws where it gives none.
+   */
+  public tokenFor(id: string): { username: string; password: string } {
+    const server = this.servers.get(id);
+    if (server?.username === undefined || server.password === undefined) {
+      throw new FabrError(`${userSettingsPath()} gives no username and password for server '${id}'`).withHelp(
+        `add <server><id>${id}</id><username>…</username><password>…</password></server> with your Publisher Portal user token`
+      );
+    }
+    return { username: server.username, password: server.password };
+  }
+
+  /**
    * Get the headers a request is sent with that uses the server `id`: basic
    * authentication with its username and password, and any headers its
    * configuration adds; none where `settings.xml` has no server of that id.

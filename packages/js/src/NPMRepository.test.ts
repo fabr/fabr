@@ -1281,6 +1281,32 @@ describe("NPMRepository publish", () => {
     }
   });
 
+  it("stages a publish where the repository stages, and annotates the task with the stage id", async () => {
+    const server = await captureServer(201, '{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}');
+    try {
+      const repo = new NPMRepository(
+        SecureString.of(`http://127.0.0.1:${server.port}`),
+        npmrcContext(`//127.0.0.1:${server.port}/:_authToken=tok123`),
+        null,
+        undefined,
+        undefined,
+        true,
+        undefined,
+        true
+      );
+      const src = publishFileSet({ "package.json": JSON.stringify({ name: "demo", version: "0" }) });
+      const destination = coord(repo, "demo:1.0.0");
+      const [carrier] = await repo.package([{ destination, content: src }], [destination]);
+      const annotations: string[] = [];
+      expect(await repo.publish(carrier, { ...SILENT_REPORT, annotate: text => annotations.push(text) })).to.equal("staged");
+      const post = server.captured()!;
+      expect([post.method, post.url, post.auth]).to.deep.equal(["POST", "/-/stage/package/demo", "Bearer tok123"]);
+      expect(annotations).to.deep.equal(["stage 5f2c9a0e-1111-4222-8333-944444444444"]);
+    } finally {
+      server.close();
+    }
+  });
+
   it("treats a 409 (version already present) as the already-synced outcome, not an error", async () => {
     const server = await captureServer(409, '{"error":"cannot modify pre-existing version"}');
     try {

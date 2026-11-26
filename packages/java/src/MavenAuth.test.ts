@@ -59,6 +59,19 @@ describe("MavenAuth", () => {
     expect(auth.headersFor("@mvn")).to.deep.equal(new Map());
   });
 
+  it("gives a server's username and password as a Publisher Portal token, and refuses a server with none", () => {
+    process.env.FABR_TEST_MAVEN_PASSWORD = "s3cret";
+    try {
+      const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
+      expect(auth.tokenFor("corp")).to.deep.equal({ username: "deploy", password: "s3cret" });
+      for (const id of ["gitlab", "central"]) {
+        expect(() => auth.tokenFor(id)).to.throw(`gives no username and password for server '${id}'`);
+      }
+    } finally {
+      delete process.env.FABR_TEST_MAVEN_PASSWORD;
+    }
+  });
+
   it("signs a request in with its server's headers, and gives nothing to retry a 401 with", async () => {
     const auth = new MavenAuth(parseMavenSettings(SETTINGS, "settings.xml"));
     const credential = MavenAuth.credential(() => Computable.resolve(auth), "gitlab");

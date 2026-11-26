@@ -330,7 +330,7 @@ Work served from the cache doesn't appear in the trace. See
 Fabr contacts the npm registry (or the registry `NPM_REPOSITORY_URL` names), the hosts that
 registry's packages are downloaded from, `nodejs.org` and `unofficial-builds.nodejs.org` for the
 Node.js release, and the URLs of any `fetch` targets. A Java build also contacts Maven Central (or
-the repository `MAVEN_REPOSITORY_URL` names) and `api.adoptium.net` for the JDK, and `fabr audit`
+the mirror `MAVEN_CENTRAL_REPO_URL` names) and `api.adoptium.net` for the JDK, and `fabr audit`
 contacts `api.osv.dev`.
 
 - **A build whose packages and Node.js release are all in the cache makes no requests.**

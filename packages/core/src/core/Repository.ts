@@ -335,6 +335,15 @@ export interface RepositoryWriter {
    * progress.
    */
   publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus>;
+
+  /**
+   * Upload every {@link package} result of a release addressed to this
+   * repository at once, in place of {@link publish} for each, returning each
+   * one's status, parallel to `artifacts`: for a destination that takes a
+   * release as one upload. Rejects where the upload fails, which fails every
+   * artifact. Omitted, each artifact is uploaded on its own.
+   */
+  publishBatch?(artifacts: readonly PublishableFileSet[], report: ITaskReport): Computable<PublishStatus[]>;
 }
 
 /** A member a repository publishes beside one a sync declares ({@link RepositoryWriter.attachments}). */
@@ -393,10 +402,11 @@ export interface PublishMember {
   readonly content: FileSet;
 }
 
-/** The outcome of a successful {@link RepositoryWriter.publish}: uploaded, or
- *  the coordinate already held the content, which is also a success. A failure
- *  rejects. */
-export type PublishStatus = "published" | "already-synced";
+/** The outcome of a successful {@link RepositoryWriter.publish}: uploaded;
+ *  uploaded and held by the repository until someone approves it there; or
+ *  the coordinate already held the content, which is also a success. A
+ *  failure rejects. */
+export type PublishStatus = "published" | "staged" | "already-synced";
 
 /**
  * A publish address: where a `sync` member's content goes, vended and so

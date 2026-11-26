@@ -28,6 +28,7 @@
  */
 
 import {
+  batchName,
   Computable,
   Credential,
   DOC_OPERATION,
@@ -39,6 +40,7 @@ import {
   HttpRequest,
   HttpResponse,
   IFile,
+  ITaskReport,
   IVersionMetadata,
   MemoryCache,
   MemoryFile,
@@ -74,6 +76,8 @@ import {
 } from "@fabr-build/core";
 import { MAVEN_FORMAT, mavenName, mavenVariantOf, parseMavenPublishCoordinate, splitMavenName } from "./MavenProtocol";
 import { javaPluginContext, MavenAuth } from "./MavenAuth";
+import { loadSigner, Signer } from "./MavenSigning";
+import { checkPortalToken, DEFAULT_PORTAL_URL, portalCredential, publishToPortal } from "./CentralPortal";
 import {
   checksumFiles,
   variantOf,
@@ -113,6 +117,62 @@ function autoAttachOf(repository: string, value: Property | undefined): string[]
     throw new FabrError(`${repository}'s auto_attach names '${unknown}', which is not ${[...OPERATIONS.keys()].join(" or ")}`);
   }
   return [...new Set(classifiers)];
+}
+
+/** @return true if `value`, a repository's `property`, is `on`, otherwise false, refusing a value that is neither `on` nor `off`. */
+function switchOf(repository: string, property: string, value: Property | undefined): boolean {
+  const text = value?.toString();
+  if (text === undefined || text.equals("off")) {
+    return false;
+  }
+  if (!text.equals("on")) {
+    throw new FabrError(`${repository}'s ${property} is '${text.toDisplayString()}', which is not on or off`);
+  }
+  return true;
+}
+
+/** How a `maven_repository` uploads: as `mvn deploy` does, or to Maven Central's Publisher Portal. */
+export type PublishType = "deploy" | "portal";
+
+/** @return `value`, a repository's `publish_type`, `deploy` where it is unset, refusing any other value. */
+function publishTypeOf(repository: string, value: Property | undefined): PublishType {
+  const text = value?.toString();
+  if (text === undefined || text.equals("deploy")) {
+    return "deploy";
+  }
+  if (!text.equals("portal")) {
+    throw new FabrError(`${repository}'s publish_type is '${text.toDisplayString()}', which is not deploy or portal`);
+  }
+  return "portal";
+}
+
+/** How a `maven_repository` publishes what a sync publishes there. */
+export interface MavenPublishing {
+  /** How uploads are made. */
+  readonly type: PublishType;
+  /** Where uploads go. */
+  readonly url: SecureString;
+  /** The id of the `settings.xml` server whose credentials uploads use. */
+  readonly serverId: string;
+  /** What signs uploads in, sent to `url`'s origin alone. */
+  readonly credential: Credential;
+  /** True where each file is published with its OpenPGP signature. */
+  readonly sign: boolean;
+  /** True where an upload is held by the Portal until someone publishes it there; only with `portal`. */
+  readonly staging: boolean;
+}
+
+/** @return the path of the file that marks `artifact` published: its version's POM, or a classified file itself. */
+function markerOf(artifact: PublishableFileSet): string {
+  const destination = packageCoordinateOf(artifact.destination);
+  return variantOf(destination) !== undefined ? publishedFilePath(destination) : versionPomOf(artifact);
+}
+
+/** @return the path of the POM of the version `artifact` belongs to. */
+function versionPomOf(artifact: PublishableFileSet): string {
+  const destination = packageCoordinateOf(artifact.destination);
+  const { groupId, artifactId } = splitMavenName(destination.name);
+  return repositoryPath(groupId, artifactId, destination.version, `${artifactId}-${destination.version}.pom`);
 }
 
 /** The manifest of a classified jar, which belongs to the jar rather than to its contents. */
@@ -192,17 +252,43 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     private readonly serverId: string,
     /** The classifiers of the jars published beside each artifact a sync publishes here: `sources`, `javadoc`. */
     private readonly autoAttach: readonly string[] = [],
-    /** What signs the repository's requests in: the one it is made with, else its server's from `settings.xml`. */
-    credential?: Credential
+    /** What signs the repository's reads in, sent to `url`'s origin alone. */
+    credential: Credential,
+    private readonly publishing: MavenPublishing
   ) {
-    /* Send the credential to the repository's own origin only, whatever URL a request is made to. */
-    this.credential = onlyTo(
-      new URL(url.toUnmaskedString()).origin,
-      credential ?? MavenAuth.credential(() => javaPluginContext(this.context.execution).mavenAuth(), serverId)
-    );
+    this.credential = onlyTo(new URL(url.toUnmaskedString()).origin, credential);
+    this.publishUrl = publishing.url;
+    this.publishServer = publishing.serverId;
+    this.publishCredential = publishing.credential;
+    if (publishing.type === "portal") {
+      this.publishBatch = (artifacts, report) => this.publishToPortal(artifacts, report);
+    }
   }
 
   private readonly credential: Credential;
+  /** Where uploads go, the `settings.xml` server they sign in as, and what signs them in. */
+  private readonly publishUrl: SecureString;
+  private readonly publishServer: string;
+  private readonly publishCredential: Credential;
+
+  /** Upload a whole release at once (RepositoryWriter implementation), where `publish_type` is `portal`. */
+  public readonly publishBatch?: (artifacts: readonly PublishableFileSet[], report: ITaskReport) => Computable<PublishStatus[]>;
+
+  /** The signer of what a sync publishes here, read when first used. */
+  private signerMemo?: Computable<Signer>;
+
+  /** @return the signer of what a sync publishes here, or undefined where the repository does not sign. */
+  private signer(): Computable<Signer | undefined> {
+    if (!this.publishing.sign) {
+      return Computable.resolve(undefined);
+    }
+    /* A key that could not be read is read again when next asked for. */
+    this.signerMemo ??= loadSigner(this.context).catch(err => {
+      this.signerMemo = undefined;
+      throw err;
+    });
+    return this.signerMemo;
+  }
 
   public get identity(): string {
     return this.url.toUnmaskedString();
@@ -263,8 +349,9 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
   /**
    * Package this destination's members (RepositoryWriter implementation): each
    * its artifact and a POM generated from what its package requires, with
-   * checksums, at their paths in the repository. A dependency on a target of
-   * the project records the coordinate the release publishes it at.
+   * checksums, and signatures where the repository signs, at their paths in
+   * the repository. A dependency on a target of the project records the
+   * coordinate the release publishes it at.
    */
   public package(
     members: PublishMember[],
@@ -274,32 +361,39 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     const coMembers = new Set(
       members.filter(member => variantOf(member.destination) === undefined).map(member => member.destination.name)
     );
-    return Computable.forAll(
-      members.map(member =>
-        variantOf(member.destination) === undefined
-          ? packageMavenMember(member, targets, coMembers, release)
-          : packageClassifiedMember(member, release)
-      ),
-      (...carriers: PublishableFileSet[]) => carriers
+    return this.signer().then(sign =>
+      Computable.forAll(
+        members.map(member =>
+          variantOf(member.destination) === undefined
+            ? packageMavenMember(member, targets, coMembers, release, sign)
+            : packageClassifiedMember(member, release, sign)
+        ),
+        (...carriers: PublishableFileSet[]) => carriers
+      )
     );
   }
 
   /**
-   * Upload a packaged member (RepositoryWriter implementation), as `mvn deploy`
-   * does: each file `PUT` at its path, then the package's `maven-metadata.xml`,
-   * read, merged and `PUT`, then the member's marker (its version's POM, or a
-   * classified jar) after its checksums. A member whose marker is already there
-   * is already synced.
+   * Upload a packaged member (RepositoryWriter implementation): to the Portal
+   * as a deployment of its own where `publish_type` is `portal`, else as
+   * {@link deploy} does.
    */
-  public publish(artifact: PublishableFileSet): Computable<PublishStatus> {
+  public publish(artifact: PublishableFileSet, report: ITaskReport): Computable<PublishStatus> {
+    return this.publishBatch !== undefined ? this.publishBatch([artifact], report).then(([status]) => status) : this.deploy(artifact);
+  }
+
+  /**
+   * Upload a packaged member as `mvn deploy` does: each file `PUT` at its
+   * path, then the package's `maven-metadata.xml`, read, merged and `PUT`,
+   * then the member's marker (its version's POM, or a classified jar) after
+   * its checksums. A member whose marker is already there is already synced.
+   */
+  private deploy(artifact: PublishableFileSet): Computable<PublishStatus> {
     const destination = packageCoordinateOf(artifact.destination);
     const { name, version } = destination;
     const { groupId, artifactId } = splitMavenName(name);
     const classified = variantOf(destination) !== undefined;
-    /* What marks the member published: a version's POM, or a classified jar itself. */
-    const marker = classified
-      ? publishedFilePath(destination)
-      : repositoryPath(groupId, artifactId, version, `${artifactId}-${version}.pom`);
+    const marker = markerOf(artifact);
     return this.request(marker, { method: "GET" }).then(existing => {
       if (existing.statusCode === 200) {
         return Computable.resolve<PublishStatus>("already-synced");
@@ -358,16 +452,72 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
     );
   }
 
-  /** Make a request to `path` in the repository, signed in. */
-  private request(path: string, request: HttpRequest): Computable<HttpResponse> {
-    return sendRequest(urlJoin(this.url, path), { ...request, credential: this.credential });
+  /** @return true if the repository serves the file at `path`, otherwise false. Rejects where it answers anything but 200 or 404. */
+  private serves(path: string): Computable<boolean> {
+    const url = urlJoin(this.url, path);
+    return sendRequest(url, { method: "HEAD", credential: this.credential }).then(response => {
+      if (response.statusCode !== 200 && response.statusCode !== 404) {
+        throw new FabrError(`reading ${shownUrl(url)} failed (${response.statusCode})`);
+      }
+      return response.statusCode === 200;
+    });
   }
 
-  /** Make the error for a failed request, with the response's body as its detail. */
+  /**
+   * Upload the members of a release that are not yet published to the
+   * Publisher Portal as one deployment, and wait until it is validated, under
+   * staging, or on its way to Central. The Portal is first asked whether it
+   * takes the token. A member whose marker the repository already serves is
+   * already synced, and is left out. Rejects where a classified member's
+   * version is already published without it, as a published version cannot
+   * gain files.
+   */
+  private publishToPortal(artifacts: readonly PublishableFileSet[], report: ITaskReport): Computable<PublishStatus[]> {
+    const paths = [...new Set(artifacts.flatMap(artifact => [markerOf(artifact), versionPomOf(artifact)]))];
+    return checkPortalToken(this.publishUrl, this.publishCredential, this.publishServer)
+      .then(() =>
+        Computable.forAll(
+          paths.map(path => this.serves(path)),
+          (...served: boolean[]) => new Map(paths.map((path, index) => [path, served[index]]))
+        )
+      )
+      .then(served => {
+        const published = artifacts.map(artifact => served.get(markerOf(artifact))!);
+        const late = artifacts.find((artifact, index) => !published[index] && served.get(versionPomOf(artifact)));
+        if (late !== undefined) {
+          throw new FabrError(
+            `cannot publish ${late.destination.toString()}: its version is already published on ${shownUrl(this.url)}, ` +
+              `and a published version cannot gain files`
+          ).withHelp("publish it with a new version");
+        }
+        const uploaded = artifacts.filter((_artifact, index) => !published[index]);
+        const statuses = published.map((done): PublishStatus =>
+          done ? "already-synced" : this.publishing.staging ? "staged" : "published"
+        );
+        if (uploaded.length === 0) {
+          return Computable.resolve(statuses);
+        }
+        return publishToPortal(
+          this.publishUrl,
+          this.publishCredential,
+          FileSet.unionAll(...uploaded),
+          batchName(uploaded),
+          this.publishing.staging,
+          report
+        ).then(() => statuses);
+      });
+  }
+
+  /** Make a request to `path` where uploads go, signed in. */
+  private request(path: string, request: HttpRequest): Computable<HttpResponse> {
+    return sendRequest(urlJoin(this.publishUrl, path), { ...request, credential: this.publishCredential });
+  }
+
+  /** Make the error for a failed request to `path` where uploads go, with the response's body as its detail. */
   private failure(doing: string, path: string, response: HttpResponse): FabrError {
     const detail = response.body.toString("utf8").trim();
     return new FabrError(
-      `${doing} ${shownUrl(urlJoin(this.url, path))} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`
+      `${doing} ${shownUrl(urlJoin(this.publishUrl, path))} failed (${response.statusCode})${detail === "" ? "" : `: ${detail}`}`
     );
   }
 
@@ -750,21 +900,86 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
 /** Make the repository a `maven_repository` declaration declares, or a namespace makes with `url` and `credential`: its own `url` first, and a `credential` in place of `settings.xml`'s. */
 function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
-    [context.getProperty("url"), context.getProperty("id"), context.getProperty("auto_attach")],
-    (declared: Property | undefined, id: Property | undefined, autoAttach: Property | undefined) => {
+    [
+      context.getProperty("url"),
+      context.getProperty("id"),
+      context.getProperty("auto_attach"),
+      context.getProperty("sign"),
+      context.getProperty("publish_type"),
+      context.getProperty("publish_url"),
+      context.getProperty("publish_id"),
+      context.getProperty("staging"),
+    ],
+    (
+      declared: Property | undefined,
+      id: Property | undefined,
+      autoAttach: Property | undefined,
+      sign: Property | undefined,
+      publishType: Property | undefined,
+      publishUrl: Property | undefined,
+      publishId: Property | undefined,
+      staging: Property | undefined
+    ) => {
       const at = declared?.toString() ?? url;
       if (at === undefined) {
         throw new FabrError("Missing required property url");
       }
+      const serverId = id?.toString().toUnmaskedString() ?? context.name;
+      const own = credential ?? MavenAuth.credential(() => javaPluginContext(context.execution).mavenAuth(), serverId);
       return new MavenRepository(
         context,
         urlRoot(at),
-        id?.toString().toUnmaskedString() ?? context.name,
+        serverId,
         autoAttachOf(context.name, autoAttach),
-        credential
+        own,
+        publishingOf(context, urlRoot(at), serverId, own, { type: publishType, url: publishUrl, id: publishId, sign, staging })
       );
     }
   );
+}
+
+/**
+ * @return how the repository `context` declares publishes, from its
+ * `publish_type`, `publish_url`, `publish_id`, `sign` and `staging`: uploads
+ * go to `publish_url`, by default the Portal's URL for `portal` and the
+ * repository's `url` for `deploy`, signed in as the `settings.xml` server
+ * `publish_id` names, by default with the repository's own `credential` (that
+ * of server `serverId`). Throws where a value is not one the property takes,
+ * or `staging` is on and `publish_type` is not `portal`.
+ */
+export function publishingOf(
+  context: TargetContext,
+  url: SecureString,
+  serverId: string,
+  credential: Credential,
+  declared: { type?: Property; url?: Property; id?: Property; sign?: Property; staging?: Property }
+): MavenPublishing {
+  const repository = context.name;
+  const type = publishTypeOf(repository, declared.type);
+  const staging = switchOf(repository, "staging", declared.staging);
+  if (staging && type !== "portal") {
+    throw new FabrError(`${repository} cannot stage what it publishes: only publish_type = portal holds an upload`).withHelp(
+      `set staging = off, or publish_type = portal to publish to Maven Central's Publisher Portal`
+    );
+  }
+  const publishUrl =
+    declared.url !== undefined ? urlRoot(declared.url.toString()) : type === "portal" ? SecureString.of(DEFAULT_PORTAL_URL) : url;
+  const publishServer = declared.id?.toString().toUnmaskedString() ?? serverId;
+  const auth = (): Computable<MavenAuth> => javaPluginContext(context.execution).mavenAuth();
+  const signIn =
+    type === "portal"
+      ? portalCredential(() => auth().then(found => found.tokenFor(publishServer)))
+      : declared.id === undefined
+        ? credential
+        : MavenAuth.credential(auth, publishServer);
+  return {
+    type,
+    url: publishUrl,
+    serverId: publishServer,
+    credential: onlyTo(new URL(publishUrl.toUnmaskedString()).origin, signIn),
+    sign: switchOf(repository, "sign", declared.sign),
+    staging,
+  };
 }
 
 /** The implementation JAVA.fabr's `repository` declaration names. */

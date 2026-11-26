@@ -22,7 +22,8 @@ import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "../model/Constrain
 import { SyncSources } from "../context/Collection";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
-import { RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
+import { PublishStatus, RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
+import { ITaskReport } from "../support/Execute";
 import { soleWholeTarget } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
 import { PublishableFileSet } from "../core/PublishableFileSet";
@@ -114,6 +115,79 @@ export function publishOrder(carriers: ReadonlyArray<PublishableFileSet>): Publi
   };
   carriers.forEach(visit);
   return ordered;
+}
+
+/**
+ * Group a release's carriers, in {@link publishOrder}, into the batches they
+ * are uploaded in: one for each destination that uploads a whole release at
+ * once ({@link RepositoryWriter.publishBatch}), holding its carriers in their
+ * order, and one for each other carrier. Batches are ordered so each comes
+ * after every batch providing a token one of its carriers depends on, a cycle
+ * broken where the walk meets it; they otherwise keep the order of their
+ * first carriers.
+ */
+export function publishBatches(carriers: ReadonlyArray<PublishableFileSet>): PublishableFileSet[][] {
+  const byWriter = new Map<RepositoryWriter, PublishableFileSet[]>();
+  const batches: PublishableFileSet[][] = [];
+  for (const carrier of publishOrder(carriers)) {
+    const writer = carrier.destination.source;
+    let batch = writer.publishBatch === undefined ? undefined : byWriter.get(writer);
+    if (batch === undefined) {
+      batch = [];
+      batches.push(batch);
+      if (writer.publishBatch !== undefined) {
+        byWriter.set(writer, batch);
+      }
+    }
+    batch.push(carrier);
+  }
+  const providers = new Map<string, PublishableFileSet[][]>();
+  for (const batch of batches) {
+    for (const carrier of batch) {
+      if (carrier.provides !== undefined) {
+        providers.set(carrier.provides, [...(providers.get(carrier.provides) ?? []), batch]);
+      }
+    }
+  }
+  const ordered: PublishableFileSet[][] = [];
+  const done = new Set<PublishableFileSet[]>();
+  const active = new Set<PublishableFileSet[]>();
+  const visit = (batch: PublishableFileSet[]): void => {
+    if (done.has(batch) || active.has(batch)) {
+      return;
+    }
+    active.add(batch);
+    for (const dep of batch.flatMap(carrier => carrier.dependsOn)) {
+      for (const provider of providers.get(dep) ?? []) {
+        if (provider !== batch) {
+          visit(provider);
+        }
+      }
+    }
+    active.delete(batch);
+    done.add(batch);
+    ordered.push(batch);
+  };
+  batches.forEach(visit);
+  return ordered;
+}
+
+/** @return the name a batch is shown and uploaded under: its first carrier's destination, and how many more it holds. */
+export function batchName(batch: readonly PublishableFileSet[]): string {
+  const first = batch[0].destination.toString();
+  return batch.length === 1 ? first : `${first} and ${batch.length - 1} more`;
+}
+
+/**
+ * Upload one of {@link publishBatches}' batches through its destination: with
+ * `publishBatch` where the destination has it, else its one carrier with
+ * `publish`. Returns each carrier's status, parallel to `batch`.
+ */
+export function publishBatchTo(batch: readonly PublishableFileSet[], report: ITaskReport): Computable<PublishStatus[]> {
+  const writer = batch[0].destination.source;
+  return writer.publishBatch !== undefined
+    ? writer.publishBatch(batch, report)
+    : writer.publish(batch[0], report).then(status => [status]);
 }
 
 /**

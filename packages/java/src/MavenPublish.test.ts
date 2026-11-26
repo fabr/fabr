@@ -18,6 +18,7 @@
  */
 
 import { expect } from "chai";
+import * as openpgp from "openpgp";
 import {
   Computable,
   FileSet,
@@ -30,8 +31,10 @@ import {
   RepositoryReader,
   RepositoryRef,
   RepositoryWriter,
+  TargetContext,
 } from "@fabr-build/core";
 import { MAVEN_FORMAT } from "./MavenProtocol";
+import { defaultKeyPath, KEY_VARIABLE, loadSigner, PASSPHRASE_VARIABLE, signerFor } from "./MavenSigning";
 import {
   checkPomMetadata,
   checksumFiles,
@@ -190,13 +193,13 @@ describe("mergedMetadata", () => {
 });
 
 describe("uploadOrder", () => {
-  it("uploads the marker last, after its checksums, and everything else before them", () => {
+  it("uploads the marker last, after its checksums and signature, and everything else before them", () => {
     const pom = "com/example/app/1.0.0/app-1.0.0.pom";
     const jar = "com/example/app/1.0.0/app-1.0.0.jar";
-    const paths = [`${pom}.sha1`, pom, `${jar}.md5`, jar, `${pom}.md5`, `${jar}.sha1`];
+    const paths = [`${pom}.sha1`, pom, `${jar}.md5`, jar, `${pom}.md5`, `${jar}.sha1`, `${jar}.asc`, `${pom}.asc`];
     expect(uploadOrder(paths, pom)).to.deep.equal({
-      before: [jar, `${jar}.md5`, `${jar}.sha1`],
-      last: [`${pom}.md5`, `${pom}.sha1`, pom],
+      before: [jar, `${jar}.asc`, `${jar}.md5`, `${jar}.sha1`],
+      last: [`${pom}.asc`, `${pom}.md5`, `${pom}.sha1`, pom],
     });
   });
 });
@@ -346,5 +349,147 @@ describe("classified members", () => {
       ref("sources"),
     ]);
     expect(main.dependsOn).to.deep.equal([sources.provides]);
+  });
+});
+
+describe("signed members", () => {
+  const writer: RepositoryWriter = {
+    package: () => Computable.resolve<PublishableFileSet[]>([]),
+    publish: () => Computable.resolve<PublishStatus>("published"),
+  };
+  const ref = (variant?: string): MavenPublishRef =>
+    new MavenPublishRef(writer, { name: "com.example/app", version: "1.0.0", variant }, "@corp");
+  const files = (entries: Record<string, string>): FileSet =>
+    new FileSet(new Map(Object.entries(entries).map(([name, text]) => [name, MemoryFile.from(text)])));
+
+  /** @return true if `signature` is a valid signature of `file`'s bytes by `publicKey`, otherwise false. */
+  const verifies = async (carrier: FileSet, file: string, publicKey: string): Promise<boolean> => {
+    const bytes = await (await carrier.get(file))!.getBuffer();
+    const armoredSignature = await (await carrier.get(`${file}.asc`))!.readString();
+    const { signatures } = await openpgp.verify({
+      message: await openpgp.createMessage({ binary: new Uint8Array(bytes) }),
+      signature: await openpgp.readSignature({ armoredSignature }),
+      verificationKeys: await openpgp.readKey({ armoredKey: publicKey }),
+    });
+    return signatures[0].verified.then(
+      () => true,
+      () => false
+    );
+  };
+
+  it("publish a signature beside the artifact, the POM and a classified jar, and none beside a checksum", async () => {
+    const { privateKey, publicKey } = await openpgp.generateKey({ userIDs: [{ name: "Test" }], format: "armored" });
+    const sign = await signerFor(Buffer.from(privateKey), undefined, "the test key");
+    const main = await packageMavenMember(
+      { destination: ref(), content: files({ "app.jar": "JAR" }) },
+      new Map(),
+      new Set(),
+      [ref(), ref("sources")],
+      sign
+    );
+    const sources = await packageClassifiedMember(
+      { destination: ref("sources"), content: files({ "A.java": "" }) },
+      [ref(), ref("sources")],
+      sign
+    );
+    const base = "com/example/app/1.0.0/app-1.0.0";
+    expect([...main].map(([name]) => name).filter(name => name.endsWith(".asc"))).to.deep.equal([
+      `${base}.jar.asc`,
+      `${base}.pom.asc`,
+    ]);
+    expect([...sources].map(([name]) => name).filter(name => name.endsWith(".asc"))).to.deep.equal([`${base}-sources.jar.asc`]);
+    expect(await verifies(main, `${base}.jar`, publicKey)).to.equal(true);
+    expect(await verifies(main, `${base}.pom`, publicKey)).to.equal(true);
+    expect(await verifies(sources, `${base}-sources.jar`, publicKey)).to.equal(true);
+  });
+
+  it("sign with a key its passphrase unlocks, and refuse an encrypted key without the right one", async () => {
+    const { privateKey, publicKey } = await openpgp.generateKey({
+      userIDs: [{ name: "Test" }],
+      passphrase: "secret",
+      format: "armored",
+    });
+    const sign = await signerFor(Buffer.from(privateKey), "secret", "the test key");
+    const main = await packageMavenMember(
+      { destination: ref(), content: files({ "app.jar": "JAR" }) },
+      new Map(),
+      new Set(),
+      [ref()],
+      sign
+    );
+    expect(await verifies(main, "com/example/app/1.0.0/app-1.0.0.jar", publicKey)).to.equal(true);
+    const failure = (passphrase: string | undefined): Promise<string | undefined> =>
+      new Promise(resolve =>
+        signerFor(Buffer.from(privateKey), passphrase, "the test key").then(
+          () => resolve(undefined),
+          err => resolve((err as Error).message)
+        )
+      );
+    expect(await failure(undefined)).to.match(/the signing key in the test key is encrypted, and no passphrase is given/);
+    expect(await failure("wrong")).to.match(/the passphrase given does not unlock the signing key in the test key/);
+  });
+
+  it("take the key from MAVEN_GPG_KEY before ~/maven-signing-key.key, and refuse where neither gives one", async () => {
+    const fromVariable = await openpgp.generateKey({ userIDs: [{ name: "Variable" }], format: "armored" });
+    const fromFile = await openpgp.generateKey({ userIDs: [{ name: "File" }], format: "armored" });
+    const context = (file: string | undefined): TargetContext =>
+      ({
+        name: "@corp",
+        execution: {
+          absFileSource: {
+            get: (path: string) =>
+              Computable.resolve(path === defaultKeyPath() && file !== undefined ? MemoryFile.from(file) : undefined),
+          },
+        },
+      }) as unknown as TargetContext;
+    const signedBy = async (file: string | undefined, publicKey: string): Promise<boolean> => {
+      const sign = await loadSigner(context(file));
+      const signature = await sign(Buffer.from("JAR"));
+      const { signatures } = await openpgp.verify({
+        message: await openpgp.createMessage({ binary: new Uint8Array(Buffer.from("JAR")) }),
+        signature: await openpgp.readSignature({ armoredSignature: signature }),
+        verificationKeys: await openpgp.readKey({ armoredKey: publicKey }),
+      });
+      return signatures[0].verified.then(
+        () => true,
+        () => false
+      );
+    };
+    const saved = [process.env[KEY_VARIABLE], process.env[PASSPHRASE_VARIABLE]];
+    try {
+      delete process.env[PASSPHRASE_VARIABLE];
+      process.env[KEY_VARIABLE] = fromVariable.privateKey;
+      expect(await signedBy(fromFile.privateKey, fromVariable.publicKey)).to.equal(true);
+      delete process.env[KEY_VARIABLE];
+      expect(await signedBy(fromFile.privateKey, fromFile.publicKey)).to.equal(true);
+      const failure = await new Promise<string | undefined>(resolve =>
+        loadSigner(context(undefined)).then(
+          () => resolve(undefined),
+          err => resolve((err as Error).message)
+        )
+      );
+      expect(failure).to.equal("@corp signs what it publishes, and no signing key is given");
+    } finally {
+      for (const [variable, value] of [
+        [KEY_VARIABLE, saved[0]],
+        [PASSPHRASE_VARIABLE, saved[1]],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[variable];
+        } else {
+          process.env[variable] = value;
+        }
+      }
+    }
+  });
+
+  it("refuse a key that is not one", async () => {
+    const failure = await new Promise<string | undefined>(resolve =>
+      signerFor(Buffer.from("not a key"), undefined, "the test key").then(
+        () => resolve(undefined),
+        err => resolve((err as Error).message)
+      )
+    );
+    expect(failure).to.match(/the signing key in the test key could not be read/);
   });
 });

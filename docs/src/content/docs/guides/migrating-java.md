@@ -368,7 +368,7 @@ See [Build what you ship](/guides/multi-package/#build-what-you-ship).
 | Maven / Gradle | fabr |
 |---|---|
 | Maven Central, `mavenCentral()` | `@mvn`, declared for you. |
-| A mirror of Central in `settings.xml` `<mirrors>` | `MAVEN_REPOSITORY_URL = https://…;` in `PROJECT.fabr`. |
+| A mirror of Central in `settings.xml` `<mirrors>` | `MAVEN_CENTRAL_REPO_URL = https://…;` in `PROJECT.fabr`. |
 | Another repository in `<repositories>` or `repositories { maven { url = … } }` | A `maven_repository` with a name of your choosing, and that name in place of `@mvn` for its packages. |
 | Several repositories, each holding some packages | A [`repository_group`](/reference/java/dependencies/#combining-repositories). |
 | `<servers>` in `settings.xml` | Read from `~/.m2/settings.xml`, as Maven reads them. |
