@@ -474,6 +474,9 @@ targetdef npm_repository {
     # Whether a publish from CI carries a signed provenance statement where the
     # registry accepts one: `on` (the default) or `off`.
     provenance = STRING;
+    # `on` to stage each publish, held by the registry until someone approves
+    # it there (`npm stage approve`); `off` (the default) to publish at once.
+    staging = STRING;
 }
 
 #

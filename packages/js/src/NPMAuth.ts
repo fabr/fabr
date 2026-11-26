@@ -388,24 +388,34 @@ export function pollWebAuthToken(
   timeoutMs: number = WEB_AUTH_TIMEOUT_MS
 ): Computable<string> {
   const deadline = Date.now() + timeoutMs;
-  const poll = (): Computable<string> =>
-    sendRequest(doneUrl, { method: "GET", headers: authHeaders }).then(response => {
-      if (response.statusCode === 200) {
-        return parseJson(response.body.toString("utf8"), "web-auth completion response", toWebAuthToken);
-      }
-      if (response.statusCode === 202) {
-        const retryAfter = Number(response.headers["retry-after"]) * 1000;
-        const wait = retryAfter > 0 ? retryAfter : WEB_AUTH_POLL_MS;
-        if (Date.now() + wait > deadline) {
-          throw new FabrError(`browser authentication was not completed within ${Math.round(timeoutMs / 1000)}s`);
+  /* One cell, each poll started from the last one's callback, so the chain
+   * does not deepen however many polls it takes. */
+  return Computable.from<string>((resolve, reject) => {
+    const poll = (): void =>
+      sendRequest(doneUrl, { method: "GET", headers: authHeaders }).once(response => {
+        if (response.statusCode === 200) {
+          try {
+            return resolve(parseJson(response.body.toString("utf8"), "web-auth completion response", toWebAuthToken));
+          } catch (err) {
+            return reject(err as Error);
+          }
         }
-        return delay(wait).then(poll);
-      }
-      throw new FabrError(
-        `browser authentication at ${shownUrl(doneUrl)} failed (${response.statusCode}): ${response.body.toString("utf8")}`
-      );
-    });
-  return poll();
+        if (response.statusCode === 202) {
+          const retryAfter = Number(response.headers["retry-after"]) * 1000;
+          const wait = retryAfter > 0 ? retryAfter : WEB_AUTH_POLL_MS;
+          if (Date.now() + wait > deadline) {
+            return reject(new FabrError(`browser authentication was not completed within ${Math.round(timeoutMs / 1000)}s`));
+          }
+          return delay(wait).once(poll, reject);
+        }
+        reject(
+          new FabrError(
+            `browser authentication at ${shownUrl(doneUrl)} failed (${response.statusCode}): ${response.body.toString("utf8")}`
+          )
+        );
+      }, reject);
+    poll();
+  });
 }
 
 /**

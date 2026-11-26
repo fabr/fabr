@@ -38,6 +38,7 @@ fabr sync release     # publish it
 | `npm publish --dry-run`, `npm pack` | `fabr build` on the `sync` target, then `fabr ls`, `cat` or `cp`. |
 | `npm publish --tag next` | Not supported: every publish is tagged `latest`. |
 | `npm publish --provenance` | Automatic from GitHub Actions and GitLab; see [Provenance](#provenance). |
+| `npm stage publish` | The registry's `staging = on`; see [Staging](#staging). |
 | `NPM_TOKEN` in `.npmrc` | The same; see [Credentials](#credentials). |
 | Trusted publishing from GitHub Actions, GitLab or CircleCI | The same; see [Trusted publishing](#trusted-publishing). |
 | Workspace packages published together | Several entries in one `sync`; dependencies between them get the right versions. |
@@ -408,6 +409,22 @@ publish:
 
 npm doesn't accept provenance from CircleCI.
 
+### Staging
+
+With `staging = on`, each publish is staged, as with
+[`npm stage publish`](https://docs.npmjs.com/cli/v11/commands/npm-stage): the registry holds it
+until you approve it with `npm stage approve <stage id>` or on npmjs.com. The stage id is shown on
+the publish's line, `✓ Publishing @npm:@acme/widgets:1.4.0 [stage 5f2c9a0e-…]`. To stage on
+`@npm`, declare it yourself:
+
+```
+npm_repository @npm {
+  url = ${NPM_REPOSITORY_URL};
+  access = public;
+  staging = on;
+}
+```
+
 ### Other registries, and private packages
 
 `@npm` publishes to the public npm registry, with public access. To publish somewhere else, or
@@ -424,7 +441,7 @@ sync release {
 }
 ```
 
-`access` is `public` or `private`, and `provenance` is `on` (the default) or `off`. One `sync`
+`access` is `public` or `private`, and `provenance` and `staging` are `on` or `off`. One `sync`
 can publish to several registries.
 
 ## Not supported

@@ -55,6 +55,9 @@ import {
   IVersionMetadata,
   IdentityProvider,
   SerializedBundle,
+  ITaskReport,
+  PublishStatus,
+  SILENT_REPORT,
 } from "@fabr-build/core";
 import { otpChallengeOf, OtpProvider } from "./NPMAuth";
 import { makeNpmRunnable } from "./JSPackage";
@@ -366,35 +369,52 @@ function registryMessage(body: Buffer): string {
   return text;
 }
 
+/** How {@link publishToRegistry} publishes. */
+export interface IPublishOptions {
+  /** The headers that sign the request in. */
+  authHeaders?: Record<string, string>;
+  /** The access requested for a package first published. */
+  access?: PublishAccess;
+  /** What answers a second-factor challenge; absent, a challenge fails the publish. */
+  otp?: OtpProvider;
+  /** A signed provenance bundle for the tarball, attached beside it. */
+  provenance?: SerializedBundle;
+  /** True to stage the publish, held by the registry until someone approves it there. */
+  staging?: boolean;
+  /** The publish's task, whose annotation a stage id is added to. */
+  report?: ITaskReport;
+}
+
 /**
  * Publish a packaged tarball and its manifest to an npm registry. Sends the
- * envelope `libnpmpublish` sends ({@link publishEnvelope}) as a PUT to the
- * escaped package name, with `authHeaders`' credential. `provenance`, a
- * signed provenance bundle for the tarball, is attached beside it.
+ * envelope `libnpmpublish` sends ({@link publishEnvelope}), signed in with
+ * `authHeaders`: as a PUT to the escaped package name, or under `staging` as
+ * `npm stage publish` does, a POST to `/-/stage/package/<name>`, which the
+ * registry holds until someone approves it there (`npm stage approve`).
  *
- * - Answers `"published"` on a 2xx answer.
+ * - Answers `"published"` on a 2xx answer, or under staging `"staged"`, the
+ *   stage id the registry gives added to `report`'s annotation.
  * - Answers `"already-synced"` where the version is already published: a 409,
- *   or npmjs's 403 "cannot publish over".
- * - A second-factor challenge is answered through `otp` and the PUT sent again
- *   with the one-time password it gives, at most twice; `otp` is told the
- *   password last refused.
+ *   or npmjs's 403 "cannot publish over"; under staging, where the registry
+ *   serves the version before it is staged, as `npm stage publish` checks.
+ * - A second-factor challenge is answered through `otp` and the request sent
+ *   again with the one-time password it gives, at most twice; `otp` is told
+ *   the password last refused.
  * - Rejects on any other non-2xx answer, with the registry's response body;
  *   npmjs's refusal of a restricted package carries help naming
- *   `access = public`.
+ *   `access = public`, and a stage route the registry does not serve help
+ *   naming `staging = off`. Under staging, a 2xx answer with no stage id
+ *   rejects.
  */
 export function publishToRegistry(
   registryUrl: SecureString,
   coordinate: NpmPublishIdentity,
   tarball: Buffer,
   manifest: Record<string, unknown>,
-  authHeaders: Record<string, string>,
-  access: PublishAccess = null,
-  otp?: OtpProvider,
-  provenance?: SerializedBundle
-): Computable<"published" | "already-synced"> {
-  const { name, version } = coordinate;
+  { authHeaders = {}, access = null, otp, provenance, staging = false, report = SILENT_REPORT }: IPublishOptions = {}
+): Computable<PublishStatus> {
   const body = JSON.stringify(publishEnvelope(registryUrl, coordinate, tarball, manifest, access, provenance));
-  const escapedName = name.replace(/\//g, "%2f");
+  const escapedName = coordinate.name.replace(/\//g, "%2f");
   /* Send both npm-auth-type and npm-command: the registry offers the browser
    * (passkey) challenge, with authUrl/doneUrl in its body, only to a client
    * sending both, and otherwise answers a passkey account with an "upgrade
@@ -406,70 +426,23 @@ export function publishToRegistry(
     ...authHeaders,
   };
   const attempt = (password?: string): Computable<HttpResponse> =>
-    sendRequest(urlJoin(registryUrl, escapedName), {
-      method: "PUT",
+    sendRequest(urlJoin(registryUrl, staging ? `-/stage/package/${escapedName}` : escapedName), {
+      method: staging ? "POST" : "PUT",
       headers: password === undefined ? headers : { ...headers, "npm-otp": password },
       body,
     });
-  const settle = (response: HttpResponse): "published" | "already-synced" => {
-    if (alreadyPublished(response)) {
+  const settle = (response: HttpResponse): PublishStatus => {
+    if (!staging && alreadyPublished(response)) {
       return "already-synced";
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw publishFailure("publishing", registryUrl, coordinate, response);
+      const error = publishFailure(staging ? "staging" : "publishing", registryUrl, coordinate, response);
+      throw staging && (response.statusCode === 404 || response.statusCode === 405)
+        ? error.withHelp(`${shownUrl(registryUrl)} may not stage publishes: set staging = off on the repository`)
+        : error;
     }
-    return "published";
-  };
-  const answerChallenge = (
-    response: HttpResponse,
-    rejected: string | undefined,
-    attemptsLeft: number
-  ): Computable<"published" | "already-synced"> | "published" | "already-synced" => {
-    const challenge = otpChallengeOf(response);
-    if (!challenge || !otp || attemptsLeft <= 0) {
-      return settle(response);
-    }
-    return otp(challenge, rejected).then(password =>
-      attempt(password).then(retried => answerChallenge(retried, password, attemptsLeft - 1))
-    );
-  };
-  return attempt().then(response => answerChallenge(response, undefined, 2));
-}
-
-/**
- * Stage a packaged tarball and its manifest on an npm registry, as
- * `npm stage publish` does: the envelope {@link publishToRegistry} sends,
- * `POST`ed to `/-/stage/package/<name>`, held by the registry until someone
- * approves it there (`npm stage approve`). Staging asks for no second factor.
- *
- * @return the stage id the registry gives the staged version, or undefined
- * where the version is already published (a 409, or npmjs's 403 "cannot
- * publish over"). Rejects on any other non-2xx answer, or a 2xx with no stage
- * id, with the registry's response body.
- */
-export function stageOnRegistry(
-  registryUrl: SecureString,
-  coordinate: NpmPublishIdentity,
-  tarball: Buffer,
-  manifest: Record<string, unknown>,
-  authHeaders: Record<string, string>,
-  access: PublishAccess = null,
-  provenance?: SerializedBundle
-): Computable<string | undefined> {
-  const body = JSON.stringify(publishEnvelope(registryUrl, coordinate, tarball, manifest, access, provenance));
-  const escapedName = coordinate.name.replace(/\//g, "%2f");
-  return sendRequest(urlJoin(registryUrl, `-/stage/package/${escapedName}`), {
-    method: "POST",
-    headers: { "content-type": "application/json", "npm-command": "stage", ...authHeaders },
-    body,
-  }).then(response => {
-    if (alreadyPublished(response)) {
-      return undefined;
-    }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw publishFailure("staging", registryUrl, coordinate, response).withHelp(
-        `where ${shownUrl(registryUrl)} does not stage publishes, set staging = off on the repository`
-      );
+    if (!staging) {
+      return "published";
     }
     const { stageId } = parseJson(
       response.body,
@@ -481,7 +454,37 @@ export function stageOnRegistry(
         `staging ${coordinate.name}@${coordinate.version} on ${shownUrl(registryUrl)} gave no stage id: ${response.body.toString("utf8")}`
       );
     }
-    return stageId;
+    report.annotate(`stage ${stageId}`);
+    return "staged";
+  };
+  const answerChallenge = (
+    response: HttpResponse,
+    rejected: string | undefined,
+    attemptsLeft: number
+  ): Computable<PublishStatus> | PublishStatus => {
+    const challenge = otpChallengeOf(response);
+    if (!challenge || !otp || attemptsLeft <= 0) {
+      return settle(response);
+    }
+    return otp(challenge, rejected).then(password =>
+      attempt(password).then(retried => answerChallenge(retried, password, attemptsLeft - 1))
+    );
+  };
+  const publish = (): Computable<PublishStatus> => attempt().then(response => answerChallenge(response, undefined, 2));
+  if (!staging) {
+    return publish();
+  }
+  /* The stage route's answer for a version already published is unknown, so
+   * ask first, as `npm stage publish` does. */
+  const versionUrl = urlJoin(registryUrl, `${escapedName}/${encodeURIComponent(coordinate.version)}`);
+  return sendRequest(versionUrl, { method: "GET", headers: authHeaders }).then(response => {
+    if (response.statusCode === 200) {
+      return Computable.resolve<PublishStatus>("already-synced");
+    }
+    if (response.statusCode !== 404) {
+      throw new FabrError(`reading ${shownUrl(versionUrl)} failed (${response.statusCode}): ${response.body.toString("utf8")}`);
+    }
+    return publish();
   });
 }
 

@@ -28,7 +28,9 @@ import {
   FileSet,
   IntegrityError,
   MemoryFile,
+  PublishStatus,
   SecureString,
+  SILENT_REPORT,
   verifiedStream,
   versionToString,
 } from "@fabr-build/core";
@@ -37,7 +39,6 @@ import {
   NPM_FORMAT,
   parseMetadataResponse,
   publishToRegistry,
-  stageOnRegistry,
   toPackumentVersions,
   toPublishAccess,
   versionMetadataOf,
@@ -217,7 +218,7 @@ describe("publishToRegistry access", () => {
   it("defaults the envelope's access to null (the registry decides)", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {});
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {});
       expect(JSON.parse(server.seen[0].body).access).to.equal(null);
     } finally {
       server.close();
@@ -227,7 +228,7 @@ describe("publishToRegistry access", () => {
   it("requests the repository's declared access level", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {}, "public");
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, { access: "public" });
       expect(JSON.parse(server.seen[0].body).access).to.equal("public");
     } finally {
       server.close();
@@ -238,7 +239,7 @@ describe("publishToRegistry access", () => {
     const server = await scriptedServer(() => ({ status: 402, body: `{"error":"You must sign up for private packages"}` }));
     try {
       let thrown: unknown;
-      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/failed \(402\)/);
       expect((thrown as FabrError).help.join("\n")).to.match(/access = public/);
     } finally {
@@ -247,18 +248,38 @@ describe("publishToRegistry access", () => {
   });
 });
 
-describe("stageOnRegistry", () => {
+describe("publishToRegistry staging", () => {
   const IDENTITY = { name: "@scope/demo", version: "1.0.0" };
   const TARBALL = Buffer.from("tgz-bytes");
+  const stage = (url: string, annotate: (text: string) => void = () => undefined): Computable<PublishStatus> =>
+    publishToRegistry(
+      SecureString.of(url),
+      IDENTITY,
+      TARBALL,
+      { name: "@scope/demo" },
+      {
+        access: "public",
+        staging: true,
+        report: { ...SILENT_REPORT, annotate },
+      }
+    );
+  /** Make a registry that serves the version where `published`, and answers a stage with `staged`. */
+  const registry = (published: boolean, staged: { status: number; body: string }): ReturnType<typeof scriptedServer> =>
+    scriptedServer(request =>
+      request.method === "GET" ? { status: published ? 200 : 404, body: published ? `{"version":"1.0.0"}` : "{}" } : staged
+    );
 
-  it("POSTs the publish envelope to the stage route, and answers the stage id the registry gives", async () => {
-    const server = await scriptedServer(() => ({ status: 201, body: `{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}` }));
+  it("checks the version is not published, POSTs the publish envelope to the stage route, and annotates the stage id", async () => {
+    const server = await registry(false, { status: 201, body: `{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}` });
     try {
-      const stageId = await stageOnRegistry(SecureString.of(server.url), IDENTITY, TARBALL, { name: "@scope/demo" }, {}, "public");
-      expect(stageId).to.equal("5f2c9a0e-1111-4222-8333-944444444444");
-      const [seen] = server.seen;
-      expect([seen.method, seen.url]).to.deep.equal(["POST", "/-/stage/package/@scope%2fdemo"]);
-      const envelope = JSON.parse(seen.body);
+      const annotations: string[] = [];
+      expect(await stage(server.url, text => annotations.push(text))).to.equal("staged");
+      expect(annotations).to.deep.equal(["stage 5f2c9a0e-1111-4222-8333-944444444444"]);
+      expect(server.seen.map(seen => [seen.method, seen.url])).to.deep.equal([
+        ["GET", "/@scope%2fdemo/1.0.0"],
+        ["POST", "/-/stage/package/@scope%2fdemo"],
+      ]);
+      const envelope = JSON.parse(server.seen[1].body);
       expect(envelope["dist-tags"]).to.deep.equal({ latest: "1.0.0" });
       expect(envelope.access).to.equal("public");
       expect(Object.keys(envelope._attachments)).to.deep.equal(["@scope/demo-1.0.0.tgz"]);
@@ -267,22 +288,34 @@ describe("stageOnRegistry", () => {
     }
   });
 
-  it("answers no stage id for a version already published, and refuses an answer with none", async () => {
-    const published = await scriptedServer(() => ({ status: 409, body: "{}" }));
-    const empty = await scriptedServer(() => ({ status: 201, body: "{}" }));
-    const unsupported = await scriptedServer(() => ({ status: 404, body: `{"error":"Not found"}` }));
+  it("answers already-synced, staging nothing, where the registry serves the version", async () => {
+    const server = await registry(true, { status: 201, body: `{"stageId":"x"}` });
     try {
-      expect(await stageOnRegistry(SecureString.of(published.url), IDENTITY, TARBALL, {}, {})).to.equal(undefined);
-      let thrown: unknown;
-      await stageOnRegistry(SecureString.of(empty.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
-      expect((thrown as Error).message).to.match(/gave no stage id/);
-      await stageOnRegistry(SecureString.of(unsupported.url), IDENTITY, TARBALL, {}, {}).catch(err => (thrown = err));
-      expect((thrown as Error).message).to.match(/^staging @scope\/demo@1\.0\.0 to .* failed \(404\)/);
-      expect((thrown as FabrError).help.join("\n")).to.match(/staging = off/);
+      expect(await stage(server.url)).to.equal("already-synced");
+      expect(server.seen.map(seen => seen.method)).to.deep.equal(["GET"]);
     } finally {
-      published.close();
-      empty.close();
+      server.close();
+    }
+  });
+
+  it("refuses a stage the registry refuses, with help to stop staging only where it serves no stage route", async () => {
+    const conflict = await registry(false, { status: 409, body: `{"error":"already staged"}` });
+    const unsupported = await registry(false, { status: 404, body: `{"error":"Not found"}` });
+    const empty = await registry(false, { status: 201, body: "{}" });
+    try {
+      let thrown: unknown;
+      await stage(conflict.url).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/^staging @scope\/demo@1\.0\.0 to .* failed \(409\): \{"error":"already staged"\}$/);
+      expect((thrown as FabrError).help).to.deep.equal([]);
+      await stage(unsupported.url).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/failed \(404\)/);
+      expect((thrown as FabrError).help.join("\n")).to.match(/staging = off/);
+      await stage(empty.url).catch(err => (thrown = err));
+      expect((thrown as Error).message).to.match(/gave no stage id/);
+    } finally {
+      conflict.close();
       unsupported.close();
+      empty.close();
     }
   });
 });
@@ -308,7 +341,7 @@ describe("publishToRegistry second factor", () => {
   it("advertises web-auth capability on the publish request", async () => {
     const server = await scriptedServer(() => ({ status: 201, body: "{}" }));
     try {
-      expect(await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH)).to.equal("published");
+      expect(await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, { authHeaders: AUTH })).to.equal("published");
       /* The registry only offers the passkey ceremony to a client sending both. */
       expect(server.seen[0].headers["npm-auth-type"]).to.equal("web");
       expect(server.seen[0].headers["npm-command"]).to.equal("publish");
@@ -323,10 +356,19 @@ describe("publishToRegistry second factor", () => {
     );
     const asked: Array<{ challenge: OtpChallenge; rejected?: string }> = [];
     try {
-      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
-        asked.push({ challenge, rejected });
-        return Computable.resolve("123456");
-      });
+      const status = await publishToRegistry(
+        SecureString.of(server.url),
+        IDENTITY,
+        TARBALL,
+        {},
+        {
+          authHeaders: AUTH,
+          otp: (challenge, rejected) => {
+            asked.push({ challenge, rejected });
+            return Computable.resolve("123456");
+          },
+        }
+      );
       expect(status).to.equal("published");
       expect(asked).to.deep.equal([{ challenge: {}, rejected: undefined }]);
       expect(server.seen.length).to.equal(2);
@@ -347,11 +389,20 @@ describe("publishToRegistry second factor", () => {
       request.headers["npm-otp"] === "ceremony-tok" ? { status: 201, body: "{}" } : webChallenge
     );
     try {
-      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, challenge => {
-        expect(challenge.authUrl).to.equal("https://www.npmjs.com/auth/cli/x");
-        expect(challenge.doneUrl).to.equal("https://registry.npmjs.org/-/v1/done?authId=x");
-        return Computable.resolve("ceremony-tok");
-      });
+      const status = await publishToRegistry(
+        SecureString.of(server.url),
+        IDENTITY,
+        TARBALL,
+        {},
+        {
+          authHeaders: AUTH,
+          otp: challenge => {
+            expect(challenge.authUrl).to.equal("https://www.npmjs.com/auth/cli/x");
+            expect(challenge.doneUrl).to.equal("https://registry.npmjs.org/-/v1/done?authId=x");
+            return Computable.resolve("ceremony-tok");
+          },
+        }
+      );
       expect(status).to.equal("published");
     } finally {
       server.close();
@@ -364,10 +415,19 @@ describe("publishToRegistry second factor", () => {
     );
     const asked: Array<string | undefined> = [];
     try {
-      const status = await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
-        asked.push(rejected);
-        return Computable.resolve(rejected === undefined ? "stale" : "fresh");
-      });
+      const status = await publishToRegistry(
+        SecureString.of(server.url),
+        IDENTITY,
+        TARBALL,
+        {},
+        {
+          authHeaders: AUTH,
+          otp: (challenge, rejected) => {
+            asked.push(rejected);
+            return Computable.resolve(rejected === undefined ? "stale" : "fresh");
+          },
+        }
+      );
       expect(status).to.equal("published");
       expect(asked).to.deep.equal([undefined, "stale"]);
       expect(server.seen.length).to.equal(3);
@@ -381,10 +441,19 @@ describe("publishToRegistry second factor", () => {
     const asked: Array<string | undefined> = [];
     try {
       let thrown: unknown;
-      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH, null, (challenge, rejected) => {
-        asked.push(rejected);
-        return Computable.resolve("refused");
-      }).catch(err => (thrown = err));
+      await publishToRegistry(
+        SecureString.of(server.url),
+        IDENTITY,
+        TARBALL,
+        {},
+        {
+          authHeaders: AUTH,
+          otp: (challenge, rejected) => {
+            asked.push(rejected);
+            return Computable.resolve("refused");
+          },
+        }
+      ).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/failed \(401\)/);
       expect(asked.length).to.equal(2);
     } finally {
@@ -396,7 +465,7 @@ describe("publishToRegistry second factor", () => {
     const server = await scriptedServer(() => EOTP_REPLY);
     try {
       let thrown: unknown;
-      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, AUTH).catch(err => (thrown = err));
+      await publishToRegistry(SecureString.of(server.url), IDENTITY, TARBALL, {}, { authHeaders: AUTH }).catch(err => (thrown = err));
       expect((thrown as Error).message).to.match(/one-time pass/);
       expect(server.seen.length).to.equal(1);
     } finally {

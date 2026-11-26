@@ -1111,7 +1111,9 @@ interface CapturedPut {
 
 function captureServer(
   status: number,
-  response: string
+  response: string,
+  /** The status a GET is answered with, uncaptured; absent, a GET is answered and captured as any request. */
+  readStatus?: number
 ): Promise<{ port: number; captured: () => CapturedPut | undefined; close: () => void }> {
   return new Promise(resolve => {
     let captured: CapturedPut | undefined;
@@ -1119,6 +1121,10 @@ function captureServer(
       const chunks: Buffer[] = [];
       req.on("data", c => chunks.push(c));
       req.on("end", () => {
+        if (readStatus !== undefined && req.method === "GET") {
+          res.writeHead(readStatus, { "content-type": "application/json" });
+          return res.end("{}");
+        }
         captured = { method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks).toString() };
         res.writeHead(status, { "content-type": "application/json" });
         res.end(response);
@@ -1282,7 +1288,7 @@ describe("NPMRepository publish", () => {
   });
 
   it("stages a publish where the repository stages, and annotates the task with the stage id", async () => {
-    const server = await captureServer(201, '{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}');
+    const server = await captureServer(201, '{"stageId":"5f2c9a0e-1111-4222-8333-944444444444"}', 404);
     try {
       const repo = new NPMRepository(
         SecureString.of(`http://127.0.0.1:${server.port}`),

@@ -18,6 +18,7 @@ together and share a version number.
 - Cap playwright workers at the maximum we can actually run, and allocate slots per test rather than worker
   (works around potential deadlock where workers aren't released)
 - Start each jest test file about 100ms faster (defer unneded loading + optimize read gen)
+- NPM publishing now also supports staging (npmjs.com only)
 
 @fabr-build/java
 

@@ -188,6 +188,9 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
   /** The Sigstore instance provenance statements are signed with. */
   private readonly sigstore: ISigstoreInstance;
 
+  /** True where a publish is staged, held by the registry until someone approves it there. */
+  private readonly staging: boolean;
+
   constructor(
     url: SecureString,
     context: TargetContext,
@@ -195,7 +198,8 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     extensions?: PackageExtensions,
     credential?: Credential,
     provenance = true,
-    sigstore: ISigstoreInstance = PUBLIC_SIGSTORE
+    sigstore: ISigstoreInstance = PUBLIC_SIGSTORE,
+    staging = false
   ) {
     this.url = urlRoot(url);
     this.context = context;
@@ -204,6 +208,7 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
     this.credential = credential ?? NPMAuth.credential(() => this.npmAuth());
     this.provenance = provenance;
     this.sigstore = sigstore;
+    this.staging = staging;
   }
 
   /** The registry's identity, its URL, in the resolution memo key. */
@@ -376,18 +381,16 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
         }));
       });
     }).then(({ data, manifest, auth, authHeaders, provenance, refused }) =>
-      publishToRegistry(
-        this.url,
-        { name, version },
-        data,
-        manifest,
+      publishToRegistry(this.url, { name, version }, data, manifest, {
         authHeaders,
-        this.access,
-        auth.otpProvider(this.url, this.context.execution.interaction),
-        provenance
-      ).then(
+        access: this.access,
+        otp: auth.otpProvider(this.url, this.context.execution.interaction),
+        provenance,
+        staging: this.staging,
+        report,
+      }).then(
         status => {
-          if (provenance !== undefined && status === "published") {
+          if (provenance !== undefined && status !== "already-synced") {
             report.annotate("provenance");
           }
           return status;
@@ -733,11 +736,11 @@ export class NPMRepository implements Repository, RepositoryWriter, RepositoryRe
 /** Make the repository an `npm_repository` declaration declares, or a
  * namespace makes with `url` and `credential`: the declaration's own `url`
  * takes precedence, and `credential` replaces `.npmrc`'s. Rejects where there
- * is no URL, or `provenance` is neither `on` nor `off`. */
+ * is no URL, or `provenance` or `staging` is neither `on` nor `off`. */
 function createRepository(context: TargetContext, url?: SecureString, credential?: Credential): Computable<Repository> {
   return Computable.forAll(
-    [context.getProperty("url"), context.getString("access"), context.getString("provenance")],
-    (declared, access, provenance) => {
+    [context.getProperty("url"), context.getString("access"), context.getString("provenance"), context.getString("staging")],
+    (declared, access, provenance, staging) => {
       const at = declared?.toString() ?? url;
       if (at === undefined) {
         throw new FabrError("Missing required property url");
@@ -745,7 +748,19 @@ function createRepository(context: TargetContext, url?: SecureString, credential
       if (provenance !== undefined && !provenance.equals("on") && !provenance.equals("off")) {
         throw new FabrError(`invalid provenance value '${provenance.toDisplayString()}' (expected "on" or "off")`);
       }
-      return new NPMRepository(at, context, toPublishAccess(access), undefined, credential, !(provenance?.equals("off") ?? false));
+      if (staging !== undefined && !staging.equals("on") && !staging.equals("off")) {
+        throw new FabrError(`invalid staging value '${staging.toDisplayString()}' (expected "on" or "off")`);
+      }
+      return new NPMRepository(
+        at,
+        context,
+        toPublishAccess(access),
+        undefined,
+        credential,
+        !(provenance?.equals("off") ?? false),
+        PUBLIC_SIGSTORE,
+        staging?.equals("on") ?? false
+      );
     }
   );
 }
