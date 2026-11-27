@@ -22,7 +22,7 @@ import { BUILD_OPERATION, BUILD_OVERRIDE, Constraints } from "../model/Constrain
 import { SyncSources } from "../context/Collection";
 import { Computable, ComputableSource } from "../core/Computable";
 import { EMPTY_FILESET, FileSet, FileSource, IFile } from "../core/FileSet";
-import { PublishStatus, RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
+import { PackagePublishRef, PublishStatus, RepositoryPublishRef, RepositoryWriter, SourceRef } from "../core/Repository";
 import { ITaskReport } from "../support/Execute";
 import { soleWholeTarget } from "../core/TargetRef";
 import { refuseNamespaces } from "../core/NamespaceRef";
@@ -172,10 +172,19 @@ export function publishBatches(carriers: ReadonlyArray<PublishableFileSet>): Pub
   return ordered;
 }
 
-/** @return the name a batch is shown and uploaded under: its first carrier's destination, and how many more it holds. */
+/**
+ * @return the name a batch is shown under: its last carrier's destination, and
+ * how many more coordinates it holds. Carriers at one coordinate (a Maven
+ * artifact and the jars published beside it) count as one.
+ */
 export function batchName(batch: readonly PublishableFileSet[]): string {
-  const first = batch[0].destination.toString();
-  return batch.length === 1 ? first : `${first} and ${batch.length - 1} more`;
+  const last = batch[batch.length - 1].destination;
+  const coordinates = new Set(
+    batch.map(({ destination }) =>
+      destination instanceof PackagePublishRef ? `${destination.name}:${destination.version}` : destination.name
+    )
+  );
+  return coordinates.size === 1 ? last.toString() : `${last.toString()} and ${coordinates.size - 1} more`;
 }
 
 /**

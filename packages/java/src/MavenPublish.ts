@@ -512,6 +512,21 @@ export class MavenPublishRef extends PackagePublishRef {
   }
 }
 
+/**
+ * @return the name a Publisher Portal deployment of `artifacts` is given, in
+ * Maven coordinates: `group:artifact:version` of the last version's artifact
+ * among them, and `and N more` where they hold N more versions. A file
+ * published beside an artifact is counted with it.
+ */
+export function deploymentName(artifacts: readonly PublishableFileSet[]): string {
+  const coordinates = artifacts.map(({ destination }) => packageCoordinateOf(destination));
+  const versions = new Set(coordinates.map(({ name, version }) => `${name}:${version}`));
+  const named = coordinates.filter(destination => variantOf(destination) === undefined).at(-1) ?? coordinates[coordinates.length - 1];
+  const { groupId, artifactId } = splitMavenName(named.name);
+  const coordinate = `${groupId}:${artifactId}:${named.version}`;
+  return versions.size === 1 ? coordinate : `${coordinate} and ${versions.size - 1} more`;
+}
+
 /** @return the variant `destination` publishes a file as, or undefined for a version's artifact. */
 export function variantOf(destination: RepositoryPublishRef): string | undefined {
   return destination instanceof MavenPublishRef ? destination.variant : undefined;

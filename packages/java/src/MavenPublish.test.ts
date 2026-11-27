@@ -48,6 +48,7 @@ import {
   repositoryPath,
   uploadOrder,
   variantOf,
+  deploymentName,
 } from "./MavenPublish";
 
 describe("pomText", () => {
@@ -234,6 +235,13 @@ describe("classified members", () => {
     expect(ref().toString()).to.equal("@corp:com.example/app:1.0.0");
     expect(variantOf(ref("sources"))).to.equal("sources");
     expect(ref("sources").withRepositoryName("@other").toString()).to.equal("@other:com.example/app/sources:1.0.0");
+  });
+
+  it("name a Portal deployment in Maven coordinates, by the last artifact, counting versions", () => {
+    const carrier = (destination: MavenPublishRef): PublishableFileSet => new PublishableFileSet([], destination);
+    const lib = new MavenPublishRef(writer, { name: "com.example/lib", version: "2.0.0" }, "@corp");
+    expect(deploymentName([carrier(ref("sources")), carrier(ref("javadoc")), carrier(ref())])).to.equal("com.example:app:1.0.0");
+    expect(deploymentName([carrier(lib), carrier(ref("sources")), carrier(ref())])).to.equal("com.example:app:1.0.0 and 1 more");
   });
 
   it("pack a tree of files as the jar beside the artifact, with its checksums", async () => {

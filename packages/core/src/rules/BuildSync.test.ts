@@ -20,7 +20,7 @@
 import { expect } from "chai";
 import { PublishableFileSet } from "../core/PublishableFileSet";
 import { PackagePublishRef, RepositoryWriter } from "../core/Repository";
-import { publishBatches, publishOrder } from "./BuildSync";
+import { batchName, publishBatches, publishOrder } from "./BuildSync";
 
 /* The sort reads only the provides/dependsOn tokens; the destination is inert
  * here. Tokens are npm-style names, addresses written name:version. */
@@ -81,5 +81,13 @@ describe("publishBatches (a release grouped into its uploads)", () => {
     const app = carrier("app", "1.0.0", ["base"], whole);
     const tool = carrier("tool", "1.0.0", ["app"]);
     expect(publishBatches([tool, app, base]).map(labels)).to.deep.equal([["base:1.0.0"], ["app:1.0.0"], ["tool:1.0.0"]]);
+  });
+});
+
+describe("batchName", () => {
+  it("names a batch by its last carrier, counting the coordinates it holds beside it", () => {
+    expect(batchName([carrier("app", "1.0.0")])).to.equal("app:1.0.0");
+    expect(batchName([carrier("app", "1.0.0"), carrier("app", "1.0.0")])).to.equal("app:1.0.0");
+    expect(batchName([carrier("lib", "1.0.0"), carrier("app", "1.0.0"), carrier("app", "1.0.0")])).to.equal("app:1.0.0 and 1 more");
   });
 });

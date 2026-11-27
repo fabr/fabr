@@ -28,7 +28,6 @@
  */
 
 import {
-  batchName,
   Computable,
   Credential,
   DOC_OPERATION,
@@ -80,6 +79,7 @@ import { loadSigner, Signer } from "./MavenSigning";
 import { checkPortalToken, DEFAULT_PORTAL_URL, portalCredential, publishToPortal } from "./CentralPortal";
 import {
   checksumFiles,
+  deploymentName,
   variantOf,
   MavenPublishRef,
   mergedMetadata,
@@ -501,7 +501,7 @@ export class MavenRepository implements Repository, RepositoryReader<MavenVersio
           this.publishUrl,
           this.publishCredential,
           FileSet.unionAll(...uploaded),
-          batchName(uploaded),
+          deploymentName(uploaded),
           this.publishing.staging,
           report
         ).then(() => statuses);
