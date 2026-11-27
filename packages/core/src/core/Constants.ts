@@ -17,6 +17,10 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import * as fs from "fs";
+import * as path from "path";
+import { parseJson, toJsonObject } from "../support/Json";
+
 /** The build file naming a project's root. */
 export const PROJECT_FILENAME = "PROJECT.fabr";
 
@@ -26,3 +30,30 @@ export const COMMAND_LINE_FILE = "<command-line>";
 
 /** Fabr's own engine package: the one every plugin must share with the host. */
 export const CORE_PACKAGE = "@fabr-build/core";
+
+/**
+ * @return the version of the fabr running: the one the `package.json` nearest
+ * above this module (core's own) states, or undefined where it states none (a
+ * build not yet published) or cannot be read.
+ */
+export function getVersion(): string | undefined {
+  for (let dir = __dirname; ; dir = path.dirname(dir)) {
+    const file = path.join(dir, "package.json");
+    if (fs.existsSync(file)) {
+      try {
+        const { version } = parseJson(fs.readFileSync(file), file, toJsonObject);
+        return typeof version === "string" ? version : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    if (path.dirname(dir) === dir) {
+      return undefined;
+    }
+  }
+}
+
+/** @return the version of the fabr running as output shows it: {@link getVersion}'s, else `0.0.0-dev`. */
+export function getVersionString(): string {
+  return getVersion() ?? "0.0.0-dev";
+}

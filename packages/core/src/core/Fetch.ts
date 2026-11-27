@@ -26,6 +26,7 @@ import { EnvHttpProxyAgent, interceptors, request as httpRequest } from "undici"
 import { Computable } from "./Computable";
 import { FabrError, HttpStatusError, toError } from "./Errors";
 import { SecureString } from "./SecureString";
+import { getVersionString } from "./Constants";
 import { Semaphore } from "../support/Semaphore";
 
 /** The most redirects a request follows. */
@@ -136,6 +137,16 @@ const dispatcher = new EnvHttpProxyAgent({
   initialWindowSize: STREAM_WINDOW_BYTES,
   connectionWindowSize: CONNECTION_WINDOW_BYTES,
 }).compose(interceptors.redirect({ maxRedirections: MAX_REDIRECTS }));
+
+/** The User-Agent a request sends where its headers name none: `fabr/<version>`. */
+const USER_AGENT = `fabr/${getVersionString()}`;
+
+/** @return `headers` with a `user-agent` of {@link USER_AGENT} where they name none. */
+function withUserAgent(headers: Record<string, string> | undefined): Record<string, string> {
+  return headers !== undefined && Object.keys(headers).some(name => name.toLowerCase() === "user-agent")
+    ? headers
+    : { ...headers, "user-agent": USER_AGENT };
+}
 
 /** @return the error refusing `urlstring` where its protocol is not http or
  * https, otherwise undefined. */
@@ -329,7 +340,7 @@ function send(
         reject(toError(err));
       };
       /* undici derives Content-Length from the body and follows redirects itself. */
-      httpRequest(urlstring, { method, headers, body, dispatcher }).then(
+      httpRequest(urlstring, { method, headers: withUserAgent(headers), body, dispatcher }).then(
         response =>
           response.body.arrayBuffer().then(buffer => {
             release();
@@ -458,7 +469,7 @@ function streamUrl(
     }
     admission(release => {
       /* The dispatcher follows redirects, so this is the last hop's response. */
-      httpRequest(urlstring, { method: "GET", headers, dispatcher }).then(
+      httpRequest(urlstring, { method: "GET", headers: withUserAgent(headers), dispatcher }).then(
         response => {
           const resHeaders = response.headers as http.IncomingHttpHeaders;
           if (response.statusCode === 200) {
@@ -675,7 +686,7 @@ function headOf(
       urlstring,
       role
     )(release => {
-      httpRequest(urlstring, { method: "HEAD", headers, dispatcher }).then(
+      httpRequest(urlstring, { method: "HEAD", headers: withUserAgent(headers), dispatcher }).then(
         response => {
           void response.body.dump().finally(release);
           const resHeaders = response.headers as http.IncomingHttpHeaders;

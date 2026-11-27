@@ -25,7 +25,7 @@ import { FileSet, FileSource } from "../core/FileSet";
 import { FSFile } from "../core/FSFileSource";
 import { hashString } from "../core/FSWrapper";
 import { Name, NAME_LEVEL_SEPARATOR } from "../core/Name";
-import { CORE_PACKAGE } from "../core/Constants";
+import { CORE_PACKAGE, getVersion } from "../core/Constants";
 import { sniffMime } from "../support/Mime";
 import { Diagnostic, ErrorTrackingLog, IDiagnosticNote, ISourceSpan, Log, LogLevel } from "../support/Log";
 import { StringReader } from "../support/StringReader";
@@ -49,7 +49,7 @@ import {
 import { BuildModel } from "./BuildModel";
 import { ModelBuilder } from "./ModelBuilder";
 import { ExecutionContext } from "./ExecutionContext";
-import { getCoreVersion, matchOptionalLibs, PluginPackage, PluginResolution, resolvePlugin } from "./Plugin";
+import { matchOptionalLibs, PluginPackage, PluginResolution, resolvePlugin } from "./Plugin";
 import { PluginContribution } from "../rules/Types";
 import { computableWorkList } from "../core/WorkList";
 import { FabrError } from "../core/Errors";
@@ -506,7 +506,7 @@ class ProjectLoader {
       log.log(DIAG_FABR_PLACEMENT, { loc: declPosn(decl) });
       return;
     }
-    const running = getCoreVersion();
+    const running = getVersion();
     if (running !== undefined && running !== decl.version) {
       log.log(DIAG_OTHER_FABR, { declared: decl.version, running, loc: declPosn(decl) });
     }

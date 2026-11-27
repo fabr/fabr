@@ -17,17 +17,16 @@
  * Fabr. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import {
   COVERAGE,
   COVERAGE_ON,
+  getVersionString,
   isIdentifier,
-  parseJson,
   preferredOperation,
   TEST_EXPECTATIONS,
   TEST_FILE_PATTERN,
   TEST_NAME_PATTERN,
-  toJsonObject,
   UPDATE_EXPECTATIONS,
 } from "@fabr-build/core";
 import { CommandLineSource } from "./CommandLineSource";
@@ -45,22 +44,6 @@ export function installationDirectory(): string | undefined {
     if (dirname(dir) === dir) {
       return undefined;
     }
-  }
-}
-
-/** @return the fabr version, read from the CLI package's own package.json
- * ({@link installationDirectory}): `0.0.0-dev` where it states none (an
- * unreleased build), `unknown` where it cannot be read. */
-export function getVersion(): string {
-  const dir = installationDirectory();
-  if (dir === undefined) {
-    return "unknown";
-  }
-  try {
-    const { version } = parseJson(readFileSync(join(dir, "package.json")), "fabr's package.json", toJsonObject);
-    return typeof version === "string" ? version : "0.0.0-dev";
-  } catch {
-    return "unknown";
   }
 }
 
@@ -749,7 +732,7 @@ function applyOption(arg: string, next: string | undefined, options: Options, se
     options.jobs = jobs;
     return separate ? 1 : 0;
   } else if (arg === "--version" || arg === "-v") {
-    console.log(`fabr ${getVersion()}`);
+    console.log(`fabr ${getVersionString()}`);
     process.exit(0);
   } else if (arg.startsWith("-D")) {
     /* -DKEY=VALUE: split at the *first* `=` so the value may contain more

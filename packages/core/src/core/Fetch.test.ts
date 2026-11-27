@@ -29,6 +29,7 @@ interface Received {
   method?: string;
   url?: string;
   auth?: string | string[];
+  userAgent?: string;
   body: string;
 }
 
@@ -42,7 +43,13 @@ function withServer(status: number, responseBody: string): Promise<{ url: string
       const chunks: Buffer[] = [];
       req.on("data", c => chunks.push(c));
       req.on("end", () => {
-        capture({ method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks).toString() });
+        capture({
+          method: req.method,
+          url: req.url,
+          auth: req.headers.authorization,
+          userAgent: req.headers["user-agent"],
+          body: Buffer.concat(chunks).toString(),
+        });
         res.writeHead(status, { "content-type": "application/json" });
         res.end(responseBody);
       });
@@ -71,6 +78,23 @@ describe("sendRequest", () => {
       expect(res.body.toString()).to.equal('{"ok":true}');
     } finally {
       server.close();
+    }
+  });
+
+  it("sends fabr's User-Agent where the headers name none, and the caller's where they do", async () => {
+    const plain = await withServer(200, "");
+    try {
+      await sendRequest(SecureString.of(plain.url), { method: "GET" });
+      expect((await plain.received).userAgent).to.match(/^fabr\/\S+$/);
+    } finally {
+      plain.close();
+    }
+    const named = await withServer(200, "");
+    try {
+      await sendRequest(SecureString.of(named.url), { method: "GET", headers: { "User-Agent": "npm/10.0.0" } });
+      expect((await named.received).userAgent).to.equal("npm/10.0.0");
+    } finally {
+      named.close();
     }
   });
 

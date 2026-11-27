@@ -45,11 +45,11 @@ import {
   symbolsOf,
   toPosix,
   writtenAt,
+  getVersionString,
 } from "@fabr-build/core";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getVersion } from "./Command";
 import { served } from "./BspServer";
 import { collectingLog, documentOf, type IProtocolDiagnostic, rangeOf } from "./ProtocolDiagnostics";
 import { type IPosition, toChangedParams, toDocumentParams, toOpenedParams, toPositionParams } from "./ProtocolParams";
@@ -196,7 +196,7 @@ export class LanguageServer {
             completionProvider: { triggerCharacters: ["{", "$"] },
             codeLensProvider: {},
           },
-          serverInfo: { name: "fabr", version: getVersion() },
+          serverInfo: { name: "fabr", version: getVersionString() },
         };
       case "initialized":
         /* Publish what the last load reported before the client was listening. */

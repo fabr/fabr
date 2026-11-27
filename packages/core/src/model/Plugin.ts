@@ -31,7 +31,7 @@ import { RunnableFileSet } from "../core/RunnableFileSet";
 import { SymlinkFile } from "../core/SymlinkFile";
 import { IProvenanceStep, registerProvenanceDescriber, registerProvenanceRenderer } from "../core/Provenance";
 import { Diagnostic, ISourcePosition, Log } from "../support/Log";
-import { CORE_PACKAGE } from "../core/Constants";
+import { CORE_PACKAGE, getVersion } from "../core/Constants";
 import { FabrError, toError } from "../core/Errors";
 import * as Module from "module";
 import { pathToFileURL } from "url";
@@ -181,18 +181,11 @@ export function coreVersionError(name: string, range?: string, version?: string)
   );
 }
 
-/** @return the version of fabr's own core, which is fabr's version, or undefined where its `package.json` states none or cannot be found. */
-export function getCoreVersion(): string | undefined {
-  const file = nearestManifestFile(__dirname, manifest => manifest.name === CORE_PACKAGE);
-  const version = file === undefined ? undefined : readManifest(file).version;
-  return typeof version === "string" ? version : undefined;
-}
-
 /** Throw {@link coreVersionError}'s error for the plugin `name`, whose `package.json` reads `plugin`, against the host core's version. */
 function checkCoreVersion(name: string, plugin: Record<string, unknown>): void {
   const peers = plugin.peerDependencies;
   const range = typeof peers === "object" && peers !== null ? (peers as Record<string, unknown>)[CORE_PACKAGE] : undefined;
-  const err = coreVersionError(name, typeof range === "string" ? range : undefined, getCoreVersion());
+  const err = coreVersionError(name, typeof range === "string" ? range : undefined, getVersion());
   if (err !== undefined) {
     throw err;
   }

@@ -50,10 +50,11 @@ import {
   type SourceRef,
   targetIdentifier,
   toError,
+  getVersionString,
 } from "@fabr-build/core";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { getVersion, installationDirectory } from "./Command";
+import { installationDirectory } from "./Command";
 import { collectingLog, type IProtocolDiagnostic } from "./ProtocolDiagnostics";
 import { toDocumentParams, toTargetsParams } from "./ProtocolParams";
 
@@ -523,7 +524,7 @@ export class BspServer {
       case "build/initialize":
         return {
           displayName: "fabr",
-          version: getVersion(),
+          version: getVersionString(),
           bspVersion: BSP_VERSION,
           capabilities: {
             buildTargetChangedProvider: true,

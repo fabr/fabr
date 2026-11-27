@@ -108,6 +108,7 @@ import {
   VexStatement,
   writeBackCandidates,
   writeFileSet,
+  getVersionString,
 } from "@fabr-build/core";
 import { runInteractive, RunSupervisor } from "./RunHandler";
 import { shellInto } from "./ShellHandler";
@@ -115,7 +116,7 @@ import { DependencyTree, renderAudit, renderDependencyTrees, sectionsOf } from "
 import { publishSync } from "./SyncHandler";
 import { BspServer } from "./BspServer";
 import { LanguageServer } from "./LanguageServer";
-import { completeCommandLine, Mode, Options, getVersion } from "./Command";
+import { completeCommandLine, Mode, Options } from "./Command";
 import { getSourceRoot, getBuildCacheRoot } from "./Environment";
 import { IInvocationSite } from "./CommandLineSource";
 import { TerminalInteraction } from "./Interaction";
@@ -1359,7 +1360,7 @@ function stdoutStyle(): ((code: string, text: string) => string) | undefined {
  */
 function writeSbom(model: BuildModel, options: Options, execution: ExecutionContext, site: IInvocationSite): Computable<void> {
   return resolvedNames(model, options, execution, site)
-    .then(names => sbom(names, { version: getVersion() }))
+    .then(names => sbom(names, { version: getVersionString() }))
     .then(bom => {
       console.log(JSON.stringify(bom, undefined, 2));
     });
@@ -1413,7 +1414,7 @@ function auditDependencies(
              * own tree, not in a plugin's file or on the command line. */
             const locate = (site: ISourceSpan): ISarifLocation | undefined =>
               site.fs === execution.sourceFileSource ? sarifLocation(site) : undefined;
-            console.log(JSON.stringify(auditSarif(report, { version: getVersion() }, locate), undefined, 2));
+            console.log(JSON.stringify(auditSarif(report, { version: getVersionString() }, locate), undefined, 2));
           } else {
             renderAudit(report, stdoutStyle()).forEach(line => console.log(line));
           }

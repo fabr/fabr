@@ -30,7 +30,7 @@ import {
 } from "@fabr-build/core";
 
 const DIAG_ALREADY_SYNCED = Diagnostic.Info<{ destination: string }>("{destination} is already synced");
-const DIAG_STAGED = Diagnostic.Info<{ destination: string }>("{destination} is staged: publish it from its repository");
+const DIAG_STAGED = Diagnostic.Info<{ destination: string }>("{destination} is staged");
 const DIAG_PUBLISH_FAILED = Diagnostic.Error<{ destination: string; reason: string }>("Failed to publish {destination}: {reason}");
 const DIAG_PUBLISH_SKIPPED = Diagnostic.Warn<{ destination: string; blockedBy: string }>(
   "Skipped {destination}: its release dependency {blockedBy} was not published"

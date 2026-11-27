@@ -30,7 +30,7 @@ import { BuildFilesInvalidError } from "./Errors";
 import { ExecutionContext } from "./ExecutionContext";
 import { loadProject } from "./Loader";
 import type { PluginContribution } from "../rules/Types";
-import { getCoreVersion } from "./Plugin";
+import { getVersion } from "../core/Constants";
 
 /** A minimal ExecutionContext for the loader: the project tree as the source,
  *  and an empty absolute-path source, which the loader does not read. */
@@ -293,7 +293,7 @@ describe("Loader", () => {
   });
 
   it("warns where the project declares a fabr release other than the one running", async () => {
-    const running = getCoreVersion();
+    const running = getVersion();
     const { error, logged } = await loadErr(files({ "PROJECT.fabr": "fabr 0.0.1-other;" }));
     expect(error).to.be.undefined;
     if (running === undefined) {
